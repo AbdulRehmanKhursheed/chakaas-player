@@ -1,0 +1,68 @@
+# OSX
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log
+yarn-debug.log*
+.pnp/
+.pnp.js
+
+# Expo
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# Metro
+.metro-health-check*
+
+# Android
+android/build/
+android/.gradle/
+android/app/build/
+android/captures/
+android/local.properties
+android/.idea/
+android/*.iml
+android/app/release/
+android/app/debug/
+
+# Keystore / signing artifacts
+*.jks
+*.keystore
+*.p12
+*.cer
+*.mobileprovision
+
+# Environment files
+.env
+.env.local
+.env.development
+.env.staging
+.env.production
+.env*.local
+*.env
+
+# TypeScript
+*.tsbuildinfo
+
+# Testing
+coverage/
+
+# Misc
+*.log
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# WatermelonDB
+*.db
+*.db-shm
+*.db-wal

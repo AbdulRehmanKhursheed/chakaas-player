@@ -1,0 +1,278 @@
+import React, { useCallback } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  Pressable,
+  TouchableOpacity,
+} from 'react-native';
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+  withTiming,
+  withSequence,
+} from 'react-native-reanimated';
+import * as Haptics from 'expo-haptics';
+import { Ionicons } from '@expo/vector-icons';
+import type { Track } from '@/types/track';
+import { TrackArtwork } from './TrackArtwork';
+
+// ─── Playing Indicator ───────────────────────────────────────────────────────
+
+function PlayingIndicator() {
+  const bar1 = useSharedValue(0.4);
+  const bar2 = useSharedValue(0.7);
+  const bar3 = useSharedValue(0.5);
+
+  React.useEffect(() => {
+    const animate = (sv: Animated.SharedValue<number>, delay: number, min: number, max: number) => {
+      const loop = () => {
+        sv.value = withSequence(
+          withTiming(max, { duration: 300 + delay }),
+          withTiming(min, { duration: 300 + delay * 0.5 }, loop),
+        );
+      };
+      const t = setTimeout(loop, delay);
+      return () => clearTimeout(t);
+    };
+
+    const c1 = animate(bar1, 0, 0.25, 1.0);
+    const c2 = animate(bar2, 150, 0.3, 0.9);
+    const c3 = animate(bar3, 80, 0.2, 0.85);
+
+    return () => {
+      c1();
+      c2();
+      c3();
+    };
+  }, []);
+
+  const bar1Style = useAnimatedStyle(() => ({ transform: [{ scaleY: bar1.value }] }));
+  const bar2Style = useAnimatedStyle(() => ({ transform: [{ scaleY: bar2.value }] }));
+  const bar3Style = useAnimatedStyle(() => ({ transform: [{ scaleY: bar3.value }] }));
+
+  return (
+    <View style={indicatorStyles.container}>
+      <Animated.View style={[indicatorStyles.bar, bar1Style]} />
+      <Animated.View style={[indicatorStyles.bar, bar2Style]} />
+      <Animated.View style={[indicatorStyles.bar, bar3Style]} />
+    </View>
+  );
+}
+
+const indicatorStyles = StyleSheet.create({
+  container: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 2,
+    height: 14,
+    width: 18,
+  },
+  bar: {
+    width: 3,
+    height: 14,
+    borderRadius: 1.5,
+    backgroundColor: '#FA233B',
+    transformOrigin: 'bottom',
+  },
+});
+
+// ─── Duration formatter ──────────────────────────────────────────────────────
+
+function formatDuration(ms: number): string {
+  const totalSec = Math.round(ms / 1000);
+  const minutes = Math.floor(totalSec / 60);
+  const seconds = totalSec % 60;
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+}
+
+// ─── Props ───────────────────────────────────────────────────────────────────
+
+interface TrackRowProps {
+  track: Track;
+  isPlaying?: boolean;
+  onPress: () => void;
+  onLongPress: () => void;
+  showArtwork?: boolean;
+}
+
+// ─── Component ───────────────────────────────────────────────────────────────
+
+export function TrackRow({
+  track,
+  isPlaying = false,
+  onPress,
+  onLongPress,
+  showArtwork = true,
+}: TrackRowProps) {
+  const scale = useSharedValue(1);
+  const bgOpacity = useSharedValue(0);
+
+  const handlePressIn = useCallback(() => {
+    scale.value = withSpring(0.97, { damping: 20, stiffness: 300 });
+    bgOpacity.value = withTiming(1, { duration: 80 });
+  }, []);
+
+  const handlePressOut = useCallback(() => {
+    scale.value = withSpring(1, { damping: 20, stiffness: 300 });
+    bgOpacity.value = withTiming(0, { duration: 200 });
+  }, []);
+
+  const handleLongPress = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    onLongPress();
+  }, [onLongPress]);
+
+  const rowStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: scale.value }],
+  }));
+
+  const overlayStyle = useAnimatedStyle(() => ({
+    opacity: bgOpacity.value * 0.06,
+  }));
+
+  const artworkUri = track.artwork_path;
+
+  return (
+    <Animated.View style={[styles.container, rowStyle]}>
+      {/* Ripple/highlight overlay */}
+      <Animated.View style={[StyleSheet.absoluteFill, styles.pressOverlay, overlayStyle]} />
+
+      <Pressable
+        style={styles.pressable}
+        onPress={onPress}
+        onLongPress={handleLongPress}
+        onPressIn={handlePressIn}
+        onPressOut={handlePressOut}
+        delayLongPress={350}
+      >
+        {/* Artwork */}
+        {showArtwork && (
+          <View style={styles.artworkWrapper}>
+            <TrackArtwork
+              uri={artworkUri}
+              blurhash={null}
+              size={56}
+              borderRadius={8}
+            />
+            {/* Currently-playing overlay on artwork */}
+            {isPlaying && (
+              <View style={styles.artworkPlayingOverlay}>
+                <PlayingIndicator />
+              </View>
+            )}
+          </View>
+        )}
+
+        {/* Track info */}
+        <View style={styles.info}>
+          <View style={styles.titleRow}>
+            <Text
+              style={[
+                styles.title,
+                isPlaying && styles.titlePlaying,
+              ]}
+              numberOfLines={1}
+            >
+              {track.title}
+            </Text>
+            {track.liked && (
+              <Ionicons name="heart" size={13} color="#FA233B" />
+            )}
+          </View>
+          <Text style={styles.meta} numberOfLines={1}>
+            {track.artist}
+            {track.album ? ` · ${track.album}` : ''}
+          </Text>
+        </View>
+
+        {/* Right side */}
+        <View style={styles.right}>
+          <Text style={styles.duration}>
+            {formatDuration(track.duration_ms)}
+          </Text>
+          <TouchableOpacity
+            style={styles.menuButton}
+            onPress={handleLongPress}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 4 }}
+          >
+            <Ionicons name="ellipsis-vertical" size={17} color="#8E8E93" />
+          </TouchableOpacity>
+        </View>
+      </Pressable>
+    </Animated.View>
+  );
+}
+
+// ─── Styles ──────────────────────────────────────────────────────────────────
+
+const styles = StyleSheet.create({
+  container: {
+    height: 72,
+    position: 'relative',
+  },
+  pressOverlay: {
+    backgroundColor: '#1D1D1F',
+    borderRadius: 8,
+    zIndex: 0,
+  },
+  pressable: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    gap: 12,
+    zIndex: 1,
+  },
+  artworkWrapper: {
+    position: 'relative',
+  },
+  artworkPlayingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  info: {
+    flex: 1,
+    justifyContent: 'center',
+    gap: 3,
+  },
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  title: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1D1D1F',
+    flex: 1,
+    letterSpacing: -0.1,
+  },
+  titlePlaying: {
+    color: '#FA233B',
+  },
+  meta: {
+    fontSize: 12,
+    fontWeight: '400',
+    color: '#6E6E73',
+  },
+  right: {
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  duration: {
+    fontSize: 11,
+    fontWeight: '400',
+    color: '#8E8E93',
+    fontVariant: ['tabular-nums'],
+  },
+  menuButton: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+});
