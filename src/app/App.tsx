@@ -12,6 +12,7 @@ import { configureBackgroundFetch } from '@/features/backgroundSync/BackgroundFe
 import { DownloadManager } from '@/features/download/DownloadManager';
 import { navigationTheme } from './navigation/theme';
 import { ErrorBoundary } from './ErrorBoundary';
+import { GlobalSheets } from './GlobalSheets';
 
 // ---------------------------------------------------------------------------
 // QueryClient – singleton created outside the component tree so it is never
@@ -68,6 +69,7 @@ export default function App() {
                     translucent={false}
                   />
                   <RootNavigator />
+                  <GlobalSheets />
                 </NavigationContainer>
               </SafeAreaProvider>
             </TrackPlayerProvider>

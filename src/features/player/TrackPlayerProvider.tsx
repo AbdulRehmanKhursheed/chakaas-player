@@ -1,7 +1,9 @@
 import React, { useEffect, useRef } from 'react';
+import { Alert } from 'react-native';
 import TrackPlayer, {
   AppKilledPlaybackBehavior,
   Capability,
+  Event,
 } from 'react-native-track-player';
 
 interface TrackPlayerProviderProps {
@@ -92,7 +94,22 @@ export function TrackPlayerProvider({ children }: TrackPlayerProviderProps) {
         }
       });
 
+    const playbackErrorSub = TrackPlayer.addEventListener(
+      Event.PlaybackError,
+      (event) => {
+        const message =
+          event.message ||
+          event.code ||
+          'The selected audio file could not be played.';
+        console.error('[TrackPlayerProvider] playback error:', event);
+        Alert.alert('Cannot play this song', message);
+      },
+    );
+
     // No cleanup: TrackPlayer must not be destroyed while the app is running.
+    return () => {
+      playbackErrorSub.remove();
+    };
   }, []);
 
   return <>{children}</>;

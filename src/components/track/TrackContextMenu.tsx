@@ -139,14 +139,14 @@ export function TrackContextMenu({
       icon: 'person',
       label: 'View Artist',
       onPress: withClose(() => onViewArtist?.(track.artist)),
-      hidden: !track.artist,
+      hidden: !track.artist || !onViewArtist,
     },
     {
       id: 'album',
       icon: 'disc',
       label: 'View Album',
       onPress: withClose(() => onViewAlbum?.(track.album)),
-      hidden: !track.album,
+      hidden: !track.album || !onViewAlbum,
     },
     {
       id: 'download',
@@ -154,7 +154,7 @@ export function TrackContextMenu({
       label: 'Download',
       onPress: withClose(() => onDownload?.(track)),
       // Only shown for YouTube-sourced tracks that aren't already on disk
-      hidden: track.source !== 'youtube' || track.file_path !== '',
+      hidden: track.source !== 'youtube' || track.file_path !== '' || !onDownload,
     },
     {
       id: 'delete',
@@ -172,7 +172,7 @@ export function TrackContextMenu({
       isVisible={isVisible}
       onClose={onClose}
       snapPoint={Math.min(visibleOptions.length * 56 + 140, 520)}
-      backgroundColor="#161616"
+      backgroundColor="#F5F5F7"
     >
       {/* Track identity header */}
       <View style={styles.header}>
@@ -230,31 +230,33 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 20,
-    paddingVertical: 14,
+    paddingTop: 8,
+    paddingBottom: 16,
     gap: 12,
   },
   headerInfo: {
     flex: 1,
   },
   headerTitle: {
-    fontSize: 15,
-    fontWeight: '600',
+    fontSize: 16,
+    fontWeight: '700',
     color: '#1D1D1F',
-    letterSpacing: -0.1,
+    letterSpacing: -0.2,
   },
   headerMeta: {
-    fontSize: 12,
-    fontWeight: '400',
+    fontSize: 13,
+    fontWeight: '500',
     color: '#6E6E73',
-    marginTop: 2,
+    marginTop: 3,
   },
   divider: {
-    height: 1,
-    backgroundColor: '#D2D2D7',
-    marginHorizontal: 16,
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: 'rgba(60,60,67,0.16)',
+    marginHorizontal: 20,
   },
   optionsList: {
     flex: 1,
+    paddingTop: 6,
   },
   menuItem: {
     flexDirection: 'row',
@@ -264,25 +266,29 @@ const styles = StyleSheet.create({
     gap: 16,
   },
   menuItemIconWrap: {
-    width: 28,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FFFFFF',
   },
   menuItemLabel: {
-    fontSize: 15,
-    fontWeight: '500',
+    fontSize: 16,
+    fontWeight: '600',
     color: '#1D1D1F',
-    letterSpacing: -0.1,
+    letterSpacing: -0.2,
   },
   accentLabel: {
     color: '#FA233B',
   },
   destructiveLabel: {
-    color: '#E74C3C',
+    color: '#FF3B30',
   },
   separator: {
-    height: 1,
-    backgroundColor: '#D2D2D7',
-    marginLeft: 64,
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: 'rgba(60,60,67,0.14)',
+    marginLeft: 74,
     marginRight: 20,
   },
 });

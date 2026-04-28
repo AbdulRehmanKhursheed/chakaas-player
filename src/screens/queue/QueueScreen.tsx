@@ -27,7 +27,7 @@ export function QueueScreen() {
   // section and only show the upcoming tracks in the draggable list.
   // If there is no active track, activeIndex is undefined and the whole
   // queue is shown as upcoming.
-  const upcomingQueue = queue ? queue.slice(1) : [];
+  const upcomingQueue = activeTrack ? queue.slice(1) : queue;
 
   const handleClose = useCallback(() => {
     navigation.goBack();
@@ -95,7 +95,7 @@ export function QueueScreen() {
           <Text style={styles.emptySubtitle}>Add tracks to see them here</Text>
         </View>
       ) : (
-        <DraggableQueueList queue={upcomingQueue} indexOffset={1} />
+        <DraggableQueueList queue={upcomingQueue} indexOffset={activeTrack ? 1 : 0} />
       )}
     </SafeAreaView>
   );

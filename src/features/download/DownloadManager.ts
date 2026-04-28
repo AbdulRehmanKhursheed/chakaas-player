@@ -47,8 +47,10 @@
  * the UI can react without coupling to this module directly.
  */
 
+import { Platform } from 'react-native';
 import RNBlobUtil from 'react-native-blob-util';
 import notifee, { EventType } from '@notifee/react-native';
+import { Q } from '@nozbe/watermelondb';
 import { database, tracksCollection } from '@/db';
 import { useDownloadStore } from '@/stores/downloadStore';
 import type { DownloadStatus } from '@/stores/downloadStore';
@@ -129,6 +131,89 @@ interface ResolvedParams {
   thumbnail: string;
   durationMs: number;
   quality: '128k' | '192k' | '256k' | '320k';
+}
+
+const DOWNLOAD_HEADER_SETS: Array<Record<string, string>> = [
+  {
+    'User-Agent':
+      'Mozilla/5.0 (Linux; Android 13; SM-S908U) AppleWebKit/537.36 ' +
+      '(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
+    Accept: '*/*',
+    'Accept-Language': 'en-US,en;q=0.9',
+  },
+  {
+    'User-Agent':
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+      '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    Accept: '*/*',
+    'Accept-Language': 'en-US,en;q=0.9',
+  },
+];
+
+function getAudioMimeType(container: 'm4a' | 'webm'): string {
+  return container === 'm4a' ? 'audio/mp4' : 'audio/webm';
+}
+
+async function publishToMusicLibrary(
+  sourcePath: string,
+  filename: string,
+  container: 'm4a' | 'webm',
+): Promise<string | null> {
+  if (Platform.OS !== 'android') return null;
+
+  try {
+    const displayName = filename.replace(/\.(m4a|webm)$/i, '');
+    const uri = await RNBlobUtil.MediaCollection.copyToMediaStore(
+      {
+        name: displayName,
+        parentFolder: 'Chakaas',
+        mimeType: getAudioMimeType(container),
+      } as any,
+      'Audio',
+      sourcePath,
+    );
+    logger.info(`[DownloadManager] Published to Android Music library: ${uri}`);
+    return uri;
+  } catch (err) {
+    logger.warn('[DownloadManager] Could not publish to Android Music library:', err);
+    return null;
+  }
+}
+
+function toUserFacingDownloadError(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  const message = raw.toLowerCase();
+
+  if (message.includes('cancelled')) return 'Cancelled by user';
+  if (message.includes('library is full')) return raw;
+  if (
+    message.includes('405') ||
+    message.includes('403') ||
+    message.includes('cipher') ||
+    message.includes('decipher') ||
+    message.includes('stream url') ||
+    message.includes('youtube')
+  ) {
+    return 'Could not get a playable audio stream from YouTube. Try another result or retry later.';
+  }
+  if (
+    message.includes('operation not permitted') ||
+    message.includes('permission') ||
+    message.includes('eperm') ||
+    message.includes('storage')
+  ) {
+    return 'Could not save the song on this device. Please check storage space and try again.';
+  }
+  if (
+    message.includes('network') ||
+    message.includes('timed out') ||
+    message.includes('failed to connect') ||
+    message.includes('unable to resolve host')
+  ) {
+    return 'Network connection dropped while downloading. Please try again.';
+  }
+
+  return raw || 'Download failed. Please try again.';
 }
 
 // ── ID generation ──────────────────────────────────────────────────────────
@@ -220,6 +305,34 @@ class DownloadManagerClass {
       return { success: true, id: existing.id };
     }
 
+    const existingLibraryTracks = await tracksCollection
+      .query(Q.where('youtube_id', params.youtubeId))
+      .fetch();
+    if (existingLibraryTracks.length > 0) {
+      const brokenTracks = existingLibraryTracks.filter(
+        (track) => track.durationMs <= 0 || !track.filePath,
+      );
+
+      if (brokenTracks.length === 0) {
+        const reason = 'This song is already in your library.';
+        logger.info(`[DownloadManager] Enqueue rejected — ${reason}`);
+        return { success: false, reason };
+      }
+
+      logger.warn(
+        `[DownloadManager] Removing ${brokenTracks.length} broken existing record(s) before re-download.`,
+      );
+      await database.write(async () => {
+        for (const track of brokenTracks) {
+          await deleteFile(track.filePath).catch(() => {});
+          if (track.artworkPath) {
+            await deleteFile(track.artworkPath).catch(() => {});
+          }
+          await track.destroyPermanently();
+        }
+      });
+    }
+
     // ── Library capacity ───────────────────────────────────────────────────
     const full = await isLibraryFull();
     if (full) {
@@ -243,7 +356,9 @@ class DownloadManagerClass {
     logger.info(`[DownloadManager] Enqueued: "${params.title}" id=${id}`);
 
     // Kick off the processor — it's a no-op if already running.
-    void this._processQueue();
+    void this._processQueue().catch((err) => {
+      logger.error('[DownloadManager] Queue processor crashed:', err);
+    });
 
     return { success: true, id };
   }
@@ -363,9 +478,6 @@ class DownloadManagerClass {
         (i) => i.status === 'queued' || i.status === 'downloading',
       ).length;
 
-      // Start (or refresh) the foreground service notification.
-      await startDownloadForegroundService(next.title);
-
       const resolved: ResolvedParams = {
         youtubeId: next.youtubeId,
         title: next.title,
@@ -377,6 +489,8 @@ class DownloadManagerClass {
       };
 
       try {
+        // Start (or refresh) the foreground service notification.
+        await startDownloadForegroundService(next.title);
         await this._runPipeline(next.id, resolved, queueLength);
         _completedThisSession++;
         logger.info(
@@ -385,22 +499,26 @@ class DownloadManagerClass {
         );
       } catch (err) {
         // Distinguish user cancellations from real failures for the error UI.
-        const message = err instanceof Error ? err.message : String(err);
+        const rawMessage = err instanceof Error ? err.message : String(err);
+        const message = toUserFacingDownloadError(err);
         const isCancelled =
           message === 'Cancelled' || message === 'Cancelled by user';
 
         logger.error(
-          `[DownloadManager] Failed "${next.title}": ${message}`,
+          `[DownloadManager] Failed "${next.title}": ${rawMessage}`,
         );
+
+        // Always update app state before attempting a system notification.
+        getStore().setError(next.id, message);
 
         // Only show an error notification for genuine failures, not user-initiated cancels.
         if (!isCancelled) {
-          await showDownloadError(next.title, message);
+          try {
+            await showDownloadError(next.title, message);
+          } catch (notificationErr) {
+            logger.warn('[DownloadManager] Failed to show error notification:', notificationErr);
+          }
         }
-
-        // setError may have already been called in cancelCurrent/cancelAll,
-        // but calling it again is safe — it's idempotent.
-        getStore().setError(next.id, message);
       } finally {
         _isRunning = false;
         _cancelCurrent = false;
@@ -409,7 +527,11 @@ class DownloadManagerClass {
 
     // All done (queue empty or cancelAll).
     _isRunning = false;
-    await stopDownloadForegroundService(_completedThisSession);
+    try {
+      await stopDownloadForegroundService(_completedThisSession);
+    } catch (err) {
+      logger.warn('[DownloadManager] Failed to stop foreground service:', err);
+    }
     _completedThisSession = 0;
   }
 
@@ -450,7 +572,11 @@ class DownloadManagerClass {
       status: DownloadStatus,
     ): Promise<void> => {
       getStore().updateProgress(id, pct, status);
-      await updateDownloadProgress(params.title, params.artist, pct, queueLength);
+      try {
+        await updateDownloadProgress(params.title, params.artist, pct, queueLength);
+      } catch (err) {
+        logger.warn('[DownloadManager] Failed to update progress notification:', err);
+      }
       if (_cancelCurrent) throw new Error('Cancelled by user');
     };
 
@@ -475,33 +601,87 @@ class DownloadManagerClass {
     const tempDir = await getTempDir();
     const tempRawPath = `${tempDir}${id}.${stream.container}`;
 
-    await RNBlobUtil.config({ path: tempRawPath, fileCache: true })
-      .fetch('GET', stream.url, {
-        // YouTube's CDN rejects unfamiliar User-Agents with 403/405. Use a
-        // recent stable Chrome UA matching the Innertube client we negotiated.
-        'User-Agent':
-          'Mozilla/5.0 (Linux; Android 13; SM-S908U) AppleWebKit/537.36 ' +
-          '(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
-        Accept: '*/*',
-        'Accept-Language': 'en-US,en;q=0.9',
-        Range: 'bytes=0-',
-      })
-      .progress(
-        { count: 20, interval: 200 },
-        async (received: number, total: number) => {
-          if (total > 0) {
-            // Map download bytes to 5–65 % of overall progress.
-            const pct = 5 + Math.round((received / total) * 60);
-            getStore().updateProgress(id, pct, 'downloading');
-            await updateDownloadProgress(
-              params.title,
-              params.artist,
-              pct,
-              queueLength,
-            );
+    let downloaded = false;
+    let lastDownloadError: unknown = null;
+    // The stream URL may go stale (HTTP 403/410) between resolve and download.
+    // We allow up to 2 stream-URL refreshes during the header-set loop.
+    let activeStreamUrl = stream.url;
+    let streamRefreshes = 0;
+
+    for (const headers of DOWNLOAD_HEADER_SETS) {
+      try {
+        // Delete any leftover from a previous failed attempt before retrying.
+        await deleteFile(tempRawPath).catch(() => {});
+        const response = await RNBlobUtil.config({ path: tempRawPath })
+          .fetch('GET', activeStreamUrl, headers)
+          .progress(
+            { count: 20, interval: 200 },
+            async (received: number, total: number) => {
+              if (total > 0) {
+                // Map download bytes to 5–65 % of overall progress.
+                const pct = 5 + Math.round((received / total) * 60);
+                getStore().updateProgress(id, pct, 'downloading');
+                await updateDownloadProgress(
+                  params.title,
+                  params.artist,
+                  pct,
+                  queueLength,
+                ).catch((err) => {
+                  logger.warn('[DownloadManager] Failed to update progress notification:', err);
+                });
+              }
+            },
+          );
+        const status = response.info().status;
+        if (status < 200 || status >= 300) {
+          throw new Error(`Audio download returned HTTP ${status}`);
+        }
+
+        const stat = await RNBlobUtil.fs.stat(tempRawPath);
+        const size = typeof stat.size === 'string'
+          ? Number.parseInt(stat.size, 10)
+          : stat.size;
+        const minExpectedBytes =
+          stream.durationMs > 0 && stream.bitrate > 0
+            ? Math.min(256 * 1024, Math.round((stream.durationMs / 1000) * (stream.bitrate / 8) * 0.05))
+            : 64 * 1024;
+        if (!Number.isFinite(size) || size < minExpectedBytes) {
+          throw new Error(`Downloaded audio file is too small (${size || 0} bytes)`);
+        }
+        logger.info(
+          `[DownloadManager] Audio file downloaded — status:${status} size:${size} path:${tempRawPath}`,
+        );
+        downloaded = true;
+        break;
+      } catch (err) {
+        lastDownloadError = err;
+        await deleteFile(tempRawPath).catch(() => {});
+        const errMsg = err instanceof Error ? err.message : String(err);
+        logger.warn(`[DownloadManager] Audio download attempt failed for "${params.title}": ${errMsg}`);
+
+        // 403 / 410 / 401 typically mean the stream URL has expired or been
+        // re-keyed by YouTube. Re-resolve to a fresh URL and retry once.
+        const isStaleUrl = /HTTP (403|410|401)/.test(errMsg);
+        if (isStaleUrl && streamRefreshes < 2) {
+          streamRefreshes += 1;
+          try {
+            logger.info('[DownloadManager] Refreshing stream URL after auth/forbidden response…');
+            const refreshed = await getBestAudioStream(params.youtubeId);
+            if (refreshed.url && refreshed.url.length > 20) {
+              activeStreamUrl = refreshed.url;
+            }
+          } catch (refreshErr) {
+            logger.warn('[DownloadManager] Stream URL refresh failed:', refreshErr);
           }
-        },
-      );
+        }
+      }
+    }
+
+    if (!downloaded) {
+      throw lastDownloadError instanceof Error
+        ? lastDownloadError
+        : new Error(`Could not download audio stream for "${params.title}"`);
+    }
 
     if (_cancelCurrent) {
       await deleteFile(tempRawPath).catch(() => {});
@@ -554,16 +734,42 @@ class DownloadManagerClass {
     // ── 5. Copy to final music directory ───────────────────────────────────
     await reportProgress(92, 'tagging');
 
-    const finalPath = await getTrackPath(params.artist, params.title, finalExt);
-    await RNBlobUtil.fs.cp(tempStagePath, finalPath);
+    const finalPath = await getTrackPath(
+      params.artist,
+      params.title,
+      finalExt,
+      params.youtubeId,
+    );
+    const finalFilename = finalPath.split('/').pop() ?? `${id}.${finalExt}`;
+    try {
+      await RNBlobUtil.fs.cp(tempStagePath, finalPath);
+    } catch (err) {
+      await deleteFile(finalPath).catch(() => {});
+      throw err;
+    }
+
+    const mediaLibraryUri = await publishToMusicLibrary(
+      finalPath,
+      finalFilename,
+      stream.container,
+    );
+    if (mediaLibraryUri) {
+      logger.info(`[DownloadManager] MediaStore copy created for external music apps: ${mediaLibraryUri}`);
+    }
 
     // Clean up the staged file now that it has been copied.
     await deleteFile(tempStagePath);
 
     // ── 6. Track duration ──────────────────────────────────────────────────
-    // Sourced from the YouTube metadata (passed via EnqueueParams). RNTP
-    // will refine it on first playback if it differs from the actual file.
-    const durationMs = params.durationMs > 0 ? params.durationMs : 0;
+    // Prefer the duration from yt.getInfo() (always present, accurate to the
+    // millisecond), fall back to the EnqueueParams hint. Stored in the DB so
+    // the UI shows correct duration immediately, before RNTP loads the track.
+    const durationMs =
+      stream.durationMs > 0
+        ? stream.durationMs
+        : params.durationMs > 0
+        ? params.durationMs
+        : 0;
 
     // ── 7. Insert into WatermelonDB ────────────────────────────────────────
     await reportProgress(95, 'tagging');
@@ -576,6 +782,9 @@ class DownloadManagerClass {
         record.album = params.album;
         record.genre = '';
         record.durationMs = durationMs;
+        // Keep RNTP playback on the app-owned file path. A MediaStore copy is
+        // created for external apps, but content:// playback can report
+        // duration as 0 or fail on some Android/RNTP combinations.
         record.filePath = finalPath;
         record.artworkPath = artworkPath;
         record.youtubeId = params.youtubeId;

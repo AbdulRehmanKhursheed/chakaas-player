@@ -54,6 +54,9 @@ const COLORS = {
 } as const;
 
 const TAB_HEIGHT = 58;
+const TAB_BAR_EXTRA_HEIGHT = 10;
+const TAB_BAR_BOTTOM_MARGIN = 12;
+const MINI_PLAYER_GAP = 16;
 
 // ---------------------------------------------------------------------------
 // Download badge count
@@ -123,8 +126,9 @@ export function BottomTabNavigator() {
   const insets = useSafeAreaInsets();
   const activeDownloadCount = useActiveDownloadCount();
 
-  // Total height of the physical tab bar rendered on-screen.
-  const tabBarHeight = TAB_HEIGHT + insets.bottom;
+  const tabBarBottom = Math.max(TAB_BAR_BOTTOM_MARGIN, insets.bottom ? 8 : TAB_BAR_BOTTOM_MARGIN);
+  const tabBarHeight = TAB_HEIGHT + insets.bottom + TAB_BAR_EXTRA_HEIGHT;
+  const tabChromeHeight = tabBarBottom + tabBarHeight;
 
   return (
     <View style={{ flex: 1 }}>
@@ -143,13 +147,13 @@ export function BottomTabNavigator() {
             position: 'absolute',
             left: 16,
             right: 16,
-            bottom: Math.max(12, insets.bottom ? 8 : 12),
+            bottom: tabBarBottom,
             backgroundColor: COLORS.tabBar,
             borderTopColor: COLORS.border,
             borderTopWidth: 0,
             borderWidth: StyleSheet.hairlineWidth,
             borderColor: COLORS.border,
-            height: tabBarHeight + 10,
+            height: tabBarHeight,
             paddingBottom: insets.bottom + 5,
             paddingTop: 6,
             borderRadius: 32,
@@ -193,7 +197,9 @@ export function BottomTabNavigator() {
         position: 'absolute',
         left: 0,
         right: 0,
-        bottom: tabBarHeight + 16,
+        bottom: tabChromeHeight + MINI_PLAYER_GAP,
+        zIndex: 20,
+        elevation: 20,
       }}
     >
       <MiniPlayer />

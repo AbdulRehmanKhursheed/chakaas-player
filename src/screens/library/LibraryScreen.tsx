@@ -29,6 +29,7 @@ import { Q } from '@nozbe/watermelondb';
 import { Ionicons } from '@expo/vector-icons';
 import { useAllTracks } from '@/hooks/useTrackDB';
 import { usePlayerQueue } from '@/features/player/useQueue';
+import { useUIStore } from '@/stores/uiStore';
 import { database, playlistsCollection } from '@/db';
 import type { Playlist } from '@/db/models/Playlist';
 import type { Track } from '@/db/models/Track';
@@ -660,24 +661,14 @@ export function LibraryScreen() {
     [playTrack, filteredTracks, navigation],
   );
 
+  const openSheet = useUIStore((s) => s.openSheet);
   const handleLongPress = useCallback(
     (track: Track) => {
-      const options = ['Play Next', 'Add to Playlist', 'Cancel'];
-      if (Platform.OS === 'ios') {
-        ActionSheetIOS.showActionSheetWithOptions(
-          { options, cancelButtonIndex: 2, title: track.title },
-          (index) => {
-            if (index === 0) void playTrack(modelToTrack(track));
-          },
-        );
-      } else {
-        Alert.alert(track.title, undefined, [
-          { text: 'Play Next', onPress: () => void playTrack(modelToTrack(track)) },
-          { text: 'Cancel', style: 'cancel' },
-        ]);
-      }
+      // Open the global track context menu sheet (Play Next / Add to Queue /
+      // Like / Delete / etc.). Wired centrally in <GlobalSheets />.
+      openSheet('track-context', track.id);
     },
-    [playTrack],
+    [openSheet],
   );
 
   const handleArtistPress = useCallback(

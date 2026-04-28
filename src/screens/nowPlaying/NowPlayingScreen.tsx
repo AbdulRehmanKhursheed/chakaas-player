@@ -88,9 +88,16 @@ interface ConnectedProgressSliderProps {
 
 function ConnectedProgressSlider({ onSeek, accentColor }: ConnectedProgressSliderProps) {
   const progress = useProgress(500);
+  const activeTrack = useActiveTrack();
+  const metadataDuration =
+    typeof activeTrack?.duration === 'number' && activeTrack.duration > 0
+      ? activeTrack.duration
+      : 0;
+  const duration = progress.duration > 0 ? progress.duration : metadataDuration;
+
   return (
     <ProgressSlider
-      duration={progress.duration}
+      duration={duration}
       position={progress.position}
       onSeek={onSeek}
       accentColor={accentColor}
@@ -114,13 +121,22 @@ function ConnectedLyricsPanel({
   accentColor,
 }: ConnectedLyricsPanelProps) {
   const progress = useProgress(500);
+  const activeTrack = useActiveTrack();
+  const metadataDurationMs =
+    typeof activeTrack?.duration === 'number' && activeTrack.duration > 0
+      ? activeTrack.duration * 1000
+      : 0;
+  const durationMs = progress.duration > 0
+    ? progress.duration * 1000
+    : metadataDurationMs;
+
   return (
     <LyricsPanel
       trackId={trackId}
       artist={artist}
       title={title}
       album={album}
-      duration_ms={(progress.duration || 0) * 1000}
+      duration_ms={durationMs}
       currentPosition={progress.position}
       accentColor={accentColor}
     />

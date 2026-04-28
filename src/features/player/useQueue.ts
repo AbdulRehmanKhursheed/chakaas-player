@@ -1,8 +1,14 @@
 import TrackPlayer, { Event } from 'react-native-track-player';
 import { useCallback, useEffect, useState } from 'react';
+import { Alert } from 'react-native';
 import type { Track as RNTPTrack } from 'react-native-track-player';
 import { Track } from '@/types/track';
 import { trackMapper } from './trackMapper';
+
+function showPlaybackError(err: unknown): void {
+  const message = err instanceof Error ? err.message : 'Playback failed. Please try again.';
+  Alert.alert('Cannot play this song', message);
+}
 
 /**
  * Custom replacement for RNTP's removed `useQueue` hook (no longer exported in
@@ -60,7 +66,11 @@ export function usePlayerQueue() {
    * interrupting playback.
    */
   const addTrack = useCallback(async (track: Track) => {
-    await TrackPlayer.add(trackMapper(track));
+    try {
+      await TrackPlayer.add(trackMapper(track));
+    } catch (err) {
+      showPlaybackError(err);
+    }
   }, []);
 
   /**
@@ -68,9 +78,13 @@ export function usePlayerQueue() {
    * it plays next, without interrupting the track that is currently playing.
    */
   const playNext = useCallback(async (track: Track) => {
-    const activeIndex = await TrackPlayer.getActiveTrackIndex();
-    const insertAt = activeIndex != null ? activeIndex + 1 : undefined;
-    await TrackPlayer.add(trackMapper(track), insertAt);
+    try {
+      const activeIndex = await TrackPlayer.getActiveTrackIndex();
+      const insertAt = activeIndex != null ? activeIndex + 1 : undefined;
+      await TrackPlayer.add(trackMapper(track), insertAt);
+    } catch (err) {
+      showPlaybackError(err);
+    }
   }, []);
 
   // ── Context-aware play ─────────────────────────────────────────────────
@@ -87,23 +101,27 @@ export function usePlayerQueue() {
    */
   const playTrack = useCallback(
     async (track: Track, context?: Track[]) => {
-      await TrackPlayer.reset();
+      try {
+        await TrackPlayer.reset();
 
-      if (context && context.length > 0) {
-        // Load the full context array into the queue.
-        await TrackPlayer.add(context.map(trackMapper));
+        if (context && context.length > 0) {
+          // Load the full context array into the queue.
+          await TrackPlayer.add(context.map(trackMapper));
 
-        // Jump to the requested track if it isn't the first item.
-        const idx = context.findIndex((t) => t.id === track.id);
-        if (idx > 0) {
-          await TrackPlayer.skip(idx);
+          // Jump to the requested track if it isn't the first item.
+          const idx = context.findIndex((t) => t.id === track.id);
+          if (idx > 0) {
+            await TrackPlayer.skip(idx);
+          }
+        } else {
+          // Single-track play: just add the one track.
+          await TrackPlayer.add(trackMapper(track));
         }
-      } else {
-        // Single-track play: just add the one track.
-        await TrackPlayer.add(trackMapper(track));
-      }
 
-      await TrackPlayer.play();
+        await TrackPlayer.play();
+      } catch (err) {
+        showPlaybackError(err);
+      }
     },
     [],
   );
@@ -116,7 +134,11 @@ export function usePlayerQueue() {
    * automatically advancing to the next item.
    */
   const removeFromQueue = useCallback(async (index: number) => {
-    await TrackPlayer.remove(index);
+    try {
+      await TrackPlayer.remove(index);
+    } catch (err) {
+      showPlaybackError(err);
+    }
   }, []);
 
   /**
@@ -125,7 +147,11 @@ export function usePlayerQueue() {
    */
   const moveInQueue = useCallback(
     async (fromIndex: number, toIndex: number) => {
-      await TrackPlayer.move(fromIndex, toIndex);
+      try {
+        await TrackPlayer.move(fromIndex, toIndex);
+      } catch (err) {
+        showPlaybackError(err);
+      }
     },
     [],
   );
@@ -134,7 +160,11 @@ export function usePlayerQueue() {
    * Clears the entire queue and stops playback.
    */
   const clearQueue = useCallback(async () => {
-    await TrackPlayer.reset();
+    try {
+      await TrackPlayer.reset();
+    } catch (err) {
+      showPlaybackError(err);
+    }
   }, []);
 
   /**

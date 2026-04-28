@@ -16,6 +16,8 @@ import {
   SectionList,
   KeyboardAvoidingView,
   Dimensions,
+  Modal,
+  Alert,
 } from 'react-native';
 import Animated, {
   useAnimatedStyle,
@@ -27,6 +29,7 @@ import { useQuery } from '@tanstack/react-query';
 import Fuse from 'fuse.js';
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAllTracks } from '@/hooks/useTrackDB';
 import { useDebounce } from '@/hooks/useDebounce';
 import { usePlayerQueue } from '@/features/player/useQueue';
@@ -120,45 +123,53 @@ function QualitySheet({ visible, onSelect, onDismiss }: QualitySheetProps) {
     transform: [{ translateY: translateY.value }],
   }));
 
-  if (!visible && translateY.value >= 299) return null;
-
-  const QUALITIES: Quality[] = ['128k', '192k', '256k', '320k'];
+  const QUALITIES: Quality[] = ['320k'];
   const labels: Record<Quality, string> = {
-    '128k': '128 kbps — Small file',
-    '192k': '192 kbps — Balanced',
-    '256k': '256 kbps — High quality',
-    '320k': '320 kbps — Best quality',
+    '128k': 'Source quality — Small file',
+    '192k': 'Source quality — Balanced',
+    '256k': 'Source quality — High quality',
+    '320k': 'Best available source audio',
   };
 
   return (
-    <>
-      <Animated.View style={[qualityStyles.overlay, overlayStyle]}>
-        <TouchableOpacity style={StyleSheet.absoluteFill} onPress={onDismiss} />
-      </Animated.View>
-      <Animated.View style={[qualityStyles.sheet, sheetStyle]}>
-        <View style={qualityStyles.handle} />
-        <Text style={qualityStyles.title}>Download Quality</Text>
-        {QUALITIES.map((q) => (
-          <TouchableOpacity
-            key={q}
-            style={qualityStyles.option}
-            onPress={() => onSelect(q)}
-            activeOpacity={0.75}
-          >
-            <Text style={qualityStyles.optionBitrate}>{q}</Text>
-            <Text style={qualityStyles.optionLabel}>{labels[q]}</Text>
-          </TouchableOpacity>
-        ))}
-      </Animated.View>
-    </>
+    <Modal
+      visible={visible}
+      transparent
+      animationType="none"
+      statusBarTranslucent
+      onRequestClose={onDismiss}
+    >
+      <View style={qualityStyles.modalRoot}>
+        <Animated.View style={[qualityStyles.overlay, overlayStyle]}>
+          <TouchableOpacity style={StyleSheet.absoluteFill} onPress={onDismiss} />
+        </Animated.View>
+        <Animated.View style={[qualityStyles.sheet, sheetStyle]}>
+          <View style={qualityStyles.handle} />
+          <Text style={qualityStyles.title}>Download Song</Text>
+          {QUALITIES.map((q) => (
+            <TouchableOpacity
+              key={q}
+              style={qualityStyles.option}
+              onPress={() => onSelect(q)}
+              activeOpacity={0.75}
+            >
+              <Text style={qualityStyles.optionBitrate}>Best</Text>
+              <Text style={qualityStyles.optionLabel}>{labels[q]}</Text>
+            </TouchableOpacity>
+          ))}
+        </Animated.View>
+      </View>
+    </Modal>
   );
 }
 
 const qualityStyles = StyleSheet.create({
+  modalRoot: {
+    flex: 1,
+  },
   overlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0,0,0,0.65)',
-    zIndex: 50,
   },
   sheet: {
     position: 'absolute',
@@ -168,9 +179,8 @@ const qualityStyles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
     borderTopLeftRadius: 22,
     borderTopRightRadius: 22,
-    paddingBottom: Platform.OS === 'ios' ? 36 : 20,
+    paddingBottom: Platform.OS === 'ios' ? 36 : 28,
     paddingHorizontal: 20,
-    zIndex: 51,
   },
   handle: {
     width: 36,
@@ -584,6 +594,7 @@ type SearchSection = LocalSection | YouTubeSection;
 
 export function SearchScreen() {
   const navigation = useNavigation<RootStackNavigationProp>();
+  const insets = useSafeAreaInsets();
   const { playTrack } = usePlayerQueue();
   const downloadQueue = useDownloadStore((s) => s.queue);
 
@@ -765,7 +776,7 @@ export function SearchScreen() {
       if (!pendingDownload) return;
       setQualitySheetVisible(false);
       const { title: trackTitle, author } = pendingDownload;
-      await DownloadManager.enqueue({
+      const result = await DownloadManager.enqueue({
         youtubeId: pendingDownload.id,
         title: trackTitle,
         artist: author,
@@ -773,6 +784,12 @@ export function SearchScreen() {
         thumbnail: pendingDownload.thumbnail,
         durationMs: pendingDownload.duration_ms,
       });
+      if (!result.success) {
+        Alert.alert(
+          'Cannot start download',
+          result.reason ?? 'Please try again.',
+        );
+      }
       setPendingDownload(null);
     },
     [pendingDownload],
@@ -860,7 +877,7 @@ export function SearchScreen() {
       <StatusBar barStyle="dark-content" backgroundColor="#F5F5F7" />
 
       {/* ── Search header ── */}
-      <View style={styles.searchHeader}>
+      <View style={[styles.searchHeader, { paddingTop: insets.top + 12 }]}>
         <View style={styles.searchBar}>
           <Ionicons name="search" size={18} color="#8E8E93" />
           <TextInput
@@ -915,7 +932,7 @@ export function SearchScreen() {
                 />
               </View>
             }
-            contentContainerStyle={styles.listContent}
+            contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 120 }]}
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
           />
@@ -927,7 +944,7 @@ export function SearchScreen() {
             renderItem={renderItem}
             stickySectionHeadersEnabled={false}
             showsVerticalScrollIndicator={false}
-            contentContainerStyle={styles.listContent}
+            contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 120 }]}
             keyboardShouldPersistTaps="handled"
             ListFooterComponent={
               ytLoading ? (
@@ -997,7 +1014,6 @@ const styles = StyleSheet.create({
   searchHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingTop: Platform.OS === 'ios' ? 56 : 36,
     paddingHorizontal: 20,
     paddingBottom: 16,
     gap: 10,

@@ -5,12 +5,14 @@ import RNBlobUtil from 'react-native-blob-util';
 // ---------------------------------------------------------------------------
 
 /**
- * Returns the canonical music directory path and ensures it exists.
- * On Android this targets the shared Music folder so tracks persist after
- * uninstall and are visible to other apps / MTP.
+ * Returns the music directory path and ensures it exists.
+ *
+ * Store the app's playable copy in the private document directory. A second
+ * copy is published to Android MediaStore for other music apps; keeping RNTP on
+ * the private file path avoids content-uri and scoped-storage playback issues.
  */
 export async function getMusicDir(): Promise<string> {
-  const dir = '/storage/emulated/0/Music/Chakaas/';
+  const dir = `${RNBlobUtil.fs.dirs.DocumentDir}/Chakaas/`;
   await ensureDir(dir);
   return dir;
 }
@@ -63,11 +65,14 @@ export async function getTrackPath(
   artist: string,
   title: string,
   extension: 'm4a' | 'webm' = 'm4a',
+  uniqueSuffix?: string,
 ): Promise<string> {
   const musicDir = await getMusicDir();
   const safeArtist = sanitise(artist) || 'Unknown Artist';
   const safeTitle = sanitise(title) || 'Unknown Title';
-  return `${musicDir}${safeArtist} - ${safeTitle}.${extension}`;
+  const safeSuffix = uniqueSuffix ? sanitise(uniqueSuffix).slice(0, 16) : '';
+  const suffix = safeSuffix ? ` [${safeSuffix}]` : '';
+  return `${musicDir}${safeArtist} - ${safeTitle}${suffix}.${extension}`;
 }
 
 // ---------------------------------------------------------------------------

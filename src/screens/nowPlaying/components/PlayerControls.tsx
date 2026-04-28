@@ -141,12 +141,14 @@ function IconButton({
   badge,
   onPress,
   accentColor,
+  disabled = false,
 }: {
   icon: React.ComponentProps<typeof Ionicons>['name'];
   active: boolean;
   badge?: string;
   onPress: () => void;
   accentColor: string;
+  disabled?: boolean;
 }) {
   const scale = useSharedValue(1);
   const activeOpacity = useSharedValue(active ? 1 : 0);
@@ -157,12 +159,13 @@ function IconButton({
   }, [active]);
 
   const handlePress = useCallback(() => {
+    if (disabled) return;
     scale.value = withSpring(0.80, SPRING_PRESS, () => {
       scale.value = withSpring(1, SPRING_PRESS);
     });
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     onPress();
-  }, [onPress]);
+  }, [disabled, onPress]);
 
   const animStyle = useAnimatedStyle(() => ({
     transform: [{ scale: scale.value }],
@@ -173,12 +176,17 @@ function IconButton({
   }));
 
   return (
-    <TouchableOpacity onPress={handlePress} activeOpacity={1} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
+    <TouchableOpacity
+      onPress={handlePress}
+      activeOpacity={1}
+      disabled={disabled}
+      hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+    >
       <Animated.View style={[styles.iconButton, animStyle]}>
         <Ionicons
           name={icon}
           size={22}
-          color={active ? accentColor : '#8E8E93'}
+          color={disabled ? '#C7C7CC' : active ? accentColor : '#8E8E93'}
         />
         <Animated.View
           style={[styles.activeDot, { backgroundColor: accentColor }, dotStyle]}
@@ -214,9 +222,10 @@ function PlayerControlsImpl({
       {/* Shuffle */}
       <IconButton
         icon="shuffle"
-        active={shuffleEnabled}
+        active={shuffleEnabled && false}
         onPress={onShuffle}
         accentColor={accentColor}
+        disabled
       />
 
       {/* Previous */}

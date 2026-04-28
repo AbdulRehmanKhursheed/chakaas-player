@@ -341,7 +341,7 @@ export function ArtistDetailScreen() {
   const { artist } = route.params;
 
   const allTracks = useAllTracks();
-  const { playTrack } = usePlayerQueue();
+  const { playTrack, playNext } = usePlayerQueue();
 
   // Filter tracks by artist and sort by album then title
   const artistTracks = useMemo(() => {
@@ -421,7 +421,7 @@ export function ArtistDetailScreen() {
         ActionSheetIOS.showActionSheetWithOptions(
           { options, cancelButtonIndex: 2, title: track.title },
           (index) => {
-            if (index === 0) void playTrack(modelToTrack(track));
+            if (index === 0) void playNext(modelToTrack(track));
             if (index === 1 && track.album) {
               navigation.navigate('AlbumDetail', { album: track.album });
             }
@@ -429,7 +429,7 @@ export function ArtistDetailScreen() {
         );
       } else {
         Alert.alert(track.title, undefined, [
-          { text: 'Play Next', onPress: () => void playTrack(modelToTrack(track)) },
+          { text: 'Play Next', onPress: () => void playNext(modelToTrack(track)) },
           {
             text: 'Go to Album',
             onPress: () =>
@@ -439,7 +439,7 @@ export function ArtistDetailScreen() {
         ]);
       }
     },
-    [playTrack, navigation],
+    [playNext, navigation],
   );
 
   // ── Render item ──

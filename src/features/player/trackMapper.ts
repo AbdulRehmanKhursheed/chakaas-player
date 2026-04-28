@@ -2,16 +2,21 @@ import type { Track as RNTPTrack } from 'react-native-track-player';
 import { Track as TrackType } from '@/types/track';
 
 function toAudioUrl(pathOrUri: string): string {
-  if (
-    pathOrUri.startsWith('file://') ||
-    pathOrUri.startsWith('content://') ||
-    pathOrUri.startsWith('http://') ||
-    pathOrUri.startsWith('https://')
-  ) {
-    return pathOrUri;
+  const value = pathOrUri.trim();
+  if (!value) {
+    throw new Error('Track file is missing. Please re-import or download the song again.');
   }
 
-  return `file://${pathOrUri}`;
+  if (
+    value.startsWith('file://') ||
+    value.startsWith('content://') ||
+    value.startsWith('http://') ||
+    value.startsWith('https://')
+  ) {
+    return value;
+  }
+
+  return `file://${value}`;
 }
 
 function toArtworkUrl(pathOrUri: string | null): string | undefined {

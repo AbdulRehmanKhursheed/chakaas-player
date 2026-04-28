@@ -123,14 +123,7 @@ export function BottomSheet({
 
   const backdropAnimStyle = useAnimatedStyle(() => ({
     opacity: backdropOpacity.value,
-    // Disable pointer events when invisible
-    pointerEvents: backdropOpacity.value === 0 ? 'none' : 'auto',
   }));
-
-  if (!isVisible && translateY.value >= sheetHeight) {
-    // Fully offscreen and not visible — skip rendering
-    // We still render to allow the close animation to play
-  }
 
   return (
     <View style={styles.portal} pointerEvents={isVisible ? 'auto' : 'none'}>

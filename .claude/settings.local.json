@@ -45,7 +45,11 @@
       "Bash(open *)",
       "Bash(python3 -c \"import json,sys; p=json.load\\(sys.stdin\\); print\\('\\\\n'.join\\([f'{k}: {v}' for k,v in p.get\\('dependencies',{}\\).items\\(\\)]\\)\\)\")",
       "Bash(awk '/Polyfills installed/,0' /private/tmp/claude-502/-Users-malikabdul-Chakaas-Player/d9906b03-352c-4017-aa82-ce98a315f25b/tasks/b64vadzis.output)",
-      "Bash(python3 -c \"import json,sys; p=json.load\\(sys.stdin\\); print\\(json.dumps\\(p.get\\('exports',{}\\),indent=2\\)\\)\")"
+      "Bash(python3 -c \"import json,sys; p=json.load\\(sys.stdin\\); print\\(json.dumps\\(p.get\\('exports',{}\\),indent=2\\)\\)\")",
+      "Bash(awk '{print $2, $11, $12, $13}')",
+      "Bash(awk '{print $2, $11, $12}')",
+      "Bash(ps -p 15789 -o pid,command)",
+      "Bash(./gradlew --stop)"
     ]
   }
 }

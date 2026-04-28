@@ -159,8 +159,14 @@ export function MiniPlayer() {
   }));
 
   // Progress ratio for the thin bar
-  const progressRatio = progress.duration > 0
-    ? progress.position / progress.duration
+  const metadataDuration =
+    typeof activeTrack?.duration === 'number' && activeTrack.duration > 0
+      ? activeTrack.duration
+      : 0;
+  const duration = progress.duration > 0 ? progress.duration : metadataDuration;
+
+  const progressRatio = duration > 0
+    ? progress.position / duration
     : 0;
 
   const progressBarStyle = useAnimatedStyle(() => ({

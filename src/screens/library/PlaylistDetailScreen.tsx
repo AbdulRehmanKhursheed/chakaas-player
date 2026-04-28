@@ -229,7 +229,7 @@ export function PlaylistDetailScreen() {
   const { playlistId } = route.params;
 
   const tracks = usePlaylistTracks(playlistId);
-  const { playTrack } = usePlayerQueue();
+  const { playTrack, playNext } = usePlayerQueue();
 
   const [playlist, setPlaylist] = useState<Playlist | null>(null);
   const [editingName, setEditingName] = useState(false);
@@ -283,7 +283,7 @@ export function PlaylistDetailScreen() {
         ActionSheetIOS.showActionSheetWithOptions(
           { options, cancelButtonIndex: cancelIndex, destructiveButtonIndex: 1, title: track.title },
           async (index) => {
-            if (index === 0) void playTrack(modelToTrack(track));
+            if (index === 0) void playNext(modelToTrack(track));
             if (index === 1) {
               // Remove track from playlist
               await database.write(async () => {
@@ -300,7 +300,7 @@ export function PlaylistDetailScreen() {
         );
       } else {
         Alert.alert(track.title, undefined, [
-          { text: 'Play Next', onPress: () => void playTrack(modelToTrack(track)) },
+          { text: 'Play Next', onPress: () => void playNext(modelToTrack(track)) },
           {
             text: 'Remove from Playlist',
             style: 'destructive',
@@ -320,7 +320,7 @@ export function PlaylistDetailScreen() {
         ]);
       }
     },
-    [playlistId, playTrack],
+    [playlistId, playNext],
   );
 
   // Rename playlist
