@@ -10,9 +10,6 @@ const STORAGE_KEY = 'settings';
 export type DownloadQuality = '128k' | '192k' | '256k' | '320k';
 
 export interface Settings {
-  spotifyClientId: string;
-  spotifyClientSecret: string;
-  lastFmApiKey: string;
   downloadQuality: DownloadQuality;
   downloadOnWifiOnly: boolean;
   dailyPicksEnabled: boolean;
@@ -24,10 +21,7 @@ export interface Settings {
 
 // ── Defaults ─────────────────────────────────────────────────────────────────
 const DEFAULT_SETTINGS: Settings = {
-  spotifyClientId: '',
-  spotifyClientSecret: '',
-  lastFmApiKey: '',
-  downloadQuality: '192k',
+  downloadQuality: '320k',
   downloadOnWifiOnly: true,
   dailyPicksEnabled: true,
   dailyPicksTime: '03:00',
@@ -42,7 +36,6 @@ function loadFromMMKV(): Settings {
     const raw = settingsStorage.getString(STORAGE_KEY);
     if (!raw) return DEFAULT_SETTINGS;
     const parsed = JSON.parse(raw) as Partial<Settings>;
-    // Merge with defaults so newly added fields are always present
     return { ...DEFAULT_SETTINGS, ...parsed };
   } catch {
     return DEFAULT_SETTINGS;
@@ -53,18 +46,14 @@ function saveToMMKV(settings: Settings): void {
   try {
     settingsStorage.set(STORAGE_KEY, JSON.stringify(settings));
   } catch {
-    // Fail silently — settings will still work in-memory for the session
+    // Fail silently — settings still work in-memory for the session.
   }
 }
 
 // ── Store ────────────────────────────────────────────────────────────────────
 interface SettingsStore extends Settings {
-  // Bulk update — merges partial settings into state and persists
   updateSettings(patch: Partial<Settings>): void;
 
-  // Granular setters
-  setSpotifyCredentials(clientId: string, clientSecret: string): void;
-  setLastFmApiKey(apiKey: string): void;
   setDownloadQuality(quality: DownloadQuality): void;
   setDownloadOnWifiOnly(value: boolean): void;
   setDailyPicksEnabled(value: boolean): void;
@@ -73,21 +62,15 @@ interface SettingsStore extends Settings {
   setCrossfadeDuration(seconds: number): void;
   setNormalizationEnabled(value: boolean): void;
 
-  // Reset to factory defaults
   resetToDefaults(): void;
 }
 
 export const useSettingsStore = create<SettingsStore>((set, get) => {
-  // Load persisted settings once at store creation time
   const persisted = loadFromMMKV();
 
-  // Helper: apply a partial patch, persist the full new state, and return it
   function applyAndPersist(patch: Partial<Settings>): Partial<SettingsStore> {
     const current = get();
     const next: Settings = {
-      spotifyClientId: current.spotifyClientId,
-      spotifyClientSecret: current.spotifyClientSecret,
-      lastFmApiKey: current.lastFmApiKey,
       downloadQuality: current.downloadQuality,
       downloadOnWifiOnly: current.downloadOnWifiOnly,
       dailyPicksEnabled: current.dailyPicksEnabled,
@@ -102,34 +85,23 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
   }
 
   return {
-    // ── Initial state (from MMKV or defaults) ──────────────────────────────
     ...persisted,
 
-    // ── Bulk update ────────────────────────────────────────────────────────
-    updateSettings: (patch) => set((state) => {
-      const next: Settings = {
-        spotifyClientId: state.spotifyClientId,
-        spotifyClientSecret: state.spotifyClientSecret,
-        lastFmApiKey: state.lastFmApiKey,
-        downloadQuality: state.downloadQuality,
-        downloadOnWifiOnly: state.downloadOnWifiOnly,
-        dailyPicksEnabled: state.dailyPicksEnabled,
-        dailyPicksTime: state.dailyPicksTime,
-        storageLocation: state.storageLocation,
-        crossfadeDuration: state.crossfadeDuration,
-        normalizationEnabled: state.normalizationEnabled,
-        ...patch,
-      };
-      saveToMMKV(next);
-      return next;
-    }),
-
-    // ── Granular setters ───────────────────────────────────────────────────
-    setSpotifyCredentials: (clientId, clientSecret) =>
-      set(() => applyAndPersist({ spotifyClientId: clientId, spotifyClientSecret: clientSecret })),
-
-    setLastFmApiKey: (apiKey) =>
-      set(() => applyAndPersist({ lastFmApiKey: apiKey })),
+    updateSettings: (patch) =>
+      set((state) => {
+        const next: Settings = {
+          downloadQuality: state.downloadQuality,
+          downloadOnWifiOnly: state.downloadOnWifiOnly,
+          dailyPicksEnabled: state.dailyPicksEnabled,
+          dailyPicksTime: state.dailyPicksTime,
+          storageLocation: state.storageLocation,
+          crossfadeDuration: state.crossfadeDuration,
+          normalizationEnabled: state.normalizationEnabled,
+          ...patch,
+        };
+        saveToMMKV(next);
+        return next;
+      }),
 
     setDownloadQuality: (quality) =>
       set(() => applyAndPersist({ downloadQuality: quality })),
@@ -156,7 +128,6 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
     setNormalizationEnabled: (value) =>
       set(() => applyAndPersist({ normalizationEnabled: value })),
 
-    // ── Reset ──────────────────────────────────────────────────────────────
     resetToDefaults: () =>
       set(() => {
         saveToMMKV(DEFAULT_SETTINGS);

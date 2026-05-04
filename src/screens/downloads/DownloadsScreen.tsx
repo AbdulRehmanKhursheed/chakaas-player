@@ -916,6 +916,10 @@ export function DownloadsScreen() {
     ) => {
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       void (async () => {
+        // Look up the original suggestion so we can thread Saavn metadata
+        // (encrypted URL, 320kbps flag, album) through to DownloadManager —
+        // without it the pipeline would try to fetch a Saavn id off YouTube.
+        const suggestion = suggestions.find((s) => s.videoId === videoId);
         const result = await DownloadManager.enqueue({
           youtubeId: videoId,
           title,
@@ -923,13 +927,17 @@ export function DownloadsScreen() {
           thumbnail,
           durationMs,
           quality: '320k',
+          provider: suggestion?.provider ?? 'saavn',
+          album: suggestion?.saavnAlbum,
+          saavnEncryptedUrl: suggestion?.saavnEncryptedUrl,
+          saavnHas320kbps: suggestion?.saavnHas320kbps,
         });
         if (!result.success) {
           Alert.alert('Cannot start download', result.reason ?? 'Please try again.');
         }
       })();
     },
-    [],
+    [suggestions],
   );
 
   // ── Plan: approve all ──────────────────────────────────────────────────────
@@ -950,6 +958,10 @@ export function DownloadsScreen() {
           thumbnail: s.thumbnail,
           durationMs: s.duration_ms,
           quality: '320k',
+          provider: s.provider,
+          album: s.saavnAlbum,
+          saavnEncryptedUrl: s.saavnEncryptedUrl,
+          saavnHas320kbps: s.saavnHas320kbps,
         });
         if (!result.success) {
           failedReason = result.reason ?? 'Some songs could not be queued.';

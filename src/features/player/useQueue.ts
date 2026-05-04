@@ -11,13 +11,34 @@ function showPlaybackError(err: unknown): void {
 }
 
 /**
- * Custom replacement for RNTP's removed `useQueue` hook (no longer exported in
- * the version we use). Polls `getQueue()` once on mount and re-fetches
- * whenever a queue mutation event fires so consumers re-render with the
- * latest snapshot.
+ * Custom replacement for RNTP's removed `useQueue` hook. Maintains a local
+ * snapshot of the queue, refreshed when:
+ *   - the active track changes (skip / next / previous)
+ *   - the queue ends
+ *   - a queue-mutating action in this hook is called (add / remove / move /
+ *     reset) — `bumpQueueVersion` is invoked from those callbacks so
+ *     consumers re-render with the latest snapshot.
+ *
+ * Crucially we do NOT subscribe to `Event.PlaybackState`. That event fires
+ * for every play/pause/buffer/loading transition and would force a native
+ * `getQueue()` round-trip plus a re-render of every screen using
+ * `usePlayerQueue` — including `LibraryScreen` — making play/pause feel
+ * laggy. Queue contents do not change when the playback state changes, so
+ * there's no reason to listen for it.
  */
+const queueVersion: { v: number; bump: () => void } = {
+  v: 0,
+  bump: () => {},
+};
+
+function bumpQueueVersion(): void {
+  queueVersion.v += 1;
+  queueVersion.bump();
+}
+
 function useRNTPQueue(): RNTPTrack[] {
   const [queue, setQueue] = useState<RNTPTrack[]>([]);
+  const [, setLocalVersion] = useState(0);
 
   useEffect(() => {
     let mounted = true;
@@ -33,15 +54,22 @@ function useRNTPQueue(): RNTPTrack[] {
 
     refresh();
 
+    queueVersion.bump = () => {
+      if (mounted) {
+        setLocalVersion((n) => n + 1);
+        void refresh();
+      }
+    };
+
     const subs = [
       TrackPlayer.addEventListener(Event.PlaybackActiveTrackChanged, refresh),
       TrackPlayer.addEventListener(Event.PlaybackQueueEnded, refresh),
-      TrackPlayer.addEventListener(Event.PlaybackState, refresh),
     ];
 
     return () => {
       mounted = false;
       subs.forEach((s) => s.remove());
+      queueVersion.bump = () => {};
     };
   }, []);
 
@@ -68,6 +96,7 @@ export function usePlayerQueue() {
   const addTrack = useCallback(async (track: Track) => {
     try {
       await TrackPlayer.add(trackMapper(track));
+      bumpQueueVersion();
     } catch (err) {
       showPlaybackError(err);
     }
@@ -82,6 +111,7 @@ export function usePlayerQueue() {
       const activeIndex = await TrackPlayer.getActiveTrackIndex();
       const insertAt = activeIndex != null ? activeIndex + 1 : undefined;
       await TrackPlayer.add(trackMapper(track), insertAt);
+      bumpQueueVersion();
     } catch (err) {
       showPlaybackError(err);
     }
@@ -119,6 +149,7 @@ export function usePlayerQueue() {
         }
 
         await TrackPlayer.play();
+        bumpQueueVersion();
       } catch (err) {
         showPlaybackError(err);
       }
@@ -136,6 +167,7 @@ export function usePlayerQueue() {
   const removeFromQueue = useCallback(async (index: number) => {
     try {
       await TrackPlayer.remove(index);
+      bumpQueueVersion();
     } catch (err) {
       showPlaybackError(err);
     }
@@ -149,6 +181,7 @@ export function usePlayerQueue() {
     async (fromIndex: number, toIndex: number) => {
       try {
         await TrackPlayer.move(fromIndex, toIndex);
+        bumpQueueVersion();
       } catch (err) {
         showPlaybackError(err);
       }
@@ -162,6 +195,7 @@ export function usePlayerQueue() {
   const clearQueue = useCallback(async () => {
     try {
       await TrackPlayer.reset();
+      bumpQueueVersion();
     } catch (err) {
       showPlaybackError(err);
     }

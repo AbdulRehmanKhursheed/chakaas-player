@@ -7,6 +7,7 @@ import { QueueScreen } from '@/screens/queue/QueueScreen';
 import { PlaylistDetailScreen } from '@/screens/library/PlaylistDetailScreen';
 import { ArtistDetailScreen } from '@/screens/library/ArtistDetailScreen';
 import { AlbumDetailScreen } from '@/screens/library/AlbumDetailScreen';
+import { ChakaasEngineScreen } from '@/screens/engine/ChakaasEngineScreen';
 import type { RootStackParamList } from '@/types/navigation';
 
 // ---------------------------------------------------------------------------
@@ -73,6 +74,11 @@ export function RootNavigator() {
       <Stack.Screen
         name="AlbumDetail"
         component={AlbumDetailScreen}
+        options={{ animation: 'slide_from_right' }}
+      />
+      <Stack.Screen
+        name="ChakaasEngine"
+        component={ChakaasEngineScreen}
         options={{ animation: 'slide_from_right' }}
       />
     </Stack.Navigator>

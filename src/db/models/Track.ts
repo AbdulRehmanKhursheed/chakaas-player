@@ -4,15 +4,17 @@ import type { Query } from '@nozbe/watermelondb';
 import type Play from './Play';
 import type PlaylistTrack from './PlaylistTrack';
 
-export type AudioFeatures = {
-  energy: number;
-  valence: number;
-  danceability: number;
-  tempo: number;
-  acousticness: number;
-  instrumentalness: number;
-};
-
+/**
+ * Track model.
+ *
+ * Note: the underlying `tracks` table still has unused columns from a
+ * removed Spotify-features experiment (`spotify_id`, `energy`, `valence`,
+ * `danceability`, `tempo`, `acousticness`, `instrumentalness`). They're
+ * left in the schema because dropping columns from SQLite + WatermelonDB
+ * mid-flight risks data loss for users who already have a local DB. The
+ * model below simply doesn't expose them, so reads/writes go through the
+ * fields we care about and the dead columns stay null forever.
+ */
 export class Track extends Model {
   static table = 'tracks';
 
@@ -29,33 +31,13 @@ export class Track extends Model {
   @text('file_path') filePath!: string;
   @text('artwork_path') artworkPath!: string | null;
   @text('youtube_id') youtubeId!: string | null;
-  @text('spotify_id') spotifyId!: string | null;
-  @field('energy') energy!: number | null;
-  @field('valence') valence!: number | null;
-  @field('danceability') danceability!: number | null;
-  @field('tempo') tempo!: number | null;
-  @field('acousticness') acousticness!: number | null;
-  @field('instrumentalness') instrumentalness!: number | null;
+  @text('saavn_id') saavnId!: string | null;
   @field('added_at') addedAt!: number;
   @text('source') source!: string;
   @field('liked') liked!: boolean;
 
   @children('plays') plays!: Query<Play>;
   @children('playlist_tracks') playlistTracks!: Query<PlaylistTrack>;
-
-  get features(): AudioFeatures | null {
-    if (this.energy === null || this.energy === undefined) {
-      return null;
-    }
-    return {
-      energy: this.energy,
-      valence: this.valence ?? 0,
-      danceability: this.danceability ?? 0,
-      tempo: this.tempo ?? 0,
-      acousticness: this.acousticness ?? 0,
-      instrumentalness: this.instrumentalness ?? 0,
-    };
-  }
 
   @writer async like(): Promise<void> {
     await this.update((record) => {

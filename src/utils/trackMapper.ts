@@ -1,23 +1,15 @@
 import type { Track as TrackModel } from '@/db/models/Track';
-import type { Track, TrackFeatures } from '@/types/track';
+import type { Track } from '@/types/track';
 
 /**
  * Converts a WatermelonDB Track model instance into the plain Track interface
- * used throughout the UI / player layer. Maps camelCase columns to snake_case
- * fields and aggregates audio features into a single object.
+ * used by the player layer. Mostly a snake_case ↔ camelCase shim.
  */
 export function modelToTrack(m: TrackModel): Track {
-  const features: TrackFeatures | null =
-    m.energy !== null && m.energy !== undefined
-      ? {
-          energy: m.energy,
-          valence: m.valence ?? 0,
-          danceability: m.danceability ?? 0,
-          tempo: m.tempo ?? 120,
-          acousticness: m.acousticness ?? 0,
-          instrumentalness: m.instrumentalness ?? 0,
-        }
-      : null;
+  const source =
+    m.source === 'youtube' || m.source === 'saavn' || m.source === 'local'
+      ? m.source
+      : 'youtube';
 
   return {
     id: m.id,
@@ -29,15 +21,12 @@ export function modelToTrack(m: TrackModel): Track {
     file_path: m.filePath,
     artwork_path: m.artworkPath ?? null,
     youtube_id: m.youtubeId ?? null,
-    spotify_id: m.spotifyId ?? null,
-    features,
     added_at: m.addedAt,
-    source: m.source as 'youtube' | 'local',
+    source,
     liked: m.liked,
   };
 }
 
-/** Convenience for arrays. */
 export function modelsToTracks(arr: TrackModel[]): Track[] {
   return arr.map(modelToTrack);
 }

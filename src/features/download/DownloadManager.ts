@@ -62,6 +62,8 @@ import { getBestAudioStream } from './YoutubeExtractor';
 // delivers — AAC streams become .m4a, opus streams become .webm, both
 // playable by RNTP/ExoPlayer at full source quality with zero transcode loss.
 import { downloadArtwork } from './ArtworkDownloader';
+import { getSaavnStreamUrl } from './providers/SaavnProvider';
+import type { AudioStreamInfo } from './providers/types';
 import {
   ensureNotificationChannel,
   startDownloadForegroundService,
@@ -86,7 +88,13 @@ const DOWNLOAD_QUALITY = '320k' as const;
 // ── Types ──────────────────────────────────────────────────────────────────
 
 export interface EnqueueParams {
-  /** YouTube video ID (11 characters). */
+  /**
+   * Provider-native ID. For YouTube this is the 11-char videoId. For Saavn
+   * it's the song id (e.g. "aRZbUYD7"). Named `youtubeId` for backward
+   * compatibility with existing call sites; the field is treated as a
+   * generic external ID and stored in the right DB column based on
+   * `provider`.
+   */
   youtubeId: string;
   /** Display title of the track. */
   title: string;
@@ -97,18 +105,24 @@ export interface EnqueueParams {
   /** Thumbnail URL used for artwork. */
   thumbnail: string;
   /**
-   * Track duration in milliseconds, taken from YouTube search metadata.
-   * Used directly instead of probing the downloaded file (we no longer
-   * have FFmpeg available). Pass 0 if unknown.
+   * Track duration in milliseconds, taken from search metadata. Used
+   * directly instead of probing the downloaded file. Pass 0 if unknown.
    */
   durationMs?: number;
   /**
-   * Target encoding quality.
-   * Accepted for API compatibility — kept at the original-source quality
-   * (no transcoding is performed; whatever YouTube delivers is what is
-   * stored bit-for-bit).
+   * Target encoding quality. Accepted for API compatibility — kept at the
+   * original-source quality (no transcoding is performed).
    */
   quality?: '128k' | '192k' | '256k' | '320k';
+  /**
+   * Which backend to resolve the stream from. Defaults to `youtube` for
+   * back-compat — call sites that didn't pass a provider continue working.
+   */
+  provider?: 'youtube' | 'saavn';
+  /** Saavn `encrypted_media_url`. Required when `provider === 'saavn'`. */
+  saavnEncryptedUrl?: string;
+  /** Whether Saavn 320 kbps tier is available; falls back to 160 kbps if not. */
+  saavnHas320kbps?: boolean;
 }
 
 export interface EnqueueResult {
@@ -124,6 +138,7 @@ export interface EnqueueResult {
 
 /** Fully resolved params used inside the pipeline (all fields required). */
 interface ResolvedParams {
+  /** External ID (YouTube videoId or Saavn song id). */
   youtubeId: string;
   title: string;
   artist: string;
@@ -131,6 +146,9 @@ interface ResolvedParams {
   thumbnail: string;
   durationMs: number;
   quality: '128k' | '192k' | '256k' | '320k';
+  provider: 'youtube' | 'saavn';
+  saavnEncryptedUrl?: string;
+  saavnHas320kbps?: boolean;
 }
 
 const DOWNLOAD_HEADER_SETS: Array<Record<string, string>> = [
@@ -305,8 +323,12 @@ class DownloadManagerClass {
       return { success: true, id: existing.id };
     }
 
+    // Look up by the provider-appropriate ID. When provider isn't given we
+    // assume YouTube (back-compat) so existing call sites keep working.
+    const provider = params.provider ?? 'youtube';
+    const idColumn = provider === 'saavn' ? 'saavn_id' : 'youtube_id';
     const existingLibraryTracks = await tracksCollection
-      .query(Q.where('youtube_id', params.youtubeId))
+      .query(Q.where(idColumn, params.youtubeId))
       .fetch();
     if (existingLibraryTracks.length > 0) {
       const brokenTracks = existingLibraryTracks.filter(
@@ -351,6 +373,10 @@ class DownloadManagerClass {
       artist: params.artist,
       thumbnail: params.thumbnail,
       durationMs: params.durationMs ?? 0,
+      provider,
+      album: params.album,
+      saavnEncryptedUrl: params.saavnEncryptedUrl,
+      saavnHas320kbps: params.saavnHas320kbps,
     });
 
     logger.info(`[DownloadManager] Enqueued: "${params.title}" id=${id}`);
@@ -482,10 +508,13 @@ class DownloadManagerClass {
         youtubeId: next.youtubeId,
         title: next.title,
         artist: next.artist,
-        album: 'Unknown Album',
+        album: next.album && next.album.trim() ? next.album : 'Unknown Album',
         thumbnail: next.thumbnail,
         durationMs: next.durationMs ?? 0,
         quality: DOWNLOAD_QUALITY,
+        provider: next.provider ?? 'youtube',
+        saavnEncryptedUrl: next.saavnEncryptedUrl,
+        saavnHas320kbps: next.saavnHas320kbps,
       };
 
       try {
@@ -581,17 +610,41 @@ class DownloadManagerClass {
     };
 
     // ── 1. Resolve best audio stream ────────────────────────────────────────
+    // Pick the resolver based on provider. Saavn is a single deterministic
+    // call; YouTube has the multi-client + cipher fallback chain inside
+    // getBestAudioStream.
     await reportProgress(5, 'downloading');
 
-    const stream = await getBestAudioStream(params.youtubeId);
+    let stream: AudioStreamInfo;
+    if (params.provider === 'saavn') {
+      if (!params.saavnEncryptedUrl) {
+        throw new Error(
+          `Missing Saavn encrypted URL for "${params.title}" — search result was malformed.`,
+        );
+      }
+      const saavnStream = await getSaavnStreamUrl(
+        params.saavnEncryptedUrl,
+        params.saavnHas320kbps ?? false,
+      );
+      stream = {
+        ...saavnStream,
+        durationMs: params.durationMs > 0 ? params.durationMs : saavnStream.durationMs,
+      };
+    } else {
+      const ytStream = await getBestAudioStream(params.youtubeId);
+      stream = ytStream as AudioStreamInfo;
+    }
+
     logger.info(
-      `[DownloadManager] Stream resolved — container:${stream.container} ` +
-      `bitrate:${stream.bitrate} url-len:${stream.url?.length ?? 0} for "${params.title}"`,
+      `[DownloadManager] Stream resolved — provider:${params.provider} ` +
+      `container:${stream.container} bitrate:${stream.bitrate} ` +
+      `url-len:${stream.url?.length ?? 0} for "${params.title}"`,
     );
 
     if (!stream.url || stream.url.length < 20) {
       throw new Error(
-        `Empty/invalid stream URL returned for "${params.title}" — YouTube cipher decode likely failed.`,
+        `Empty/invalid stream URL returned for "${params.title}" — ` +
+        `${params.provider === 'saavn' ? 'Saavn auth-token request' : 'YouTube cipher decode'} likely failed.`,
       );
     }
 
@@ -612,8 +665,15 @@ class DownloadManagerClass {
       try {
         // Delete any leftover from a previous failed attempt before retrying.
         await deleteFile(tempRawPath).catch(() => {});
+        // The stream may carry CDN-required headers (Saavn needs Referer +
+        // matching User-Agent). Stream-supplied headers override the rotating
+        // header set so the User-Agent stays consistent with the auth-token
+        // request that produced the signed URL.
+        const mergedHeaders = stream.requestHeaders
+          ? { ...headers, ...stream.requestHeaders }
+          : headers;
         const response = await RNBlobUtil.config({ path: tempRawPath })
-          .fetch('GET', activeStreamUrl, headers)
+          .fetch('GET', activeStreamUrl, mergedHeaders)
           .progress(
             { count: 20, interval: 200 },
             async (received: number, total: number) => {
@@ -648,6 +708,25 @@ class DownloadManagerClass {
         if (!Number.isFinite(size) || size < minExpectedBytes) {
           throw new Error(`Downloaded audio file is too small (${size || 0} bytes)`);
         }
+        // Sniff the first few bytes — even a 200 OK can deliver an HTML error
+        // body when a CDN reverse-proxies behind a custom error page. If we
+        // don't catch it here it'd save to the library and ExoPlayer would
+        // later throw `android-parsing-container-unsupported`. Fingerprint
+        // valid containers: ftyp box for m4a (offset 4), 0x1A45DFA3 for webm.
+        try {
+          const sample = await RNBlobUtil.fs.readFile(tempRawPath, 'base64');
+          const sampleStr = typeof sample === 'string' ? sample : '';
+          const head = sampleStr.slice(0, 128);
+          if (head.startsWith('PCFET0NUWVBF') || head.startsWith('PEhUTUw') || head.startsWith('PGh0bWw')) {
+            // base64-prefixes for "<!DOCTYPE", "<HTML", "<html"
+            throw new Error('Audio download returned HTML error body (CDN rejected the request)');
+          }
+        } catch (sniffErr) {
+          if (sniffErr instanceof Error && sniffErr.message.includes('HTML error body')) {
+            throw sniffErr;
+          }
+          // readFile failure is non-fatal — the size check already vouches.
+        }
         logger.info(
           `[DownloadManager] Audio file downloaded — status:${status} size:${size} path:${tempRawPath}`,
         );
@@ -659,14 +738,22 @@ class DownloadManagerClass {
         const errMsg = err instanceof Error ? err.message : String(err);
         logger.warn(`[DownloadManager] Audio download attempt failed for "${params.title}": ${errMsg}`);
 
-        // 403 / 410 / 401 typically mean the stream URL has expired or been
-        // re-keyed by YouTube. Re-resolve to a fresh URL and retry once.
+        // 403 / 410 / 401 typically mean the signed CDN URL has expired or
+        // been re-keyed. Re-resolve to a fresh URL and retry once. Use the
+        // same provider for the refresh so we don't accidentally jump
+        // catalogs mid-pipeline.
         const isStaleUrl = /HTTP (403|410|401)/.test(errMsg);
         if (isStaleUrl && streamRefreshes < 2) {
           streamRefreshes += 1;
           try {
             logger.info('[DownloadManager] Refreshing stream URL after auth/forbidden response…');
-            const refreshed = await getBestAudioStream(params.youtubeId);
+            const refreshed: AudioStreamInfo =
+              params.provider === 'saavn' && params.saavnEncryptedUrl
+                ? await getSaavnStreamUrl(
+                    params.saavnEncryptedUrl,
+                    params.saavnHas320kbps ?? false,
+                  )
+                : (await getBestAudioStream(params.youtubeId)) as AudioStreamInfo;
             if (refreshed.url && refreshed.url.length > 20) {
               activeStreamUrl = refreshed.url;
             }
@@ -787,17 +874,17 @@ class DownloadManagerClass {
         // duration as 0 or fail on some Android/RNTP combinations.
         record.filePath = finalPath;
         record.artworkPath = artworkPath;
-        record.youtubeId = params.youtubeId;
-        record.spotifyId = null;
-        // Audio-feature fields — populated later by the recommendation engine.
-        record.energy = null;
-        record.valence = null;
-        record.danceability = null;
-        record.tempo = null;
-        record.acousticness = null;
-        record.instrumentalness = null;
+        // Store the external ID in the right column so search/dedupe by ID
+        // works without ambiguity.
+        if (params.provider === 'saavn') {
+          record.saavnId = params.youtubeId;
+          record.youtubeId = null;
+        } else {
+          record.youtubeId = params.youtubeId;
+          record.saavnId = null;
+        }
         record.addedAt = Math.floor(Date.now() / 1000); // Unix seconds
-        record.source = 'youtube';
+        record.source = params.provider;
         record.liked = false;
       });
     });

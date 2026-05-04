@@ -30,12 +30,14 @@ import Fuse from 'fuse.js';
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useActiveTrack } from 'react-native-track-player';
 import { useAllTracks } from '@/hooks/useTrackDB';
 import { useDebounce } from '@/hooks/useDebounce';
 import { usePlayerQueue } from '@/features/player/useQueue';
 import { useDownloadStore } from '@/stores/downloadStore';
 import { DownloadManager } from '@/features/download/DownloadManager';
-import { searchYouTube } from '@/features/download/YoutubeExtractor';
+import { searchMusic } from '@/features/download/searchMusic';
+import { getScreenBottomInset } from '@/utils/layout';
 import { settingsStorage } from '@/stores/settingsStore';
 import { TrackArtwork } from '@/components/track/TrackArtwork';
 import { YoutubeResultCard } from './components/YoutubeResultCard';
@@ -581,9 +583,9 @@ type LocalSection = {
 };
 
 type YouTubeSection = {
-  title: 'YouTube';
-  badge: 'ONLINE';
-  badgeColor: '#FF0000';
+  title: 'Online';
+  badge: 'STREAMING';
+  badgeColor: '#FA233B';
   data: YouTubeSearchResult[];
   sectionType: 'youtube';
 };
@@ -596,6 +598,7 @@ export function SearchScreen() {
   const navigation = useNavigation<RootStackNavigationProp>();
   const insets = useSafeAreaInsets();
   const { playTrack } = usePlayerQueue();
+  const activeRntpTrack = useActiveTrack();
   const downloadQueue = useDownloadStore((s) => s.queue);
 
   const allTracks = useAllTracks();
@@ -660,8 +663,8 @@ export function SearchScreen() {
     isError: ytError,
     refetch: retryYouTubeSearch,
   } = useQuery({
-    queryKey: ['youtube-search', debouncedQuery],
-    queryFn: () => searchYouTube(debouncedQuery, 15),
+    queryKey: ['music-search', debouncedQuery],
+    queryFn: () => searchMusic(debouncedQuery, 15),
     enabled: debouncedQuery.trim().length >= 2,
     staleTime: 2 * 60 * 1000,
     gcTime: 5 * 60 * 1000,
@@ -776,13 +779,23 @@ export function SearchScreen() {
       if (!pendingDownload) return;
       setQualitySheetVisible(false);
       const { title: trackTitle, author } = pendingDownload;
+      const provider = pendingDownload.provider ?? 'youtube';
+      // Saavn provides the proper album from search; YouTube has no clean
+      // album so we fall back to the channel name as a reasonable label.
+      const album =
+        provider === 'saavn'
+          ? pendingDownload.saavnAlbum ?? 'JioSaavn'
+          : 'YouTube';
       const result = await DownloadManager.enqueue({
         youtubeId: pendingDownload.id,
         title: trackTitle,
         artist: author,
-        album: 'YouTube',
+        album,
         thumbnail: pendingDownload.thumbnail,
         durationMs: pendingDownload.duration_ms,
+        provider,
+        saavnEncryptedUrl: pendingDownload.saavnEncryptedUrl,
+        saavnHas320kbps: pendingDownload.saavnHas320kbps,
       });
       if (!result.success) {
         Alert.alert(
@@ -817,9 +830,9 @@ export function SearchScreen() {
       });
     }
     result.push({
-      title: 'YouTube',
-      badge: 'ONLINE',
-      badgeColor: '#FF0000',
+      title: 'Online',
+      badge: 'STREAMING',
+      badgeColor: '#FA233B',
       data: ytResults ?? [],
       sectionType: 'youtube',
     });
@@ -932,7 +945,7 @@ export function SearchScreen() {
                 />
               </View>
             }
-            contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 120 }]}
+            contentContainerStyle={[styles.listContent, { paddingBottom: getScreenBottomInset(insets.bottom, !!activeRntpTrack) }]}
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
           />
@@ -944,7 +957,7 @@ export function SearchScreen() {
             renderItem={renderItem}
             stickySectionHeadersEnabled={false}
             showsVerticalScrollIndicator={false}
-            contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 120 }]}
+            contentContainerStyle={[styles.listContent, { paddingBottom: getScreenBottomInset(insets.bottom, !!activeRntpTrack) }]}
             keyboardShouldPersistTaps="handled"
             ListFooterComponent={
               ytLoading ? (
@@ -953,9 +966,9 @@ export function SearchScreen() {
                   {(ytResults ?? []).length === 0 && (
                     <>
                       <SearchSectionHeader
-                        title="YouTube"
-                        badge="ONLINE"
-                        badgeColor="#CC0000"
+                        title="Online"
+                        badge="STREAMING"
+                        badgeColor="#FA233B"
                       />
                       <YouTubeSkeleton />
                     </>

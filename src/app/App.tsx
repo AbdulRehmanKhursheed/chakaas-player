@@ -10,6 +10,9 @@ import { TrackPlayerProvider } from '@/features/player/TrackPlayerProvider';
 import { RootNavigator } from './navigation/RootNavigator';
 import { configureBackgroundFetch } from '@/features/backgroundSync/BackgroundFetchHandler';
 import { DownloadManager } from '@/features/download/DownloadManager';
+import { ensureSeeded, decayAllScores } from '@/features/recommendations/artistAffinity';
+import { startPlayTracker } from '@/features/recommendations/playTracker';
+import { cleanupBadLocalArtists } from '@/db/cleanup';
 import { navigationTheme } from './navigation/theme';
 import { ErrorBoundary } from './ErrorBoundary';
 import { GlobalSheets } from './GlobalSheets';
@@ -51,8 +54,22 @@ export default function App() {
   // Kick off react-native-background-fetch registration once on mount.
   useEffect(() => {
     configureBackgroundFetch();
+    // Bootstrap the artist-affinity store from the user's stated taste
+    // (idempotent — only runs once, ever) and apply weekly decay.
+    ensureSeeded();
+    decayAllScores();
+    // Re-parse any legacy device-import rows that an earlier importer
+    // version saved with artist="00" / "01" etc.
+    void cleanupBadLocalArtists();
+    // Start logging plays + bumping artist scores from RNTP track-change
+    // events. Returns an unsubscribe.
+    const stopPlayTracker = startPlayTracker();
     // Register foreground notification event handler for download controls
-    return DownloadManager.registerForegroundListener();
+    const stopDownloadListener = DownloadManager.registerForegroundListener();
+    return () => {
+      stopPlayTracker();
+      stopDownloadListener();
+    };
   }, []);
 
   return (

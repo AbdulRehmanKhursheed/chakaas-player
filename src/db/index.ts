@@ -1,6 +1,7 @@
 import { Database } from '@nozbe/watermelondb';
 import SQLiteAdapter from '@nozbe/watermelondb/adapters/sqlite';
 import schema from './schema';
+import migrations from './migrations';
 import { Track } from './models/Track';
 import { Play } from './models/Play';
 import { Playlist } from './models/Playlist';
@@ -8,7 +9,7 @@ import { PlaylistTrack } from './models/PlaylistTrack';
 
 const adapter = new SQLiteAdapter({
   schema,
-  migrations: undefined,
+  migrations,
   jsi: true, // JSI driver works on both architectures on Android
   onSetUpError: (error) => {
     console.error('WatermelonDB setup error:', error);

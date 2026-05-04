@@ -16,6 +16,7 @@ import {
   Alert,
   Linking,
 } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
 import {
   useSettingsStore,
   type DownloadQuality,
@@ -27,6 +28,7 @@ import {
 } from '@/services/storage/fileSystem';
 import RNBlobUtil from 'react-native-blob-util';
 import { Ionicons } from '@expo/vector-icons';
+import type { RootStackNavigationProp } from '@/types/navigation';
 
 // ─── Section wrapper ──────────────────────────────────────────────────────────
 
@@ -71,59 +73,6 @@ const sectionStyles = StyleSheet.create({
 
 function Separator() {
   return <View style={rowStyles.separator} />;
-}
-
-interface TextRowProps {
-  icon: React.ComponentProps<typeof Ionicons>['name'];
-  label: string;
-  value: string;
-  onChangeText: (v: string) => void;
-  placeholder?: string;
-  secureTextEntry?: boolean;
-  keyboardType?: 'default' | 'email-address' | 'url';
-  autoCapitalize?: 'none' | 'words';
-}
-
-function TextRow({
-  icon,
-  label,
-  value,
-  onChangeText,
-  placeholder,
-  secureTextEntry = false,
-  keyboardType = 'default',
-  autoCapitalize = 'none',
-}: TextRowProps) {
-  const [masked, setMasked] = useState(secureTextEntry);
-  return (
-    <View style={rowStyles.container}>
-      <Ionicons name={icon} size={20} color="#6E6E73" style={rowStyles.icon} />
-      <View style={rowStyles.textRowBody}>
-        <Text style={rowStyles.label}>{label}</Text>
-        <View style={rowStyles.inputRow}>
-          <TextInput
-            style={rowStyles.input}
-            value={value}
-            onChangeText={onChangeText}
-            placeholder={placeholder ?? label}
-            placeholderTextColor="#8E8E93"
-            secureTextEntry={masked}
-            keyboardType={keyboardType}
-            autoCapitalize={autoCapitalize}
-            autoCorrect={false}
-          />
-          {secureTextEntry && (
-            <TouchableOpacity
-              onPress={() => setMasked((m) => !m)}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            >
-              <Ionicons name={masked ? 'eye' : 'eye-off'} size={18} color="#8E8E93" />
-            </TouchableOpacity>
-          )}
-        </View>
-      </View>
-    </View>
-  );
 }
 
 interface ToggleRowProps {
@@ -427,19 +376,14 @@ function formatBytes(bytes: number): string {
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
 export function SettingsScreen() {
-  // API Keys state (local until saved)
+  const navigation = useNavigation<RootStackNavigationProp>();
   const {
-    spotifyClientId,
-    spotifyClientSecret,
-    lastFmApiKey,
     downloadQuality,
     downloadOnWifiOnly,
     crossfadeDuration,
     normalizationEnabled,
     dailyPicksEnabled,
     dailyPicksTime,
-    setSpotifyCredentials,
-    setLastFmApiKey,
     setDownloadQuality,
     setDownloadOnWifiOnly,
     setCrossfadeDuration,
@@ -448,9 +392,6 @@ export function SettingsScreen() {
     setDailyPicksTime,
   } = useSettingsStore();
 
-  const [localSpotifyId, setLocalSpotifyId] = useState(spotifyClientId);
-  const [localSpotifySecret, setLocalSpotifySecret] = useState(spotifyClientSecret);
-  const [localLastFm, setLocalLastFm] = useState(lastFmApiKey);
   const [localPicksTime, setLocalPicksTime] = useState(dailyPicksTime);
 
   // Storage stats
@@ -477,13 +418,6 @@ export function SettingsScreen() {
       setStatsLoading(false);
     }
   };
-
-  // Save API keys
-  const handleSaveApiKeys = useCallback(() => {
-    setSpotifyCredentials(localSpotifyId.trim(), localSpotifySecret.trim());
-    setLastFmApiKey(localLastFm.trim());
-    Alert.alert('Saved', 'API keys updated successfully.');
-  }, [localSpotifyId, localSpotifySecret, localLastFm, setSpotifyCredentials, setLastFmApiKey]);
 
   // Validate and save picks time
   const handleSavePicksTime = useCallback(() => {
@@ -551,45 +485,17 @@ export function SettingsScreen() {
           <Text style={styles.headerTitle}>Settings</Text>
         </View>
 
-        {/* ── 1. API Keys ── */}
-        <Section title="API Keys">
-          <TextRow
-            icon="musical-notes"
-            label="Spotify Client ID"
-            value={localSpotifyId}
-            onChangeText={setLocalSpotifyId}
-            placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-            secureTextEntry
+        {/* ── Engine ── */}
+        <Section title="Recommendation Engine">
+          <TapRow
+            icon="sparkles"
+            label="Chakaas Engine"
+            sublabel="See what the engine has learned and what it's thinking"
+            onPress={() => navigation.navigate('ChakaasEngine')}
           />
-          <Separator />
-          <TextRow
-            icon="key"
-            label="Spotify Client Secret"
-            value={localSpotifySecret}
-            onChangeText={setLocalSpotifySecret}
-            placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-            secureTextEntry
-          />
-          <Separator />
-          <TextRow
-            icon="radio"
-            label="Last.fm API Key"
-            value={localLastFm}
-            onChangeText={setLocalLastFm}
-            placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-            secureTextEntry
-          />
-          <Separator />
-          <TouchableOpacity
-            onPress={handleSaveApiKeys}
-            style={styles.saveButton}
-            activeOpacity={0.85}
-          >
-            <Text style={styles.saveButtonText}>Save API Keys</Text>
-          </TouchableOpacity>
         </Section>
 
-        {/* ── 2. Download ── */}
+        {/* ── 1. Download ── */}
         <Section title="Download">
           <QualityRadio value={downloadQuality} onChange={setDownloadQuality} />
           <Separator />
@@ -697,7 +603,7 @@ export function SettingsScreen() {
             <Text style={styles.aboutAppName}>Chakaas Player</Text>
             <Text style={styles.aboutVersion}>Version {appVersion}</Text>
             <Text style={styles.aboutTagline}>
-              Built for Bollywood lovers
+              Built for Songs lovers
             </Text>
           </View>
         </Section>

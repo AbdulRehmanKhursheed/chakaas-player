@@ -1,26 +1,6 @@
 /**
- * Audio feature vector extracted from a track, modelled after Spotify's
- * audio-features endpoint. All continuous fields are normalised to [0, 1]
- * unless noted otherwise.
- */
-export interface TrackFeatures {
-  /** Perceived intensity and activity. 0 = calm/low-energy, 1 = fast/loud/noisy. */
-  energy: number;
-  /** Musical positiveness. 0 = sad/angry/tense, 1 = happy/cheerful/euphoric. */
-  valence: number;
-  /** How suitable the track is for dancing. 0 = least danceable, 1 = most. */
-  danceability: number;
-  /** Estimated tempo in beats per minute (BPM). Not normalised. */
-  tempo: number;
-  /** Presence of acoustic instruments. 0 = electric/synthesized, 1 = fully acoustic. */
-  acousticness: number;
-  /** Predicts whether there are no vocals. Values above 0.5 are instrumental. */
-  instrumentalness: number;
-}
-
-/**
  * Core track entity. Represents a single audio track regardless of its
- * origin (local file or YouTube stream/download).
+ * origin (Saavn / YouTube download or local device file).
  */
 export interface Track {
   /** Stable UUID assigned at import time. */
@@ -35,16 +15,12 @@ export interface Track {
   file_path: string;
   /** Absolute path to the cached artwork image, or null if none. */
   artwork_path: string | null;
-  /** YouTube video ID, or null for local-only tracks. */
+  /** YouTube video ID, or null when this track wasn't sourced from YouTube. */
   youtube_id: string | null;
-  /** Spotify track ID used for metadata enrichment, or null if not linked. */
-  spotify_id: string | null;
-  /** Audio features, populated after analysis. null until analysed. */
-  features: TrackFeatures | null;
   /** Unix timestamp (seconds) when the track was added to the library. */
   added_at: number;
   /** Where the track originated. */
-  source: 'youtube' | 'local';
+  source: 'youtube' | 'saavn' | 'local';
   /** Whether the user has liked/hearted this track. */
   liked: boolean;
 }
@@ -85,21 +61,6 @@ export interface Playlist {
 }
 
 /**
- * Six-dimensional taste vector used by the recommendation engine.
- * The tuple order maps directly to TrackFeatures in a fixed sequence so
- * that dot-product similarity is straightforward.
- *
- * Index mapping:
- *   0 → energy
- *   1 → valence
- *   2 → danceability
- *   3 → tempo_norm  (tempo / 200, clamped to [0, 1])
- *   4 → acousticness
- *   5 → instrumentalness
- */
-export type TasteVector = [number, number, number, number, number, number];
-
-/**
  * Represents a single item in the download queue.
  */
 export interface DownloadItem {
@@ -128,18 +89,41 @@ export interface DownloadItem {
 }
 
 /**
- * A single result item returned by a YouTube search query.
+ * A single result item from a music search.
+ *
+ * Historically named `YouTubeSearchResult` for backward compatibility with
+ * existing screens, but now provider-agnostic — the `provider` discriminant
+ * tells the download pipeline whether to resolve via JioSaavn or YouTube.
+ *
+ * For Saavn results, the encrypted media URL is captured at search time so
+ * the download path can call `song.generateAuthToken` later without hitting
+ * search again.
  */
 export interface YouTubeSearchResult {
-  /** YouTube video ID. */
+  /**
+   * Provider-native ID. YouTube videoId for `provider === 'youtube'`,
+   * Saavn song id (e.g. "aRZbUYD7") for `provider === 'saavn'`.
+   */
   id: string;
   title: string;
-  /** Channel / uploader name. */
+  /** Artist or channel name. */
   author: string;
   /** Track duration in milliseconds. */
   duration_ms: number;
-  /** URL of the best-quality thumbnail available for display. */
+  /** URL of the best-quality thumbnail / artwork available for display. */
   thumbnail: string;
-  /** Human-readable view count string as returned by the YouTube API (e.g. "1.2M views"). */
+  /** Free-form metadata (YouTube view-count or Saavn album). */
   view_count: string;
+  /**
+   * Which backend produced this result. Defaults to `youtube` when omitted
+   * for backward compatibility — code paths that were written before the
+   * provider abstraction continue to behave identically.
+   */
+  provider?: 'youtube' | 'saavn';
+  /** Saavn `encrypted_media_url`. Present iff `provider === 'saavn'`. */
+  saavnEncryptedUrl?: string;
+  /** Whether the Saavn 320 kbps tier is available; falls back to 160 kbps if not. */
+  saavnHas320kbps?: boolean;
+  /** Album name from Saavn metadata, used when writing the DB row. */
+  saavnAlbum?: string;
 }

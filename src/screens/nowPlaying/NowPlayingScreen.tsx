@@ -40,8 +40,6 @@ import Animated, {
   withRepeat,
   withSequence,
   withTiming,
-  interpolate,
-  Extrapolation,
   cancelAnimation,
 } from 'react-native-reanimated';
 import { BlurView } from 'expo-blur';
@@ -57,23 +55,23 @@ import { usePlayerStore } from '@/stores/playerStore';
 import { useUIStore } from '@/stores/uiStore';
 import { useAccentColor } from '@/hooks/useAccentColor';
 import { usePlayerQueue } from '@/features/player/useQueue';
+import { tracksCollection } from '@/db';
+import { logger } from '@/utils/logger';
+import { EqualizerBars } from '@/components/EqualizerBars';
 import type { RootStackNavigationProp } from '@/types/navigation';
 
 import { PlayerControls } from './components/PlayerControls';
 import { ProgressSlider } from './components/ProgressSlider';
-import { LyricsPanel } from './components/LyricsPanel';
 import { VolumeSlider } from './components/VolumeSlider';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const ARTWORK_SIZE = Math.min(SCREEN_WIDTH - 96, 300);
 const SAFE_TOP = Platform.OS === 'ios' ? 54 : (StatusBar.currentHeight ?? 24) + 8;
 
 const SPRING_GENTLE = { damping: 22, stiffness: 180, mass: 1 };
 const SPRING_FAST = { damping: 18, stiffness: 260, mass: 0.6 };
-
-type ActiveTab = 'lyrics' | 'queue';
 
 // ─── Progress slider connected to RNTP ──────────────────────────────────────
 // Isolated so the 500-ms `useProgress` re-renders stay scoped to the slider.
@@ -87,7 +85,10 @@ interface ConnectedProgressSliderProps {
 }
 
 function ConnectedProgressSlider({ onSeek, accentColor }: ConnectedProgressSliderProps) {
-  const progress = useProgress(500);
+  // Poll at 250 ms so the bar moves smoothly. Only this leaf component
+  // re-renders on each tick — the parent NowPlayingScreen and PlayerControls
+  // are isolated from progress updates by living above this connector.
+  const progress = useProgress(250);
   const activeTrack = useActiveTrack();
   const metadataDuration =
     typeof activeTrack?.duration === 'number' && activeTrack.duration > 0
@@ -105,60 +106,74 @@ function ConnectedProgressSlider({ onSeek, accentColor }: ConnectedProgressSlide
   );
 }
 
-interface ConnectedLyricsPanelProps {
-  trackId: string;
-  artist: string;
-  title: string;
-  album: string;
-  accentColor: string;
-}
-
-function ConnectedLyricsPanel({
-  trackId,
-  artist,
-  title,
-  album,
-  accentColor,
-}: ConnectedLyricsPanelProps) {
-  const progress = useProgress(500);
-  const activeTrack = useActiveTrack();
-  const metadataDurationMs =
-    typeof activeTrack?.duration === 'number' && activeTrack.duration > 0
-      ? activeTrack.duration * 1000
-      : 0;
-  const durationMs = progress.duration > 0
-    ? progress.duration * 1000
-    : metadataDurationMs;
-
-  return (
-    <LyricsPanel
-      trackId={trackId}
-      artist={artist}
-      title={title}
-      album={album}
-      duration_ms={durationMs}
-      currentPosition={progress.position}
-      accentColor={accentColor}
-    />
-  );
-}
-
 // ─── Placeholder artwork ──────────────────────────────────────────────────────
+// Clean gradient + initials, no app branding. Premium players (Spotify,
+// Apple Music, Tidal) all show *something* derived from the song itself
+// rather than the app's logo when artwork is missing.
 
-function ArtworkPlaceholder({ size }: { size: number }) {
+const PLACEHOLDER_GRADIENT_PAIRS: Array<[string, string]> = [
+  ['#FA233B', '#FF7D8A'],
+  ['#1D1D1F', '#3A3A3C'],
+  ['#5856D6', '#AF52DE'],
+  ['#FF9500', '#FFCC00'],
+  ['#34C759', '#30B0C7'],
+  ['#FF2D55', '#FF9500'],
+];
+
+function pickGradient(seed: string): [string, string] {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) {
+    h = seed.charCodeAt(i) + ((h << 5) - h);
+  }
+  return PLACEHOLDER_GRADIENT_PAIRS[Math.abs(h) % PLACEHOLDER_GRADIENT_PAIRS.length];
+}
+
+function getInitial(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) return '♪';
+  return trimmed.charAt(0).toUpperCase();
+}
+
+interface ArtworkPlaceholderProps {
+  size: number;
+  seed: string;
+  isPlaying: boolean;
+}
+
+function ArtworkPlaceholder({ size, seed, isPlaying }: ArtworkPlaceholderProps) {
+  const [start, end] = pickGradient(seed);
   return (
-    <View style={[styles.artworkPlaceholder, { width: size, height: size, borderRadius: 16 }]}>
-      <View style={styles.placeholderBadge}>
-        <Ionicons name="musical-note" size={54} color="#FA233B" />
-      </View>
-      <Text style={styles.placeholderText}>Chakaas Player</Text>
-    </View>
+    <LinearGradient
+      colors={[start, end]}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 1, y: 1 }}
+      style={[styles.artworkPlaceholder, { width: size, height: size, borderRadius: 16 }]}
+    >
+      <Text style={[styles.placeholderInitial, { fontSize: size * 0.42 }]}>
+        {getInitial(seed)}
+      </Text>
+      <EqualizerBars
+        playing={isPlaying}
+        count={5}
+        barWidth={size * 0.045}
+        gap={size * 0.035}
+        height={size * 0.22}
+        color="rgba(255,255,255,0.85)"
+        style={{ marginTop: size * 0.06 }}
+      />
+    </LinearGradient>
   );
 }
 
 // ─── Queue list ───────────────────────────────────────────────────────────────
 
-function QueuePanel() {
+interface QueuePanelProps {
+  activeTrackId: string | null;
+  accentColor: string;
+  isPlaying: boolean;
+}
+
+function QueuePanel({ activeTrackId, accentColor, isPlaying }: QueuePanelProps) {
   const { queue } = usePlayerQueue();
 
   if (!queue || queue.length === 0) {
@@ -169,36 +184,64 @@ function QueuePanel() {
     );
   }
 
+  // Render as plain Views — the outer ScrollView handles scrolling so the
+  // queue can extend past the visible area and the user reaches it by
+  // scrolling up.
   return (
-    <ScrollView
-      style={styles.queueScroll}
-      contentContainerStyle={styles.queueContent}
-      showsVerticalScrollIndicator={false}
-    >
-      {queue.map((track: any, index: number) => (
-        <View key={`${track.id ?? index}`} style={styles.queueItem}>
-          {track.artwork ? (
-            <FastImage
-              source={{ uri: track.artwork }}
-              style={styles.queueArt}
-            />
-          ) : (
-            <View style={[styles.queueArt, styles.queueArtPlaceholder]}>
-              <Ionicons name="musical-note" size={16} color="#8E8E93" />
+    <View style={styles.queueContent}>
+      {queue.map((track: any, index: number) => {
+        const isActive =
+          activeTrackId != null && String(track.id ?? '') === activeTrackId;
+        return (
+          <View
+            key={`${track.id ?? index}`}
+            style={[
+              styles.queueItem,
+              isActive && {
+                backgroundColor: `${accentColor}14`,
+                borderRadius: 10,
+                paddingHorizontal: 8,
+                marginHorizontal: -8,
+              },
+            ]}
+          >
+            {track.artwork ? (
+              <FastImage source={{ uri: track.artwork }} style={styles.queueArt} />
+            ) : (
+              <View style={[styles.queueArt, styles.queueArtPlaceholder]}>
+                <Ionicons name="musical-note" size={16} color="#8E8E93" />
+              </View>
+            )}
+            <View style={styles.queueInfo}>
+              <Text
+                style={[
+                  styles.queueTitle,
+                  isActive && { color: accentColor, fontWeight: '700' },
+                ]}
+                numberOfLines={1}
+              >
+                {track.title ?? 'Unknown Title'}
+              </Text>
+              <Text style={styles.queueArtist} numberOfLines={1}>
+                {track.artist ?? 'Unknown Artist'}
+              </Text>
             </View>
-          )}
-          <View style={styles.queueInfo}>
-            <Text style={styles.queueTitle} numberOfLines={1}>
-              {track.title ?? 'Unknown Title'}
-            </Text>
-            <Text style={styles.queueArtist} numberOfLines={1}>
-              {track.artist ?? 'Unknown Artist'}
-            </Text>
+            {isActive ? (
+              <EqualizerBars
+                playing={isPlaying}
+                count={3}
+                barWidth={3}
+                gap={3}
+                height={16}
+                color={accentColor}
+              />
+            ) : (
+              <Text style={styles.queueIndex}>{index + 1}</Text>
+            )}
           </View>
-          <Text style={styles.queueIndex}>{index + 1}</Text>
-        </View>
-      ))}
-    </ScrollView>
+        );
+      })}
+    </View>
   );
 }
 
@@ -230,21 +273,60 @@ export function NowPlayingScreen() {
   const { accentColor: extractedAccentColor } = useAccentColor(artworkUri);
   const accentColor = artworkUri ? extractedAccentColor : '#FA233B';
 
-  const [activeTab, setActiveTab] = useState<ActiveTab>('lyrics');
-  const tabOffset = useSharedValue(0);
-
-  // ── Like state (local optimistic, wired to DB in a real impl) ─────────────
+  // ── Like state (DB-backed via Track.like()/.unlike() writers) ────────────
   const [liked, setLiked] = useState(false);
   const likeScale = useSharedValue(1);
 
-  const handleLike = useCallback(() => {
+  // Sync local "liked" with the DB record for the active track. Re-runs
+  // whenever the active track changes so the heart reflects the new song's
+  // saved state immediately.
+  useEffect(() => {
+    let cancelled = false;
+    const id = activeTrack?.id;
+    if (!id) {
+      setLiked(false);
+      return;
+    }
+    (async () => {
+      try {
+        const record = await tracksCollection.find(String(id));
+        if (!cancelled) setLiked(!!record.liked);
+      } catch {
+        if (!cancelled) setLiked(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTrack?.id]);
+
+  const handleLike = useCallback(async () => {
     likeScale.value = withSequence(
       withSpring(1.4, SPRING_FAST),
       withSpring(1, SPRING_FAST),
     );
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    setLiked((v) => !v);
-  }, []);
+
+    const id = activeTrack?.id;
+    if (!id) return;
+
+    // Optimistic flip — gives instant visual feedback. The DB write below
+    // will either succeed (matching our optimistic state) or fail and we
+    // revert.
+    const next = !liked;
+    setLiked(next);
+    try {
+      const record = await tracksCollection.find(String(id));
+      if (next) {
+        await record.like();
+      } else {
+        await record.unlike();
+      }
+    } catch (err) {
+      logger.warn('[NowPlaying] like toggle failed:', err);
+      setLiked(!next);
+    }
+  }, [activeTrack?.id, liked, likeScale]);
 
   const likeStyle = useAnimatedStyle(() => ({
     transform: [{ scale: likeScale.value }],
@@ -271,46 +353,6 @@ export function NowPlayingScreen() {
 
   const artworkAnimStyle = useAnimatedStyle(() => ({
     transform: [{ scale: artworkScale.value }],
-  }));
-
-  // ── Tab switch ────────────────────────────────────────────────────────────
-  const handleTabSwitch = useCallback((tab: ActiveTab) => {
-    setActiveTab(tab);
-    tabOffset.value = withSpring(tab === 'lyrics' ? 0 : 1, SPRING_GENTLE);
-    Haptics.selectionAsync();
-  }, []);
-
-  const lyricsTabStyle = useAnimatedStyle(() => ({
-    opacity: interpolate(tabOffset.value, [0, 1], [1, 0], Extrapolation.CLAMP),
-    transform: [
-      {
-        translateX: interpolate(
-          tabOffset.value,
-          [0, 1],
-          [0, -20],
-          Extrapolation.CLAMP,
-        ),
-      },
-    ],
-    // Use `position: 'absolute'` to overlap tabs in the same space
-    position: 'absolute',
-    width: '100%',
-  }));
-
-  const queueTabStyle = useAnimatedStyle(() => ({
-    opacity: interpolate(tabOffset.value, [0, 1], [0, 1], Extrapolation.CLAMP),
-    transform: [
-      {
-        translateX: interpolate(
-          tabOffset.value,
-          [0, 1],
-          [20, 0],
-          Extrapolation.CLAMP,
-        ),
-      },
-    ],
-    position: 'absolute',
-    width: '100%',
   }));
 
   // ── Dismiss ────────────────────────────────────────────────────────────────
@@ -373,8 +415,7 @@ export function NowPlayingScreen() {
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
-        bounces={false}
-        scrollEnabled={false}
+        bounces
       >
         {/* ── 1. Header ──────────────────────────────────────────────────── */}
         <View style={[styles.header, { paddingTop: SAFE_TOP }]}>
@@ -414,7 +455,11 @@ export function NowPlayingScreen() {
                 resizeMode={FastImage.resizeMode.cover}
               />
             ) : (
-              <ArtworkPlaceholder size={ARTWORK_SIZE} />
+              <ArtworkPlaceholder
+                size={ARTWORK_SIZE}
+                seed={`${activeTrack?.title ?? ''}-${activeTrack?.artist ?? ''}`}
+                isPlaying={isPlaying}
+              />
             )}
           </Animated.View>
         </View>
@@ -422,7 +467,11 @@ export function NowPlayingScreen() {
         {/* ── 3. Track info ──────────────────────────────────────────────── */}
         <View style={styles.trackInfo}>
           <View style={styles.titleRow}>
-            <Text style={styles.trackTitle} numberOfLines={1} adjustsFontSizeToFit>
+            <Text
+              style={styles.trackTitle}
+              numberOfLines={2}
+              ellipsizeMode="tail"
+            >
               {activeTrack?.title ?? 'Not Playing'}
             </Text>
             <TouchableOpacity onPress={handleLike} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
@@ -467,67 +516,16 @@ export function NowPlayingScreen() {
           <VolumeSlider accentColor={accentColor} />
         </View>
 
-        {/* ── 7. Bottom tabs ──────────────────────────────────────────────── */}
-        <View style={styles.tabBar}>
-          <TouchableOpacity
-            style={[styles.tabButton, activeTab === 'lyrics' && styles.tabButtonActive]}
-            onPress={() => handleTabSwitch('lyrics')}
-          >
-            <Text
-              style={[
-                styles.tabLabel,
-                activeTab === 'lyrics' && { color: accentColor },
-              ]}
-            >
-              Lyrics
-            </Text>
-            {activeTab === 'lyrics' && (
-              <View style={[styles.tabIndicator, { backgroundColor: accentColor }]} />
-            )}
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.tabButton, activeTab === 'queue' && styles.tabButtonActive]}
-            onPress={() => handleTabSwitch('queue')}
-          >
-            <Text
-              style={[
-                styles.tabLabel,
-                activeTab === 'queue' && { color: accentColor },
-              ]}
-            >
-              Queue
-            </Text>
-            {activeTab === 'queue' && (
-              <View style={[styles.tabIndicator, { backgroundColor: accentColor }]} />
-            )}
-          </TouchableOpacity>
+        {/* ── 7. Up Next ──────────────────────────────────────────────────── */}
+        <View style={styles.upNextHeader}>
+          <Text style={[styles.upNextTitle, { color: accentColor }]}>Up Next</Text>
+          <View style={[styles.upNextRule, { backgroundColor: `${accentColor}33` }]} />
         </View>
-
-        {/* ── 8. Tab content ─────────────────────────────────────────────── */}
-        <View style={styles.tabContent} pointerEvents="box-none">
-          {/* Lyrics panel */}
-          <Animated.View style={lyricsTabStyle} pointerEvents={activeTab === 'lyrics' ? 'auto' : 'none'}>
-            {activeTrack ? (
-              <ConnectedLyricsPanel
-                trackId={activeTrack.id ?? ''}
-                artist={activeTrack.artist ?? ''}
-                title={activeTrack.title ?? ''}
-                album={activeTrack.album ?? ''}
-                accentColor={accentColor}
-              />
-            ) : (
-              <View style={styles.tabEmpty}>
-                <Text style={styles.tabEmptyText}>No track loaded</Text>
-              </View>
-            )}
-          </Animated.View>
-
-          {/* Queue panel */}
-          <Animated.View style={queueTabStyle} pointerEvents={activeTab === 'queue' ? 'auto' : 'none'}>
-            <QueuePanel />
-          </Animated.View>
-        </View>
+        <QueuePanel
+          activeTrackId={activeTrack?.id ? String(activeTrack.id) : null}
+          accentColor={accentColor}
+          isPlaying={isPlaying}
+        />
       </ScrollView>
     </View>
   );
@@ -603,26 +601,16 @@ const styles = StyleSheet.create({
     borderRadius: 22,
   },
   artworkPlaceholder: {
-    backgroundColor: '#FFFFFF',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(60,60,67,0.12)',
-    gap: 14,
-  },
-  placeholderBadge: {
-    width: 112,
-    height: 112,
-    borderRadius: 56,
-    backgroundColor: 'rgba(250,35,59,0.10)',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  placeholderText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#8E8E93',
-    letterSpacing: -0.1,
+  placeholderInitial: {
+    color: '#FFFFFF',
+    fontWeight: '800',
+    letterSpacing: -2,
+    textShadowColor: 'rgba(0,0,0,0.12)',
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 8,
   },
 
   // ── Track info ─────────────────────────────────────────────────────────────
@@ -675,57 +663,32 @@ const styles = StyleSheet.create({
     marginBottom: 22,
   },
 
-  // ── Tabs ──────────────────────────────────────────────────────────────────
-  tabBar: {
-    flexDirection: 'row',
+  // ── Up Next header ────────────────────────────────────────────────────────
+  upNextHeader: {
     paddingHorizontal: 32,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(60,60,67,0.14)',
-    marginBottom: 0,
-  },
-  tabButton: {
-    paddingVertical: 10,
-    marginRight: 28,
-    position: 'relative',
-  },
-  tabButtonActive: {},
-  tabLabel: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#8E8E93',
-    letterSpacing: 0.2,
-  },
-  tabIndicator: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    height: 2,
-    borderRadius: 1,
-  },
-  tabContent: {
-    minHeight: SCREEN_HEIGHT * 0.38,
-    position: 'relative',
-  },
-
-  // ── Tab empty states ──────────────────────────────────────────────────────
-  tabEmpty: {
-    height: 120,
-    justifyContent: 'center',
+    paddingTop: 6,
+    paddingBottom: 8,
+    flexDirection: 'row',
     alignItems: 'center',
+    gap: 12,
   },
-  tabEmptyText: {
-    fontSize: 14,
-    color: '#8E8E93',
+  upNextTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
+  upNextRule: {
+    flex: 1,
+    height: 1,
+    borderRadius: 0.5,
   },
 
   // ── Queue panel ───────────────────────────────────────────────────────────
-  queueScroll: {
-    maxHeight: SCREEN_HEIGHT * 0.38,
-  },
   queueContent: {
     paddingHorizontal: 20,
-    paddingVertical: 8,
+    paddingTop: 8,
+    paddingBottom: 24,
   },
   queueEmpty: {
     height: 120,

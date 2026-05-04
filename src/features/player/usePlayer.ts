@@ -42,7 +42,12 @@ export function usePlayer() {
     playbackState.state === State.Loading ||
     playbackState.state === State.Buffering;
 
-  const { setRepeatMode: storeSetRepeatMode, repeatMode } = usePlayerStore();
+  // Use selectors so this hook only re-renders when these specific store
+  // fields change. Subscribing to the whole store would re-render every
+  // consumer (MiniPlayer, NowPlayingScreen, PlayerControls) on any unrelated
+  // store update — adding noticeable lag to play/pause taps.
+  const repeatMode = usePlayerStore((s) => s.repeatMode);
+  const storeSetRepeatMode = usePlayerStore((s) => s.setRepeatMode);
 
   // ── Playback controls ──────────────────────────────────────────────────
 

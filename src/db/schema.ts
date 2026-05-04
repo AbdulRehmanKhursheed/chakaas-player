@@ -1,7 +1,7 @@
 import { appSchema, tableSchema } from '@nozbe/watermelondb';
 
 const schema = appSchema({
-  version: 1,
+  version: 2,
   tables: [
     tableSchema({
       name: 'tracks',
@@ -14,6 +14,7 @@ const schema = appSchema({
         { name: 'file_path', type: 'string' },
         { name: 'artwork_path', type: 'string', isOptional: true },
         { name: 'youtube_id', type: 'string', isOptional: true, isIndexed: true },
+        { name: 'saavn_id', type: 'string', isOptional: true, isIndexed: true },
         { name: 'spotify_id', type: 'string', isOptional: true },
         { name: 'energy', type: 'number', isOptional: true },
         { name: 'valence', type: 'number', isOptional: true },

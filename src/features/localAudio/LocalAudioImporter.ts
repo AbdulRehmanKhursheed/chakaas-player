@@ -25,7 +25,7 @@ function cleanTitle(value: string): string {
     .trim();
 }
 
-function inferMetadata(filename: string): { title: string; artist: string } {
+export function inferMetadata(filename: string): { title: string; artist: string } {
   const cleaned = cleanTitle(filename);
   const separator = cleaned.indexOf(' - ');
 
@@ -115,13 +115,7 @@ export async function importDeviceAudio(
             track.filePath = record.uri;
             track.artworkPath = null;
             track.youtubeId = null;
-            track.spotifyId = null;
-            track.energy = null;
-            track.valence = null;
-            track.danceability = null;
-            track.tempo = null;
-            track.acousticness = null;
-            track.instrumentalness = null;
+            track.saavnId = null;
             track.addedAt = record.addedAt;
             track.source = 'local';
             track.liked = false;

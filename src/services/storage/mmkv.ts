@@ -6,11 +6,8 @@ export const storage = new MMKV({ id: 'chakaas-general' });
 // Settings storage
 export const settingsStorage = new MMKV({ id: 'chakaas-settings' });
 
-// Taste vector + recommendation cache
+// Recommendation cache + artist affinity scores
 export const recommendationStorage = new MMKV({ id: 'chakaas-recommendations' });
-
-// Token cache for Spotify/APIs
-export const tokenStorage = new MMKV({ id: 'chakaas-tokens' });
 
 // Typed getter/setter helpers
 export function getJSON<T>(store: MMKV, key: string): T | null {

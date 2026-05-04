@@ -11,15 +11,27 @@ export type DownloadStatus =
 
 export interface DownloadItem {
   id: string;
+  /**
+   * Provider-native ID. YouTube videoId or Saavn song id; named
+   * `youtubeId` for backward compatibility with existing UI bindings.
+   */
   youtubeId: string;
   title: string;
   artist: string;
   thumbnail: string;
-  /** Track duration in milliseconds, sourced from YouTube metadata. */
+  /** Track duration in milliseconds, sourced from search metadata. */
   durationMs: number;
   progress: number; // 0 – 100
   status: DownloadStatus;
   error?: string;
+  /** Which backend resolves the stream URL. Defaults to 'youtube'. */
+  provider?: 'youtube' | 'saavn';
+  /** Album name, used for the DB record on completion. */
+  album?: string;
+  /** Saavn encrypted media URL — stream-resolution input. */
+  saavnEncryptedUrl?: string;
+  /** Whether Saavn 320 kbps tier is available. */
+  saavnHas320kbps?: boolean;
 }
 
 interface DownloadStore {

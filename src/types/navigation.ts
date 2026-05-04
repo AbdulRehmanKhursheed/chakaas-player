@@ -27,6 +27,8 @@ export type RootStackParamList = {
   ArtistDetail: { artist: string };
   /** Album detail view – shows tracklist for a given album. */
   AlbumDetail: { album: string };
+  /** Chakaas Engine analytics — what the recommendation engine has learned. */
+  ChakaasEngine: undefined;
 };
 
 // ---------------------------------------------------------------------------

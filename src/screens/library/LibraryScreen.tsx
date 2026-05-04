@@ -27,7 +27,11 @@ import { FlashList } from '@shopify/flash-list';
 import { useNavigation } from '@react-navigation/native';
 import { Q } from '@nozbe/watermelondb';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useActiveTrack, usePlaybackState, State } from 'react-native-track-player';
 import { useAllTracks } from '@/hooks/useTrackDB';
+import { getScreenBottomInset } from '@/utils/layout';
+import { EqualizerBars } from '@/components/EqualizerBars';
 import { usePlayerQueue } from '@/features/player/useQueue';
 import { useUIStore } from '@/stores/uiStore';
 import { database, playlistsCollection } from '@/db';
@@ -218,11 +222,13 @@ type SongsListItem =
 
 interface SongRowProps {
   track: Track;
+  isActive: boolean;
+  isPlaying: boolean;
   onPress: (track: Track) => void;
   onLongPress: (track: Track) => void;
 }
 
-function SongRow({ track, onPress, onLongPress }: SongRowProps) {
+function SongRow({ track, isActive, isPlaying, onPress, onLongPress }: SongRowProps) {
   const handlePress = useCallback(() => onPress(track), [track, onPress]);
   const handleLongPress = useCallback(() => onLongPress(track), [track, onLongPress]);
 
@@ -231,11 +237,14 @@ function SongRow({ track, onPress, onLongPress }: SongRowProps) {
       activeOpacity={0.75}
       onPress={handlePress}
       onLongPress={handleLongPress}
-      style={songRowStyles.container}
+      style={[songRowStyles.container, isActive && songRowStyles.containerActive]}
     >
       <TrackArtwork uri={track.artworkPath} blurhash={null} size={50} borderRadius={8} />
       <View style={songRowStyles.meta}>
-        <Text style={songRowStyles.title} numberOfLines={1}>
+        <Text
+          style={[songRowStyles.title, isActive && songRowStyles.titleActive]}
+          numberOfLines={1}
+        >
           {track.title}
         </Text>
         <Text style={songRowStyles.artist} numberOfLines={1}>
@@ -243,7 +252,18 @@ function SongRow({ track, onPress, onLongPress }: SongRowProps) {
           {track.album ? ` · ${track.album}` : ''}
         </Text>
       </View>
-      <Text style={songRowStyles.duration}>{formatDuration(track.durationMs)}</Text>
+      {isActive ? (
+        <EqualizerBars
+          playing={isPlaying}
+          count={3}
+          barWidth={3}
+          gap={3}
+          height={16}
+          color="#FA233B"
+        />
+      ) : (
+        <Text style={songRowStyles.duration}>{formatDuration(track.durationMs)}</Text>
+      )}
     </TouchableOpacity>
   );
 }
@@ -256,12 +276,19 @@ const songRowStyles = StyleSheet.create({
     paddingVertical: 10,
     gap: 12,
   },
+  containerActive: {
+    backgroundColor: 'rgba(250,35,59,0.06)',
+  },
   meta: { flex: 1 },
   title: {
     fontSize: 15,
     fontWeight: '600',
     color: '#1D1D1F',
     letterSpacing: -0.1,
+  },
+  titleActive: {
+    color: '#FA233B',
+    fontWeight: '700',
   },
   artist: {
     fontSize: 12,
@@ -420,9 +447,10 @@ const tabStyles = StyleSheet.create({
 
 interface PlaylistsFABProps {
   onPress: () => void;
+  bottomOffset: number;
 }
 
-function PlaylistsFAB({ onPress }: PlaylistsFABProps) {
+function PlaylistsFAB({ onPress, bottomOffset }: PlaylistsFABProps) {
   const scale = useSharedValue(1);
   const fabStyle = useAnimatedStyle(() => ({
     transform: [{ scale: scale.value }],
@@ -436,7 +464,7 @@ function PlaylistsFAB({ onPress }: PlaylistsFABProps) {
   }, []);
 
   return (
-    <Animated.View style={[fabStyles.fab, fabStyle]}>
+    <Animated.View style={[fabStyles.fab, { bottom: bottomOffset }, fabStyle]}>
       <TouchableOpacity
         onPress={onPress}
         onPressIn={handlePressIn}
@@ -454,7 +482,6 @@ function PlaylistsFAB({ onPress }: PlaylistsFABProps) {
 const fabStyles = StyleSheet.create({
   fab: {
     position: 'absolute',
-    bottom: 104,
     right: 20,
     borderRadius: 28,
     backgroundColor: '#FA233B',
@@ -528,13 +555,31 @@ function buildGenreGroups(tracks: Track[]): GenreGroup[] {
 export function LibraryScreen() {
   const navigation = useNavigation<RootStackNavigationProp>();
   const { playTrack } = usePlayerQueue();
+  const insets = useSafeAreaInsets();
 
   const allTracks = useAllTracks();
+  const activeRntpTrack = useActiveTrack();
+  const activeTrackId = activeRntpTrack?.id ? String(activeRntpTrack.id) : null;
+  const playbackState = usePlaybackState();
+  const isPlaying = playbackState.state === State.Playing;
   const [activeTab, setActiveTab] = useState<TabKey>('Songs');
   const [query, setQuery] = useState('');
   const [sortMode, setSortMode] = useState<SortMode>('recently_added');
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
   const [isImportingAudio, setIsImportingAudio] = useState(false);
+
+  // Once the user has imported any device audio at all, hide the big
+  // promo button — it's only there for the first-launch onboarding moment.
+  // They can always re-scan from Settings if they add new files later.
+  const hasImportedDeviceAudio = useMemo(
+    () => allTracks.some((t) => t.source === 'local'),
+    [allTracks],
+  );
+
+  // Recompute the list-bottom inset whenever the active-track state changes,
+  // so the giant MiniPlayer reservation collapses to a small tab-bar-only
+  // inset when nothing is playing.
+  const bottomPadding = getScreenBottomInset(insets.bottom, !!activeRntpTrack);
 
   // Load playlists reactively
   useEffect(() => {
@@ -754,12 +799,14 @@ export function LibraryScreen() {
       return (
         <SongRow
           track={item.track}
+          isActive={activeTrackId === item.track.id}
+          isPlaying={isPlaying}
           onPress={handleTrackPress}
           onLongPress={handleLongPress}
         />
       );
     },
-    [handleTrackPress, handleLongPress],
+    [handleTrackPress, handleLongPress, activeTrackId, isPlaying],
   );
 
   const renderArtistRow = useCallback(
@@ -838,18 +885,20 @@ export function LibraryScreen() {
         </Text>
       </View>
 
-      <TouchableOpacity
-        style={styles.importButton}
-        onPress={handleImportDeviceAudio}
-        disabled={isImportingAudio}
-        activeOpacity={0.8}
-      >
-        {isImportingAudio ? (
-          <ActivityIndicator size="small" color="#FFFFFF" />
-        ) : (
-          <Text style={styles.importButtonText}>Add songs from this device</Text>
-        )}
-      </TouchableOpacity>
+      {!hasImportedDeviceAudio && (
+        <TouchableOpacity
+          style={styles.importButton}
+          onPress={handleImportDeviceAudio}
+          disabled={isImportingAudio}
+          activeOpacity={0.8}
+        >
+          {isImportingAudio ? (
+            <ActivityIndicator size="small" color="#FFFFFF" />
+          ) : (
+            <Text style={styles.importButtonText}>Add songs from this device</Text>
+          )}
+        </TouchableOpacity>
+      )}
 
       {/* Tab bar */}
       <TabBar activeTab={activeTab} onTabPress={setActiveTab} />
@@ -859,65 +908,85 @@ export function LibraryScreen() {
         <>
           <SearchBar value={query} onChange={setQuery} />
           <SortPicker mode={sortMode} onChange={setSortMode} />
-          <FlashList
-            data={songsListData}
-            renderItem={renderSongsItem}
-            keyExtractor={(item) =>
-              item.type === 'header' ? `hdr-${item.letter}` : item.track.id
-            }
-            estimatedItemSize={70}
-            getItemType={(item) => (item.type === 'header' ? 'header' : 'track')}
-            ListEmptyComponent={emptyComponent}
-            contentContainerStyle={styles.listContent}
-            showsVerticalScrollIndicator={false}
-          />
+          {/* Wrap the list so we can shrink its viewport — without this the
+              FlashList fills the screen and content scrolls behind the
+              floating MiniPlayer. paddingBottom on the wrapper ends the
+              list above the chrome stack. */}
+          <View style={{ flex: 1, paddingBottom: bottomPadding }}>
+            <FlashList
+              data={songsListData}
+              renderItem={renderSongsItem}
+              keyExtractor={(item) =>
+                item.type === 'header' ? `hdr-${item.letter}` : item.track.id
+              }
+              estimatedItemSize={70}
+              getItemType={(item) => (item.type === 'header' ? 'header' : 'track')}
+              ListEmptyComponent={emptyComponent}
+              showsVerticalScrollIndicator={false}
+            />
+          </View>
         </>
       )}
 
       {/* ── Artists tab ── */}
       {activeTab === 'Artists' && (
-        <FlashList
-          data={artists}
-          renderItem={renderArtistRow}
-          keyExtractor={(item) => item.name}
-          estimatedItemSize={64}
-          ListEmptyComponent={emptyComponent}
-          contentContainerStyle={styles.listContent}
-          showsVerticalScrollIndicator={false}
-        />
+        <View style={{ flex: 1, paddingBottom: bottomPadding }}>
+          <FlashList
+            data={artists}
+            renderItem={renderArtistRow}
+            keyExtractor={(item) => item.name}
+            estimatedItemSize={64}
+            ListEmptyComponent={emptyComponent}
+            showsVerticalScrollIndicator={false}
+          />
+        </View>
       )}
 
       {/* ── Albums tab ── */}
       {activeTab === 'Albums' && (
-        <AlbumGrid albums={albums} onPress={handleAlbumPress} />
+        <View style={{ flex: 1, paddingBottom: bottomPadding }}>
+          <AlbumGrid
+            albums={albums}
+            onPress={handleAlbumPress}
+            contentBottomPadding={0}
+          />
+        </View>
       )}
 
       {/* ── Genres tab ── */}
       {activeTab === 'Genres' && (
-        <FlashList
-          data={genreGroups}
-          renderItem={renderGenreCard}
-          keyExtractor={(item) => item.genre}
-          estimatedItemSize={108}
-          ListEmptyComponent={emptyComponent}
-          contentContainerStyle={styles.genreListContent}
-          showsVerticalScrollIndicator={false}
-        />
+        <View style={{ flex: 1, paddingBottom: bottomPadding }}>
+          <FlashList
+            data={genreGroups}
+            renderItem={renderGenreCard}
+            keyExtractor={(item) => item.genre}
+            estimatedItemSize={108}
+            ListEmptyComponent={emptyComponent}
+            contentContainerStyle={{
+              paddingHorizontal: 16,
+              paddingTop: 8,
+            }}
+            showsVerticalScrollIndicator={false}
+          />
+        </View>
       )}
 
       {/* ── Playlists tab ── */}
       {activeTab === 'Playlists' && (
-        <View style={styles.playlistsRoot}>
+        <View style={[styles.playlistsRoot, { paddingBottom: bottomPadding }]}>
           <FlashList
             data={playlistPairs}
             renderItem={renderPlaylistPair}
             keyExtractor={(_, i) => String(i)}
             estimatedItemSize={PLAYLIST_CARD_SIZE + 60}
             ListEmptyComponent={playlistsEmptyComponent}
-            contentContainerStyle={styles.playlistGridContent}
+            contentContainerStyle={{
+              paddingHorizontal: 16,
+              paddingTop: 12,
+            }}
             showsVerticalScrollIndicator={false}
           />
-          <PlaylistsFAB onPress={handleNewPlaylist} />
+          <PlaylistsFAB onPress={handleNewPlaylist} bottomOffset={bottomPadding + 16} />
         </View>
       )}
     </View>
@@ -975,21 +1044,8 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     letterSpacing: -0.1,
   },
-  listContent: {
-    paddingBottom: 100,
-  },
-  genreListContent: {
-    paddingHorizontal: 16,
-    paddingTop: 8,
-    paddingBottom: 100,
-  },
   playlistsRoot: {
     flex: 1,
-  },
-  playlistGridContent: {
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: 180,
   },
   playlistPairRow: {
     flexDirection: 'row',

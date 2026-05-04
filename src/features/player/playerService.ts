@@ -39,23 +39,18 @@ export async function PlaybackService(): Promise<void> {
   });
 
   // ── Audio focus / ducking ───────────────────────────────────────────────
-  // permanent = true  → another app has permanently claimed audio focus
-  //                     (e.g. a phone call). Pause and do not resume.
-  // paused    = true  → transient focus loss (e.g. notification sound).
-  //                     Pause; resume when paused becomes false.
-  // paused    = false → focus has been returned to us. Resume playback.
+  // ANY focus loss (phone call, WhatsApp call, navigation prompt, another
+  // app starting playback) → pause and stay paused. We deliberately do NOT
+  // auto-resume when focus comes back: the user explicitly asked that the
+  // song should only resume when they tap play again, so a missed call or
+  // a passing notification doesn't pop music back into their ear.
   TrackPlayer.addEventListener(
     Event.RemoteDuck,
     async ({ paused, permanent }: { paused: boolean; permanent: boolean }) => {
-      if (permanent) {
+      if (permanent || paused) {
         await TrackPlayer.pause();
-        return;
       }
-      if (paused) {
-        await TrackPlayer.pause();
-      } else {
-        await TrackPlayer.play();
-      }
+      // paused === false (focus returned): intentionally a no-op.
     },
   );
 

@@ -8,6 +8,7 @@ import {
   StyleSheet,
   StatusBar,
   Platform,
+  ActivityIndicator,
 } from 'react-native';
 import Animated, {
   useAnimatedScrollHandler,
@@ -30,6 +31,8 @@ import { HeroCard } from './components/HeroCard';
 import { RecentlyPlayedRow } from './components/RecentlyPlayedRow';
 import { MostPlayedSection } from './components/MostPlayedSection';
 import { FavoritesSection } from '@/screens/library/components/FavoritesSection';
+import { getDiscoverFeed, type DiscoverItem } from '@/features/recommendations/discoverEngine';
+import { DownloadManager } from '@/features/download/DownloadManager';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -39,16 +42,12 @@ const SEVEN_DAYS_AGO = () => Math.floor(Date.now() / 1000) - 7 * 24 * 60 * 60;
 
 function getGreeting(): string {
   const hour = new Date().getHours();
+  // Treat the small-hours window as night — "Good morning" at 2 AM is a lie.
+  if (hour < 5) return 'Good night';
   if (hour < 12) return 'Good morning';
   if (hour < 17) return 'Good afternoon';
-  return 'Good evening';
-}
-
-function formatDuration(ms: number): string {
-  const totalSec = Math.floor(ms / 1000);
-  const min = Math.floor(totalSec / 60);
-  const sec = totalSec % 60;
-  return `${min}:${sec.toString().padStart(2, '0')}`;
+  if (hour < 22) return 'Good evening';
+  return 'Good night';
 }
 
 // ─── Section header ───────────────────────────────────────────────────────────
@@ -56,17 +55,35 @@ function formatDuration(ms: number): string {
 interface SectionHeaderProps {
   title: string;
   onSeeAll?: () => void;
+  onRefresh?: () => void;
+  refreshing?: boolean;
 }
 
-function SectionHeader({ title, onSeeAll }: SectionHeaderProps) {
+function SectionHeader({ title, onSeeAll, onRefresh, refreshing }: SectionHeaderProps) {
   return (
     <View style={styles.sectionHeader}>
       <Text style={styles.sectionTitle}>{title}</Text>
-      {onSeeAll && (
-        <TouchableOpacity onPress={onSeeAll} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-          <Text style={styles.seeAll}>See All</Text>
-        </TouchableOpacity>
-      )}
+      <View style={styles.sectionHeaderRight}>
+        {onRefresh && (
+          <TouchableOpacity
+            onPress={onRefresh}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            disabled={refreshing}
+            style={styles.refreshBtn}
+          >
+            {refreshing ? (
+              <ActivityIndicator size="small" color="#FA233B" />
+            ) : (
+              <Ionicons name="refresh" size={18} color="#FA233B" />
+            )}
+          </TouchableOpacity>
+        )}
+        {onSeeAll && (
+          <TouchableOpacity onPress={onSeeAll} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <Text style={styles.seeAll}>See All</Text>
+          </TouchableOpacity>
+        )}
+      </View>
     </View>
   );
 }
@@ -102,36 +119,63 @@ function TrackCard({ track, onPress }: TrackCardProps) {
   );
 }
 
-// ─── Vertical track row (Made For You) ───────────────────────────────────────
+// ─── Discover row (Saavn suggestion the user can add to downloads) ──────────
 
-interface VerticalTrackRowProps {
-  track: Track;
+interface DiscoverRowProps {
+  item: DiscoverItem;
   index: number;
-  onPress: (track: Track) => void;
 }
 
-function VerticalTrackRow({ track, index, onPress }: VerticalTrackRowProps) {
-  const handlePress = useCallback(() => onPress(track), [track, onPress]);
+function DiscoverRow({ item, index }: DiscoverRowProps) {
+  const [enqueuing, setEnqueuing] = useState(false);
+  const [enqueued, setEnqueued] = useState(false);
+
+  const handleAdd = useCallback(async () => {
+    if (enqueuing || enqueued) return;
+    setEnqueuing(true);
+    try {
+      const result = await DownloadManager.enqueue({
+        youtubeId: item.id,
+        title: item.title,
+        artist: item.author,
+        thumbnail: item.thumbnail,
+        durationMs: item.duration_ms,
+        provider: 'saavn',
+        album: item.saavnAlbum,
+        saavnEncryptedUrl: item.saavnEncryptedUrl,
+        saavnHas320kbps: item.saavnHas320kbps,
+      });
+      setEnqueued(result.success);
+    } finally {
+      setEnqueuing(false);
+    }
+  }, [item, enqueuing, enqueued]);
+
   return (
-    <TouchableOpacity
-      activeOpacity={0.8}
-      onPress={handlePress}
-      style={styles.verticalRow}
-    >
+    <View style={styles.verticalRow}>
       <Text style={styles.verticalIndex}>{index + 1}</Text>
-      <TrackArtwork uri={track.artworkPath} blurhash={null} size={50} borderRadius={8} />
+      <TrackArtwork uri={item.thumbnail} blurhash={null} size={50} borderRadius={8} />
       <View style={styles.verticalMeta}>
         <Text style={styles.verticalTitle} numberOfLines={1}>
-          {track.title}
+          {item.title}
         </Text>
         <Text style={styles.verticalArtist} numberOfLines={1}>
-          {track.artist}
+          {item.author} · {item.reason}
         </Text>
       </View>
-      <Text style={styles.verticalDuration}>
-        {formatDuration(track.durationMs)}
-      </Text>
-    </TouchableOpacity>
+      <TouchableOpacity
+        onPress={handleAdd}
+        disabled={enqueuing || enqueued}
+        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+        style={styles.discoverActionBtn}
+      >
+        <Ionicons
+          name={enqueued ? 'checkmark-circle' : 'arrow-down-circle'}
+          size={26}
+          color={enqueued ? '#1DB954' : '#FA233B'}
+        />
+      </TouchableOpacity>
+    </View>
   );
 }
 
@@ -162,7 +206,7 @@ function DownloadsQuickButton({ activeCount, onPress }: DownloadsButtonProps) {
       style={styles.downloadsButton}
       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
     >
-      <Ionicons name="arrow-down" size={20} color="#FFFFFF" />
+      <Ionicons name="arrow-down" size={20} color="#FA233B" />
       {activeCount > 0 && (
         <View style={styles.downloadsBadge}>
           <Text style={styles.downloadsBadgeText}>
@@ -189,6 +233,10 @@ export function HomeScreen() {
   );
 
   const [refreshing, setRefreshing] = useState(false);
+  // Bumped each time the user taps "refresh" on the Made For You section.
+  // Threaded into the query key so TanStack refetches with `shuffle=true`
+  // and surfaces a different sample from the top-of-rank pool.
+  const [discoverNonce, setDiscoverNonce] = useState(0);
   const scrollY = useSharedValue(0);
 
   // Daily picks: tracks downloaded today (added_at in last 24h)
@@ -203,29 +251,25 @@ export function HomeScreen() {
     return allTracks.filter((t) => t.addedAt >= cutoff).slice(0, 15);
   }, [allTracks]);
 
-  // Recommendations via TanStack Query (uses tracks with audio features)
-  const { data: recommendations, isLoading: recLoading } = useQuery({
-    queryKey: ['recommendations', allTracks.length],
-    queryFn: async () => {
-      // Build a scored list from tracks that have features
-      const withFeatures = allTracks.filter((t) => t.features !== null);
-      if (withFeatures.length === 0) return allTracks.slice(0, 5);
-
-      // Simple energy + valence score weighted by how much we've heard each track
-      const playedIds = new Set(recentlyPlayed.map((t) => t.id));
-      const scored = withFeatures
-        .filter((t) => !playedIds.has(t.id))
-        .map((t) => ({
-          track: t,
-          score: (t.features!.energy + t.features!.valence + t.features!.danceability) / 3,
-        }))
-        .sort((a, b) => b.score - a.score);
-
-      return scored.slice(0, 5).map((s) => s.track);
-    },
-    staleTime: 5 * 60 * 1000,
-    enabled: allTracks.length > 0,
+  // Discover — Saavn-backed suggestions ranked by artist affinity (learned +
+  // seeded from the user's stated taste). Refreshes automatically when the
+  // library changes; the user can also force a fresh sample via the section
+  // header refresh button (which bumps `discoverNonce`).
+  const { data: discoverItems, isLoading: discoverLoading, isFetching: discoverFetching } = useQuery({
+    queryKey: ['discover-feed', allTracks.length, discoverNonce],
+    queryFn: () => getDiscoverFeed(20, discoverNonce > 0),
+    staleTime: 10 * 60 * 1000,
   });
+
+  // "Downloaded from Chakaas" — every track sourced through the in-app
+  // download flow, sorted newest first. Source 'local' (device imports) is
+  // excluded so this section reflects what Chakaas itself has fetched.
+  const downloadedFromChakaas = useMemo(() => {
+    return allTracks
+      .filter((t) => t.source === 'saavn' || t.source === 'youtube')
+      .slice() // copy before sort
+      .sort((a, b) => b.addedAt - a.addedAt);
+  }, [allTracks]);
 
   // Play a track in context of the full library
   const handleTrackPress = useCallback(
@@ -346,12 +390,16 @@ export function HomeScreen() {
           <FavoritesSection limit={10} />
         </View>
 
-        {/* ─── Made For You ──────────────────────────────────────────────── */}
+        {/* ─── Discover (Saavn-backed) ───────────────────────────────────── */}
         <View style={styles.section}>
-          <SectionHeader title="Made For You" />
-          {recLoading ? (
+          <SectionHeader
+            title="Made For You"
+            onRefresh={() => setDiscoverNonce((n) => n + 1)}
+            refreshing={discoverFetching}
+          />
+          {discoverLoading && (discoverItems ?? []).length === 0 ? (
             <View style={styles.verticalSkeletonContainer}>
-              {[0, 1, 2, 4].map((i) => (
+              {[0, 1, 2, 3].map((i) => (
                 <View key={i} style={styles.verticalSkeletonRow}>
                   <View style={styles.verticalSkeletonArt} />
                   <View style={styles.verticalSkeletonText}>
@@ -361,17 +409,46 @@ export function HomeScreen() {
                 </View>
               ))}
             </View>
+          ) : (discoverItems ?? []).length === 0 ? (
+            <DiscoveringState />
           ) : (
-            (recommendations ?? []).map((track, index) => (
-              <VerticalTrackRow
-                key={track.id}
-                track={track}
-                index={index}
-                onPress={handleTrackPress}
-              />
-            ))
+            // While a refetch is running we dim the existing rows so it's
+            // visible that fresh picks are on the way without yanking the
+            // list out from under the user.
+            <View style={discoverFetching ? styles.discoverDimmed : undefined}>
+              {(discoverItems ?? [])
+                .slice(0, 8)
+                .map((item, index) => (
+                  <DiscoverRow key={item.id} item={item} index={index} />
+                ))}
+              {discoverFetching && (
+                <View style={styles.discoverInlineLoader}>
+                  <ActivityIndicator size="small" color="#FA233B" />
+                  <Text style={styles.discoverInlineLoaderText}>
+                    Finding fresh picks…
+                  </Text>
+                </View>
+              )}
+            </View>
           )}
         </View>
+
+        {/* ─── Downloaded from Chakaas (always visible) ──────────────────── */}
+        {downloadedFromChakaas.length > 0 && (
+          <View style={styles.section}>
+            <SectionHeader title="Downloaded from Chakaas" />
+            <FlatList
+              data={downloadedFromChakaas}
+              renderItem={renderTrackCard}
+              keyExtractor={(item) => item.id}
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.horizontalList}
+              ItemSeparatorComponent={() => <View style={{ width: 14 }} />}
+              scrollEventThrottle={16}
+            />
+          </View>
+        )}
 
         {/* ─── Recently Added ───────────────────────────────────────────── */}
         {recentlyAdded.length > 0 && (
@@ -489,6 +566,35 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     marginBottom: 14,
   },
+  sectionHeaderRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  refreshBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(250,35,59,0.10)',
+  },
+  discoverDimmed: {
+    opacity: 0.4,
+  },
+  discoverInlineLoader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingTop: 12,
+    paddingBottom: 4,
+  },
+  discoverInlineLoaderText: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: '#8E8E93',
+  },
   sectionTitle: {
     fontSize: 18,
     fontWeight: '700',
@@ -555,6 +661,12 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '400',
     color: '#8E8E93',
+  },
+  discoverActionBtn: {
+    width: 38,
+    height: 38,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   // Discovering state
   discoveringContainer: {

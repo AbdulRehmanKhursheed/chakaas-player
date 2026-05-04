@@ -56,7 +56,9 @@ const COLORS = {
 const TAB_HEIGHT = 58;
 const TAB_BAR_EXTRA_HEIGHT = 10;
 const TAB_BAR_BOTTOM_MARGIN = 12;
-const MINI_PLAYER_GAP = 16;
+// Sit the MiniPlayer flush on top of the tab bar — no floating gap. Matches
+// Spotify / Apple Music behaviour and keeps a tighter visual stack.
+const MINI_PLAYER_GAP = 0;
 
 // ---------------------------------------------------------------------------
 // Download badge count

@@ -21,7 +21,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { PanGestureHandler } from 'react-native-gesture-handler';
 import { useNavigation } from '@react-navigation/native';
-import { useActiveTrack, useProgress } from 'react-native-track-player';
+import TrackPlayer, { useActiveTrack, useProgress } from 'react-native-track-player';
 import * as Haptics from 'expo-haptics';
 import { usePlayer } from '@/features/player/usePlayer';
 import type { RootStackNavigationProp } from '@/types/navigation';
@@ -131,6 +131,17 @@ export function MiniPlayer() {
     skipToNext();
   }, [skipToNext]);
 
+  const handleClose = useCallback(async () => {
+    // Reset clears the queue, which sets activeTrack to null. The component
+    // auto-hides on the next render via the early `if (!activeTrack)` return.
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    try {
+      await TrackPlayer.reset();
+    } catch {
+      // Player wasn't initialised — nothing to stop.
+    }
+  }, []);
+
   // Pan gesture — swipe up to open NowPlaying, swipe down to bounce back
   const gestureHandler = useAnimatedGestureHandler({
     onStart: (_, ctx: { startY: number }) => {
@@ -234,6 +245,16 @@ export function MiniPlayer() {
             >
               <Ionicons name="play-skip-forward" size={22} color="#3A3A3C" />
             </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={handleClose}
+              style={styles.closeButton}
+              hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}
+              accessibilityLabel="Stop playback and close mini player"
+              accessibilityRole="button"
+            >
+              <Ionicons name="close" size={20} color="#8E8E93" />
+            </TouchableOpacity>
           </View>
         </Pressable>
       </Animated.View>
@@ -247,9 +268,11 @@ const styles = StyleSheet.create({
   container: {
     height: MINI_PLAYER_HEIGHT,
     backgroundColor: '#FFFFFF',
-    borderRadius: 22,
-    marginHorizontal: 12,
-    marginBottom: 8,
+    // Round only the top corners — bottom edge is flush against the tab bar.
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    marginHorizontal: 16,
+    marginBottom: 0,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: 'rgba(60,60,67,0.12)',
     overflow: 'hidden',
@@ -320,5 +343,13 @@ const styles = StyleSheet.create({
     borderRadius: 19,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  closeButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: 2,
   },
 });

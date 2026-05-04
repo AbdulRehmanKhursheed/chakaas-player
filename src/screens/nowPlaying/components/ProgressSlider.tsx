@@ -15,6 +15,7 @@ import Animated, {
   useSharedValue,
   useAnimatedStyle,
   useAnimatedGestureHandler,
+  useAnimatedReaction,
   withSpring,
   withTiming,
   runOnJS,
@@ -67,6 +68,13 @@ export function ProgressSlider({
   // Scrub position as a fraction [0, 1] (only valid while dragging)
   const scrubFraction = useSharedValue(0);
 
+  // Optimistic post-release fraction. While ≥ 0 the bar stays at this
+  // position instead of snapping back to the polled `playFraction`. Cleared
+  // by the reaction below once RNTP's position catches up — eliminates the
+  // visible "thumb jumps backward then forward" after release on Android,
+  // where seekTo() can take 200–500 ms to settle.
+  const optimisticEndFraction = useSharedValue(-1);
+
   // Thumb visibility & scale
   const thumbScale = useSharedValue(0);
   const thumbOpacity = useSharedValue(0);
@@ -88,6 +96,20 @@ export function ProgressSlider({
   // ── Derived fraction from RNTP progress (clamped, safe) ───────────────────
   const playFraction = duration > 0 ? Math.min(1, Math.max(0, position / duration)) : 0;
 
+  // Once the polled position catches up to within ~1% of the optimistic
+  // target, release the lock so the bar resumes following live playback.
+  useAnimatedReaction(
+    () => playFraction,
+    (current) => {
+      if (
+        optimisticEndFraction.value >= 0 &&
+        Math.abs(current - optimisticEndFraction.value) < 0.01
+      ) {
+        optimisticEndFraction.value = -1;
+      }
+    },
+  );
+
   // ── Pan gesture (tap or drag to scrub) ─────────────────────────────────────
   const panHandler = useAnimatedGestureHandler<PanGestureHandlerGestureEvent>({
     onStart: (event) => {
@@ -107,6 +129,9 @@ export function ProgressSlider({
     onEnd: () => {
       isDragging.value = false;
       const finalFraction = scrubFraction.value;
+      // Hold the bar at the release position so it doesn't snap backward
+      // while RNTP completes the (async) seek.
+      optimisticEndFraction.value = finalFraction;
 
       // Shrink thumb after a brief pause
       thumbScale.value = withSpring(0.7, SPRING_FAST, () => {
@@ -132,14 +157,22 @@ export function ProgressSlider({
   // ── Animated styles ────────────────────────────────────────────────────────
 
   const playedBarStyle = useAnimatedStyle(() => {
-    const fraction = isDragging.value ? scrubFraction.value : playFraction;
+    const fraction = isDragging.value
+      ? scrubFraction.value
+      : optimisticEndFraction.value >= 0
+        ? optimisticEndFraction.value
+        : playFraction;
     return {
       width: `${interpolate(fraction, [0, 1], [0, 100], Extrapolation.CLAMP)}%`,
     };
   });
 
   const thumbStyle = useAnimatedStyle(() => {
-    const fraction = isDragging.value ? scrubFraction.value : playFraction;
+    const fraction = isDragging.value
+      ? scrubFraction.value
+      : optimisticEndFraction.value >= 0
+        ? optimisticEndFraction.value
+        : playFraction;
     const leftOffset = interpolate(
       fraction,
       [0, 1],
@@ -193,6 +226,7 @@ export function ProgressSlider({
     </View>
   );
 }
+
 
 // ─── Styles ──────────────────────────────────────────────────────────────────
 

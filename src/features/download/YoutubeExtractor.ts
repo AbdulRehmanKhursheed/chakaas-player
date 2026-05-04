@@ -565,6 +565,12 @@ export interface AudioStreamInfo {
    * 0 when unknown (very rare — getInfo always returns duration).
    */
   durationMs: number;
+  /**
+   * Headers the CDN expects on the GET. Saavn requires Referer + matching
+   * User-Agent; YouTube doesn't strictly need anything but accepts mobile
+   * UAs. Merged on top of DownloadManager's default header sets.
+   */
+  requestHeaders?: Record<string, string>;
 }
 
 type DirectClientConfig = {

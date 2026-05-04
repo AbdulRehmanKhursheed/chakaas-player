@@ -10,6 +10,7 @@ import {
 import { FlashList } from '@shopify/flash-list';
 import FastImage from 'react-native-fast-image';
 import { Ionicons } from '@expo/vector-icons';
+import { normalizeLocalUri } from '@/utils/layout';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -23,6 +24,8 @@ export interface AlbumItem {
 interface AlbumGridProps {
   albums: AlbumItem[];
   onPress: (album: AlbumItem) => void;
+  /** Bottom padding so the last row clears the floating tab bar + MiniPlayer. */
+  contentBottomPadding?: number;
 }
 
 // ─── Layout constants ─────────────────────────────────────────────────────────
@@ -60,7 +63,7 @@ function AlbumCard({ album, onPress }: AlbumCardProps) {
         {album.artworkPath ? (
           <FastImage
             source={{
-              uri: album.artworkPath,
+              uri: normalizeLocalUri(album.artworkPath) ?? album.artworkPath,
               priority: FastImage.priority.normal,
               cache: FastImage.cacheControl.immutable,
             }}
@@ -92,7 +95,7 @@ function AlbumCard({ album, onPress }: AlbumCardProps) {
 
 // ─── Grid Component ───────────────────────────────────────────────────────────
 
-export function AlbumGrid({ albums, onPress }: AlbumGridProps) {
+export function AlbumGrid({ albums, onPress, contentBottomPadding = 100 }: AlbumGridProps) {
   const renderItem = useCallback(
     ({ item }: { item: AlbumItem }) => (
       <AlbumCard album={item} onPress={onPress} />
@@ -122,7 +125,10 @@ export function AlbumGrid({ albums, onPress }: AlbumGridProps) {
       keyExtractor={keyExtractor}
       numColumns={COLUMN_COUNT}
       estimatedItemSize={CARD_WIDTH + 64}
-      contentContainerStyle={styles.listContent}
+      contentContainerStyle={{
+        padding: HORIZONTAL_PADDING,
+        paddingBottom: contentBottomPadding,
+      }}
       showsVerticalScrollIndicator={false}
     />
   );
@@ -131,10 +137,6 @@ export function AlbumGrid({ albums, onPress }: AlbumGridProps) {
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
-  listContent: {
-    padding: HORIZONTAL_PADDING,
-  },
-
   // Card
   card: {
     flex: 1,

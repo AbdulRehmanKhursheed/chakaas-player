@@ -3,6 +3,7 @@ import { View, StyleSheet } from 'react-native';
 import FastImage from 'react-native-fast-image';
 import { Blurhash } from 'react-native-blurhash';
 import { Ionicons } from '@expo/vector-icons';
+import { normalizeLocalUri } from '@/utils/layout';
 
 // ─── Props ───────────────────────────────────────────────────────────────────
 
@@ -43,7 +44,11 @@ export function TrackArtwork({
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
 
-  const placeholderColor = getColorForString(uri ?? 'default');
+  // FastImage on Android won't load bare absolute paths (e.g. paths returned
+  // by RNBlobUtil) without a `file://` prefix. Normalise once here so every
+  // call site doesn't have to.
+  const resolvedUri = normalizeLocalUri(uri);
+  const placeholderColor = getColorForString(resolvedUri ?? 'default');
 
   const containerStyle = {
     width: size,
@@ -52,7 +57,7 @@ export function TrackArtwork({
     overflow: 'hidden' as const,
   };
 
-  if (!uri || imageError) {
+  if (!resolvedUri || imageError) {
     return (
       <View style={[containerStyle, styles.placeholder, { backgroundColor: placeholderColor }]}>
         <Ionicons name="musical-notes" size={size * 0.38} color="#FA233B" />
@@ -80,7 +85,7 @@ export function TrackArtwork({
 
       <FastImage
         source={{
-          uri,
+          uri: resolvedUri,
           priority: FastImage.priority.normal,
           cache: FastImage.cacheControl.immutable,
         }}
