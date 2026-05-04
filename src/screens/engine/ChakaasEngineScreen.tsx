@@ -29,7 +29,6 @@ import { LinearGradient } from 'expo-linear-gradient';
 import {
   getEngineStats,
   resetAffinity,
-  ensureSeeded,
   type EngineStats,
 } from '@/features/recommendations/artistAffinity';
 import {
@@ -231,11 +230,6 @@ function TopArtistsChart({ topArtists }: TopArtistsProps) {
               <Text style={artistStyles.artistName} numberOfLines={1}>
                 {row.artist}
               </Text>
-              {row.isSeed && (
-                <View style={artistStyles.seedBadge}>
-                  <Text style={artistStyles.seedBadgeText}>SEED</Text>
-                </View>
-              )}
               <Text style={artistStyles.score}>{row.score.toFixed(1)}</Text>
             </View>
             <View style={artistStyles.barTrack}>
@@ -590,7 +584,7 @@ export function ChakaasEngineScreen() {
   const handleReset = useCallback(() => {
     Alert.alert(
       'Reset learning?',
-      'Wipes everything the engine has learned about your taste. Your stated seed (Nusrat, Rahat, Atif, Arijit, Honey Singh, Badshah) will be restored. Plays already in your library are kept.',
+      'Wipes everything the engine has learned about your taste. The engine will start fresh and learn from your real plays — no defaults, no seeded artists. Plays already in your library are kept.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -598,9 +592,6 @@ export function ChakaasEngineScreen() {
           style: 'destructive',
           onPress: () => {
             resetAffinity();
-            // Re-seed immediately so the user isn't left with an empty
-            // engine — the original taste statement comes back.
-            ensureSeeded();
             void loadAll();
           },
         },

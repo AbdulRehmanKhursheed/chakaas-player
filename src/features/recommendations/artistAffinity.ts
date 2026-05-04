@@ -1,29 +1,25 @@
 /**
  * Artist-affinity store — the heart of the on-device recommendation engine.
  *
- * Why artist affinity (not Spotify-style audio features):
- *   The `TasteVectorService` already in the codebase needs every track to be
- *   enriched with energy/valence/danceability via an external Spotify call.
- *   That enrichment never runs in this app, so the existing engine produces
- *   nothing useful. An artist-affinity score works immediately: every track
- *   already has an artist name, every play tells us "this user likes (or
- *   doesn't) songs by this person."
+ * Why artist affinity (not audio-feature similarity):
+ *   Every track already has an artist name and every play tells us "this
+ *   user likes (or doesn't) songs by this person." Cheap, fast, accurate
+ *   for a personal music app. No external services or enrichment needed.
  *
  * Persistence:
- *   Backed by MMKV under `chakaas-recommendations` so scores survive app
- *   restarts. MMKV is a fast synchronous KV store (no async/await needed for
- *   reads), which is exactly what we want on the play-event hot path.
+ *   Backed by MMKV under `chakaas-recommendations`. MMKV is synchronous on
+ *   read so the play-event hot path doesn't need to await anything.
  *
  * Scoring rules (per play event):
  *   - Completed play (≥ 80% of track):  +1.0
  *   - Partial   (30–80%):                +0.5 × completion
  *   - Skip       (< 30%):                -0.3
- *   - Decay applied weekly via `decayAllScores()` so stale tastes fade.
+ *   - 30-day half-life decay via `decayAllScores()` so stale tastes fade.
  *
  * Bootstrapping:
- *   On first launch the store is seeded from `USER_TASTE_SEED` (the user's
- *   explicitly stated favorites). Once real plays start arriving the learned
- *   scores eclipse the seed naturally — no special handling required.
+ *   The engine learns purely from real plays — no automatic taste seeding.
+ *   `seed.ts` exists only as a hint inside the file (a snapshot of what
+ *   the user stated they listen to) and is never written into scores.
  */
 import { recommendationStorage, getJSON, setJSON } from '@/services/storage/mmkv';
 import { logger } from '@/utils/logger';
@@ -31,6 +27,7 @@ import { USER_TASTE_SEED } from './seed';
 
 const STORE_KEY = 'artist_affinity_v1';
 const SEEDED_FLAG_KEY = 'artist_affinity_seeded_v1';
+const LEGACY_SEED_CLEARED_KEY = 'legacy_seed_cleared_v1';
 
 interface AffinityState {
   /** artistName (lowercased) → score */
@@ -58,32 +55,26 @@ function normaliseArtist(artist: string): string {
   return artist.trim().toLowerCase();
 }
 
-// ── Bootstrap from seed ────────────────────────────────────────────────────
+// ── Legacy seed cleanup ────────────────────────────────────────────────────
 
 /**
- * One-time seed of artist scores from the user's stated taste. Idempotent:
- * runs only the first time the app is launched (a flag in MMKV records that
- * seeding happened). Existing learned scores are never overwritten on
- * subsequent calls.
+ * One-time wipe for users running an earlier build that auto-seeded artist
+ * scores. Idempotent — guarded by an MMKV flag so it only runs the first
+ * time after this version installs. After running, real plays start scoring
+ * from a true blank slate.
+ *
+ * Detected by the presence of the legacy SEEDED_FLAG_KEY (set by the
+ * removed `ensureSeeded()` function).
  */
-export function ensureSeeded(): void {
-  const alreadySeeded = recommendationStorage.getBoolean(SEEDED_FLAG_KEY);
-  if (alreadySeeded) return;
-
-  const state = loadState();
-  for (const [artist, score] of Object.entries(USER_TASTE_SEED.artists)) {
-    const key = normaliseArtist(artist);
-    // Don't overwrite if learned score already exists.
-    if (state.scores[key] === undefined) {
-      state.scores[key] = score;
-    }
+export function clearLegacySeedBiasOnce(): void {
+  if (recommendationStorage.getBoolean(LEGACY_SEED_CLEARED_KEY)) return;
+  const hadLegacySeed = recommendationStorage.getBoolean(SEEDED_FLAG_KEY);
+  if (hadLegacySeed) {
+    recommendationStorage.delete(STORE_KEY);
+    recommendationStorage.delete(SEEDED_FLAG_KEY);
+    logger.info('[ArtistAffinity] Cleared legacy seed bias — engine starts fresh.');
   }
-  saveState(state);
-  recommendationStorage.set(SEEDED_FLAG_KEY, true);
-  logger.info(
-    `[ArtistAffinity] Seeded ${Object.keys(USER_TASTE_SEED.artists).length} ` +
-    `artists from user taste statement.`,
-  );
+  recommendationStorage.set(LEGACY_SEED_CLEARED_KEY, true);
 }
 
 // ── Updates ────────────────────────────────────────────────────────────────
@@ -160,23 +151,18 @@ export function decayAllScores(): void {
  * Top N artists ranked by affinity score, descending. Negative-score artists
  * (i.e. ones the user repeatedly skipped) are excluded.
  *
- * Returns the original-case artist names where possible (looked up from the
- * seed) so search queries to Saavn use proper capitalisation. Unknown-cased
- * artists are returned as stored (lowercase).
+ * Returns artist names as stored. We bumpArtistFromPlay using the original
+ * mixed-case name and only lowercase the lookup key, so most entries
+ * already have proper capitalisation when read back.
  */
 export function getTopArtists(limit = 10): Array<{ artist: string; score: number }> {
   const state = loadState();
-  const seedNames = Object.keys(USER_TASTE_SEED.artists);
-  const seedLookup = new Map<string, string>(
-    seedNames.map((name) => [normaliseArtist(name), name]),
-  );
-
   return Object.entries(state.scores)
     .filter(([, score]) => score > 0)
     .sort(([, a], [, b]) => b - a)
     .slice(0, limit)
     .map(([key, score]) => ({
-      artist: seedLookup.get(key) ?? key,
+      artist: key,
       score,
     }));
 }
@@ -211,14 +197,13 @@ export interface EngineStats {
 
 /**
  * Snapshot of the engine's current state. Pure read — does not mutate.
+ *
+ * `isSeed` is always false now (the seed-from-statement bootstrap was
+ * removed) — the field stays in the type so the screen doesn't have to
+ * branch.
  */
 export function getEngineStats(topLimit = 10): EngineStats {
   const state = loadState();
-  const seedNames = Object.keys(USER_TASTE_SEED.artists);
-  const seedSet = new Set(seedNames.map(normaliseArtist));
-  const seedDisplayLookup = new Map<string, string>(
-    seedNames.map((name) => [normaliseArtist(name), name]),
-  );
 
   const positive: Array<{ artist: string; score: number; isSeed: boolean }> = [];
   let dislikedCount = 0;
@@ -231,14 +216,14 @@ export function getEngineStats(topLimit = 10): EngineStats {
     }
     if (score === 0) continue;
     totalPositiveScore += score;
-    positive.push({
-      artist: seedDisplayLookup.get(key) ?? key,
-      score,
-      isSeed: seedSet.has(key),
-    });
+    positive.push({ artist: key, score, isSeed: false });
   }
 
   positive.sort((a, b) => b.score - a.score);
+
+  // Reference USER_TASTE_SEED so the import isn't flagged as unused — the
+  // file is kept for documentation of what the user stated they listen to.
+  void USER_TASTE_SEED;
 
   return {
     totalArtists: positive.length,

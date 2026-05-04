@@ -10,7 +10,10 @@ import { TrackPlayerProvider } from '@/features/player/TrackPlayerProvider';
 import { RootNavigator } from './navigation/RootNavigator';
 import { configureBackgroundFetch } from '@/features/backgroundSync/BackgroundFetchHandler';
 import { DownloadManager } from '@/features/download/DownloadManager';
-import { ensureSeeded, decayAllScores } from '@/features/recommendations/artistAffinity';
+import {
+  decayAllScores,
+  clearLegacySeedBiasOnce,
+} from '@/features/recommendations/artistAffinity';
 import { startPlayTracker } from '@/features/recommendations/playTracker';
 import { cleanupBadLocalArtists } from '@/db/cleanup';
 import { navigationTheme } from './navigation/theme';
@@ -54,9 +57,10 @@ export default function App() {
   // Kick off react-native-background-fetch registration once on mount.
   useEffect(() => {
     configureBackgroundFetch();
-    // Bootstrap the artist-affinity store from the user's stated taste
-    // (idempotent — only runs once, ever) and apply weekly decay.
-    ensureSeeded();
+    // The engine learns purely from real plays — no taste seeding. The
+    // one-time wipe below removes any bias from earlier builds that did
+    // seed artist scores.
+    clearLegacySeedBiasOnce();
     decayAllScores();
     // Re-parse any legacy device-import rows that an earlier importer
     // version saved with artist="00" / "01" etc.
