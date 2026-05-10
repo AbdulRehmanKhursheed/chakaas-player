@@ -349,6 +349,11 @@ export function NowPlayingScreen() {
       cancelAnimation(artworkScale);
       artworkScale.value = withSpring(1, SPRING_GENTLE);
     }
+    // Always cancel on unmount so the worklet doesn't keep mutating the
+    // shared value after the screen is gone.
+    return () => {
+      cancelAnimation(artworkScale);
+    };
   }, [isPlaying]);
 
   const artworkAnimStyle = useAnimatedStyle(() => ({

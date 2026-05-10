@@ -328,8 +328,8 @@ const stepperStyles = StyleSheet.create({
     alignItems: 'center',
   },
   btnDisabled: {
-    backgroundColor: '#0E0E0E',
-    borderColor: '#F2F2F7',
+    backgroundColor: '#FAFAFA',
+    borderColor: '#E5E5EA',
   },
   btnText: {
     fontSize: 22,
@@ -945,13 +945,21 @@ export function DownloadsScreen() {
   const handlePlanApprove = useCallback(async () => {
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
-    // Enqueue every suggestion that isn't already in the queue or library.
-    let failedReason: string | null = null;
-    for (const s of suggestions) {
-      const already = queueByYtId.has(s.videoId);
-      if (already) continue;
-      try {
-        const result = await DownloadManager.enqueue({
+    // Hand the entire approval set to DownloadManager in one bulk call.
+    // The manager dedupes against the queue and library, respects the
+    // 1500-song cap, and starts the worker pool — all in a single
+    // transaction. UI stays responsive even for 1200-song approvals.
+    const toEnqueue = suggestions.filter((s) => !queueByYtId.has(s.videoId));
+    if (toEnqueue.length === 0) {
+      setSuggestions([]);
+      setFlow('decision');
+      void refreshStorage();
+      return;
+    }
+
+    try {
+      const result = await DownloadManager.enqueueBatch(
+        toEnqueue.map((s) => ({
           youtubeId: s.videoId,
           title: s.title,
           artist: s.artist,
@@ -962,25 +970,26 @@ export function DownloadsScreen() {
           album: s.saavnAlbum,
           saavnEncryptedUrl: s.saavnEncryptedUrl,
           saavnHas320kbps: s.saavnHas320kbps,
-        });
-        if (!result.success) {
-          failedReason = result.reason ?? 'Some songs could not be queued.';
-          break;
-        }
-      } catch (err) {
-        console.warn('[DownloadsScreen] enqueue failed', err);
-        failedReason = 'Some songs could not be queued.';
-        break;
-      }
-    }
+        })),
+      );
 
-    if (failedReason) {
-      Alert.alert('Download queue issue', failedReason);
+      if (result.rejected > 0 && result.reason) {
+        Alert.alert(
+          'Some songs could not be queued',
+          `${result.accepted} added · ${result.skipped} already in library · ${result.reason}`,
+        );
+      } else if (result.accepted === 0 && result.skipped > 0) {
+        Alert.alert(
+          'Already in your library',
+          'All approved songs are already downloaded or queued.',
+        );
+      }
+    } catch (err) {
+      console.warn('[DownloadsScreen] enqueueBatch failed', err);
+      Alert.alert('Download queue issue', 'Could not queue these songs. Please try again.');
       return;
     }
 
-    // Reset to the decision card so the user can refresh storage figures
-    // and queue another batch.
     setSuggestions([]);
     setFlow('decision');
     void refreshStorage();

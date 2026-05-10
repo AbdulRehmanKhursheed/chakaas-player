@@ -16,7 +16,6 @@ import {
   SectionList,
   KeyboardAvoidingView,
   Dimensions,
-  Modal,
   Alert,
 } from 'react-native';
 import Animated, {
@@ -86,139 +85,24 @@ function saveRecentSearch(query: string) {
     const existing = loadRecentSearches();
     const updated = [query, ...existing.filter((s) => s !== query)].slice(0, MAX_RECENT);
     settingsStorage.set(RECENT_SEARCHES_KEY, JSON.stringify(updated));
-  } catch {}
+  } catch (err) {
+    console.warn('[SearchScreen] saveRecentSearch failed', err);
+  }
 }
 
 function removeRecentSearch(query: string) {
   try {
     const updated = loadRecentSearches().filter((s) => s !== query);
     settingsStorage.set(RECENT_SEARCHES_KEY, JSON.stringify(updated));
-  } catch {}
+  } catch (err) {
+    console.warn('[SearchScreen] removeRecentSearch failed', err);
+  }
 }
 
-// ─── Quality download sheet ───────────────────────────────────────────────────
-
-type Quality = '128k' | '192k' | '256k' | '320k';
-
-interface QualitySheetProps {
-  visible: boolean;
-  onSelect: (quality: Quality) => void;
-  onDismiss: () => void;
-}
-
-function QualitySheet({ visible, onSelect, onDismiss }: QualitySheetProps) {
-  const translateY = useSharedValue(300);
-  const opacity = useSharedValue(0);
-
-  useEffect(() => {
-    if (visible) {
-      opacity.value = withTiming(1, { duration: 200 });
-      translateY.value = withTiming(0, { duration: 260 });
-    } else {
-      opacity.value = withTiming(0, { duration: 180 });
-      translateY.value = withTiming(300, { duration: 220 });
-    }
-  }, [visible]);
-
-  const overlayStyle = useAnimatedStyle(() => ({ opacity: opacity.value }));
-  const sheetStyle = useAnimatedStyle(() => ({
-    transform: [{ translateY: translateY.value }],
-  }));
-
-  const QUALITIES: Quality[] = ['320k'];
-  const labels: Record<Quality, string> = {
-    '128k': 'Source quality — Small file',
-    '192k': 'Source quality — Balanced',
-    '256k': 'Source quality — High quality',
-    '320k': 'Best available source audio',
-  };
-
-  return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="none"
-      statusBarTranslucent
-      onRequestClose={onDismiss}
-    >
-      <View style={qualityStyles.modalRoot}>
-        <Animated.View style={[qualityStyles.overlay, overlayStyle]}>
-          <TouchableOpacity style={StyleSheet.absoluteFill} onPress={onDismiss} />
-        </Animated.View>
-        <Animated.View style={[qualityStyles.sheet, sheetStyle]}>
-          <View style={qualityStyles.handle} />
-          <Text style={qualityStyles.title}>Download Song</Text>
-          {QUALITIES.map((q) => (
-            <TouchableOpacity
-              key={q}
-              style={qualityStyles.option}
-              onPress={() => onSelect(q)}
-              activeOpacity={0.75}
-            >
-              <Text style={qualityStyles.optionBitrate}>Best</Text>
-              <Text style={qualityStyles.optionLabel}>{labels[q]}</Text>
-            </TouchableOpacity>
-          ))}
-        </Animated.View>
-      </View>
-    </Modal>
-  );
-}
-
-const qualityStyles = StyleSheet.create({
-  modalRoot: {
-    flex: 1,
-  },
-  overlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.65)',
-  },
-  sheet: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    backgroundColor: '#FFFFFF',
-    borderTopLeftRadius: 22,
-    borderTopRightRadius: 22,
-    paddingBottom: Platform.OS === 'ios' ? 36 : 28,
-    paddingHorizontal: 20,
-  },
-  handle: {
-    width: 36,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: '#C7C7CC',
-    alignSelf: 'center',
-    marginTop: 10,
-    marginBottom: 16,
-  },
-  title: {
-    fontSize: 17,
-    fontWeight: '700',
-    color: '#1D1D1F',
-    marginBottom: 12,
-  },
-  option: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 14,
-    gap: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F2F2F7',
-  },
-  optionBitrate: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#FA233B',
-    width: 44,
-  },
-  optionLabel: {
-    fontSize: 14,
-    fontWeight: '400',
-    color: '#3A3A3C',
-  },
-});
+// Quality picking lives in Settings; the Saavn/YouTube providers always
+// resolve to the best available stream (320 kbps when offered, 160 kbps
+// fallback). No per-download chooser — it was a noisy three-tap detour
+// where every option did the same thing.
 
 // ─── YouTube skeleton ──────────────────────────────────────────────────────────
 
@@ -607,8 +491,6 @@ export function SearchScreen() {
   const inputRef = useRef<TextInput>(null);
 
   const [recentSearches, setRecentSearches] = useState<string[]>(() => loadRecentSearches());
-  const [pendingDownload, setPendingDownload] = useState<YouTubeSearchResult | null>(null);
-  const [qualitySheetVisible, setQualitySheetVisible] = useState(false);
 
   // Animated search bar width (expands when focused)
   const cancelOpacity = useSharedValue(0);
@@ -623,9 +505,11 @@ export function SearchScreen() {
     }
   }, [query]);
 
+  // Animate transform + opacity (cheap, no layout thrash) — animating
+  // `width` per frame was forcing a full layout pass on the JS thread.
   const cancelStyle = useAnimatedStyle(() => ({
     opacity: cancelOpacity.value,
-    width: cancelOpacity.value * 60,
+    transform: [{ translateX: (1 - cancelOpacity.value) * 60 }],
   }));
 
   // Auto-focus on mount
@@ -764,54 +648,36 @@ export function SearchScreen() {
 
   const handleDownloadRequest = useCallback(
     (id: string, _title: string, _artist: string, _thumbnail: string) => {
-      const result = (ytResults ?? []).find((r) => r.id === id);
-      if (result) {
-        void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-        setPendingDownload(result);
-        setQualitySheetVisible(true);
-      }
+      const target = (ytResults ?? []).find((r) => r.id === id);
+      if (!target) return;
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      void (async () => {
+        const provider = target.provider ?? 'youtube';
+        const album =
+          provider === 'saavn'
+            ? target.saavnAlbum ?? 'JioSaavn'
+            : 'YouTube';
+        const result = await DownloadManager.enqueue({
+          youtubeId: target.id,
+          title: target.title,
+          artist: target.author,
+          album,
+          thumbnail: target.thumbnail,
+          durationMs: target.duration_ms,
+          provider,
+          saavnEncryptedUrl: target.saavnEncryptedUrl,
+          saavnHas320kbps: target.saavnHas320kbps,
+        });
+        if (!result.success) {
+          Alert.alert(
+            'Cannot start download',
+            result.reason ?? 'Please try again.',
+          );
+        }
+      })();
     },
     [ytResults],
   );
-
-  const handleQualitySelect = useCallback(
-    async (_quality: Quality) => {
-      if (!pendingDownload) return;
-      setQualitySheetVisible(false);
-      const { title: trackTitle, author } = pendingDownload;
-      const provider = pendingDownload.provider ?? 'youtube';
-      // Saavn provides the proper album from search; YouTube has no clean
-      // album so we fall back to the channel name as a reasonable label.
-      const album =
-        provider === 'saavn'
-          ? pendingDownload.saavnAlbum ?? 'JioSaavn'
-          : 'YouTube';
-      const result = await DownloadManager.enqueue({
-        youtubeId: pendingDownload.id,
-        title: trackTitle,
-        artist: author,
-        album,
-        thumbnail: pendingDownload.thumbnail,
-        durationMs: pendingDownload.duration_ms,
-        provider,
-        saavnEncryptedUrl: pendingDownload.saavnEncryptedUrl,
-        saavnHas320kbps: pendingDownload.saavnHas320kbps,
-      });
-      if (!result.success) {
-        Alert.alert(
-          'Cannot start download',
-          result.reason ?? 'Please try again.',
-        );
-      }
-      setPendingDownload(null);
-    },
-    [pendingDownload],
-  );
-
-  const handleQualityDismiss = useCallback(() => {
-    setQualitySheetVisible(false);
-    setPendingDownload(null);
-  }, []);
 
   // ── Section list data ──
 
@@ -1007,12 +873,6 @@ export function SearchScreen() {
         )}
       </KeyboardAvoidingView>
 
-      {/* Quality picker overlay */}
-      <QualitySheet
-        visible={qualitySheetVisible}
-        onSelect={handleQualitySelect}
-        onDismiss={handleQualityDismiss}
-      />
     </View>
   );
 }
@@ -1063,6 +923,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     justifyContent: 'center',
     alignItems: 'flex-end',
+    width: 60,
   },
   cancelText: {
     fontSize: 15,

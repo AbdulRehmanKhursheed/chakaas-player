@@ -43,8 +43,6 @@ interface TrackContextMenuProps {
   onViewArtist?: (artist: string) => void;
   /** Called when "View Album" is selected */
   onViewAlbum?: (album: string) => void;
-  /** Called when "Download" is selected */
-  onDownload?: (track: Track) => void;
   /** Called when "Delete from Library" is selected */
   onDelete?: (track: Track) => void;
 }
@@ -94,7 +92,6 @@ export function TrackContextMenu({
   onAddToPlaylist,
   onViewArtist,
   onViewAlbum,
-  onDownload,
   onDelete,
 }: TrackContextMenuProps) {
   const withClose = useCallback(
@@ -147,14 +144,6 @@ export function TrackContextMenu({
       label: 'View Album',
       onPress: withClose(() => onViewAlbum?.(track.album)),
       hidden: !track.album || !onViewAlbum,
-    },
-    {
-      id: 'download',
-      icon: 'arrow-down-circle',
-      label: 'Download',
-      onPress: withClose(() => onDownload?.(track)),
-      // Only shown for YouTube-sourced tracks that aren't already on disk
-      hidden: track.source !== 'youtube' || track.file_path !== '' || !onDownload,
     },
     {
       id: 'delete',

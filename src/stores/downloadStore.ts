@@ -38,6 +38,7 @@ interface DownloadStore {
   queue: DownloadItem[];
 
   addToQueue(item: Omit<DownloadItem, 'progress' | 'status'>): void;
+  addManyToQueue(items: Array<Omit<DownloadItem, 'progress' | 'status'>>): void;
   updateProgress(id: string, progress: number, status: DownloadStatus): void;
   setError(id: string, error: string): void;
   removeItem(id: string): void;
@@ -52,9 +53,28 @@ export const useDownloadStore = create<DownloadStore>()(
     // ── Actions ────────────────────────────────────────────────────────────
     addToQueue: (item) =>
       set((state) => {
-        // Prevent duplicate entries for the same youtube ID
-        const exists = state.queue.some((d) => d.youtubeId === item.youtubeId);
+        // Prevent duplicate entries for the same provider+id pair
+        const exists = state.queue.some(
+          (d) => d.youtubeId === item.youtubeId && (d.provider ?? 'youtube') === (item.provider ?? 'youtube'),
+        );
         if (!exists) {
+          state.queue.push({ ...item, progress: 0, status: 'queued' });
+        }
+      }),
+
+    addManyToQueue: (items) =>
+      set((state) => {
+        // O(N+M) bulk insert — builds a single set of existing keys and
+        // appends accepted items in one immer mutation. 1200-song approval
+        // hits the queue in a single render instead of 1200 sequential
+        // state updates.
+        const seen = new Set(
+          state.queue.map((d) => `${d.provider ?? 'youtube'}:${d.youtubeId}`),
+        );
+        for (const item of items) {
+          const key = `${item.provider ?? 'youtube'}:${item.youtubeId}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
           state.queue.push({ ...item, progress: 0, status: 'queued' });
         }
       }),

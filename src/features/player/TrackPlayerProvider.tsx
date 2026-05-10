@@ -4,51 +4,41 @@ import TrackPlayer, {
   AppKilledPlaybackBehavior,
   Capability,
   Event,
+  RepeatMode,
 } from 'react-native-track-player';
+import { usePlayerStore } from '@/stores/playerStore';
 
 interface TrackPlayerProviderProps {
   children: React.ReactNode;
 }
 
+const REPEAT_TO_RNTP: Record<'off' | 'track' | 'queue', RepeatMode> = {
+  off: RepeatMode.Off,
+  track: RepeatMode.Track,
+  queue: RepeatMode.Queue,
+};
+
 /**
  * TrackPlayerProvider — bootstraps react-native-track-player exactly once.
  *
- * Place this near the root of the component tree (inside any navigation
- * provider but outside any screen-specific trees). It is safe to render
- * multiple times because the `isSetup` ref gates the effect to a single
- * execution.
- *
- * TrackPlayer is a native singleton: we deliberately do NOT call
- * `TrackPlayer.destroy()` on unmount because that would kill the audio
- * session for the lifetime of the process, breaking background playback.
- *
- * Configuration rationale:
- *  - `autoHandleInterruptions: true`  → delegates audio-focus negotiation to
- *    the native layer; the JS PlaybackService still receives RemoteDuck for
- *    any custom handling we need.
- *  - `progressUpdateEventInterval: 1` → fires Event.PlaybackProgressUpdated
- *    every second, keeping the seek-bar smooth without hammering the bridge.
- *  - `AppKilledPlaybackBehavior.StopPlaybackAndRemoveNotification` → on
- *    Android, swiping away the app stops audio and clears the notification.
- *    Change to `ContinuePlayback` if you want persistent background audio
- *    after the user swipes away.
+ * - Continues playing when the user swipes the app away (standard music-app UX).
+ * - Restores persisted repeat mode on cold start.
+ * - Dedupes PlaybackError alerts so a queue of broken files doesn't bombard
+ *   the user with a popup per track.
  */
 export function TrackPlayerProvider({ children }: TrackPlayerProviderProps) {
   const isSetup = useRef(false);
+  const lastErrorAtRef = useRef(0);
 
   useEffect(() => {
     if (isSetup.current) return;
     isSetup.current = true;
 
     TrackPlayer.setupPlayer({
-      // Let the native layer handle audio interruptions (calls, etc.).
-      // Our JS PlaybackService still receives RemoteDuck events for extra
-      // control logic.
       autoHandleInterruptions: true,
     })
-      .then(() => {
-        return TrackPlayer.updateOptions({
-          // ── Notification / lock-screen buttons ──────────────────────────
+      .then(async () => {
+        await TrackPlayer.updateOptions({
           capabilities: [
             Capability.Play,
             Capability.Pause,
@@ -57,15 +47,11 @@ export function TrackPlayerProvider({ children }: TrackPlayerProviderProps) {
             Capability.SkipToPrevious,
             Capability.SeekTo,
           ],
-
-          // Buttons shown in the collapsed Android notification.
           compactCapabilities: [
             Capability.Play,
             Capability.Pause,
             Capability.SkipToNext,
           ],
-
-          // iOS lock-screen / Control Centre commands.
           notificationCapabilities: [
             Capability.Play,
             Capability.Pause,
@@ -73,21 +59,19 @@ export function TrackPlayerProvider({ children }: TrackPlayerProviderProps) {
             Capability.SkipToPrevious,
             Capability.Stop,
           ],
-
-          // Emit PlaybackProgressUpdated every second.
           progressUpdateEventInterval: 1,
-
           android: {
-            // Swiping the app away stops playback and removes the media
-            // notification. Set to ContinuePlayback for "music app" UX.
-            appKilledPlaybackBehavior:
-              AppKilledPlaybackBehavior.StopPlaybackAndRemoveNotification,
+            // Music apps should keep playing when the user swipes the app
+            // away — they explicitly stop via the notification's stop button.
+            appKilledPlaybackBehavior: AppKilledPlaybackBehavior.ContinuePlayback,
           },
         });
+
+        // Hydrate persisted repeat mode into the native player.
+        const repeat = usePlayerStore.getState().repeatMode;
+        await TrackPlayer.setRepeatMode(REPEAT_TO_RNTP[repeat]).catch(() => {});
       })
       .catch((err: unknown) => {
-        // setupPlayer rejects with 'The player has already been initialized'
-        // when hot-reloaded in development — that error is harmless.
         const message = err instanceof Error ? err.message : String(err);
         if (!message.includes('already been initialized')) {
           console.error('[TrackPlayerProvider] setup failed:', err);
@@ -97,6 +81,11 @@ export function TrackPlayerProvider({ children }: TrackPlayerProviderProps) {
     const playbackErrorSub = TrackPlayer.addEventListener(
       Event.PlaybackError,
       (event) => {
+        // Dedupe: when 50 broken queue items fail in sequence, we don't want
+        // 50 alerts on top of each other. Suppress within 5 s of the last.
+        const now = Date.now();
+        if (now - lastErrorAtRef.current < 5000) return;
+        lastErrorAtRef.current = now;
         const message =
           event.message ||
           event.code ||
@@ -106,7 +95,6 @@ export function TrackPlayerProvider({ children }: TrackPlayerProviderProps) {
       },
     );
 
-    // No cleanup: TrackPlayer must not be destroyed while the app is running.
     return () => {
       playbackErrorSub.remove();
     };

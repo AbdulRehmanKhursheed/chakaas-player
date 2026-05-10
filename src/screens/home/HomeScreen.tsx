@@ -232,10 +232,10 @@ export function HomeScreen() {
     s.queue.filter((d) => d.status !== 'done' && d.status !== 'error').length,
   );
 
-  const [refreshing, setRefreshing] = useState(false);
-  // Bumped each time the user taps "refresh" on the Made For You section.
-  // Threaded into the query key so TanStack refetches with `shuffle=true`
-  // and surfaces a different sample from the top-of-rank pool.
+  // Bumped each time the user taps "refresh" on the Made For You section
+  // OR pulls down to refresh the whole screen. Threaded into the query key
+  // so TanStack refetches with `shuffle=true` and surfaces a different
+  // sample from the top-of-rank pool.
   const [discoverNonce, setDiscoverNonce] = useState(0);
   const scrollY = useSharedValue(0);
 
@@ -280,11 +280,13 @@ export function HomeScreen() {
     [playTrack, allTracks, navigation],
   );
 
-  const handleRefresh = useCallback(async () => {
-    setRefreshing(true);
-    // WatermelonDB observables refresh automatically; just give a slight delay
-    await new Promise<void>((r) => setTimeout(r, 600));
-    setRefreshing(false);
+  // Pull-to-refresh actually does something now: bump the discover nonce so
+  // "Made For You" re-samples. WatermelonDB observables already keep
+  // dailyPicks / recentlyPlayed live, so the rest of the screen is
+  // self-refreshing — we just need the spinner to clear when the discover
+  // fetch settles, which `isFetching` tracks for us below.
+  const handleRefresh = useCallback(() => {
+    setDiscoverNonce((n) => n + 1);
   }, []);
 
   const handleDownloadsPress = useCallback(() => {
@@ -343,7 +345,7 @@ export function HomeScreen() {
         contentContainerStyle={styles.scrollContent}
         refreshControl={
           <RefreshControl
-            refreshing={refreshing}
+            refreshing={discoverFetching}
             onRefresh={handleRefresh}
             tintColor="#FA233B"
             colors={['#FA233B']}

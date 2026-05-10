@@ -1,30 +1,42 @@
 /**
  * searchMusic — unified search entry point.
  *
- * Strategy:
- *   1. Hit JioSaavn first. For Bollywood / Hindi / Indian content (the entire
- *      target use case of Chakaas) Saavn has a curated, anti-bot-free catalog
- *      with proper artist/album metadata and lossless 320 kbps M4A.
- *   2. Fall back to YouTube only when Saavn returns nothing — needed for
- *      independent uploads, mashups, regional language tracks Saavn lacks,
- *      and the rare YouTube-exclusive.
+ * Both providers are fired in parallel:
+ *   • Saavn — primary catalog for Bollywood/Hindi/Indian content. Best when
+ *     present: 320 kbps AAC, real metadata, no anti-bot.
+ *   • YouTube — fallback for indie tracks, mashups, and regional content
+ *     Saavn lacks.
  *
- * The user-facing UX prefers Saavn results because they download reliably
- * (no IP throttling, no cipher), play back at premium quality (320 kbps AAC
- * passthrough), and ship with real metadata. YouTube is the safety net.
+ * If Saavn returns ≥ 3 hits we use those alone (mixing providers confuses
+ * dedupe). Otherwise we merge Saavn first, YouTube after.
+ *
+ * Each provider has a hard timeout so a hung CDN doesn't keep the spinner up.
  */
 import { searchSaavn } from './providers/SaavnProvider';
 import { searchYouTube } from './YoutubeExtractor';
 import { logger } from '@/utils/logger';
 import type { YouTubeSearchResult } from '@/types/track';
 
-/**
- * Returns up to `limit` results, Saavn-first then YouTube fallback.
- *
- * If Saavn errors but YouTube succeeds, only YouTube results come back. If
- * both providers fail, the error from YouTube is propagated (it's the more
- * informative one — Saavn errors usually mean a transient JSON parse).
- */
+const PROVIDER_TIMEOUT_MS = 4500;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${ms}ms`));
+    }, ms);
+    promise.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
+}
+
 export async function searchMusic(
   query: string,
   limit = 15,
@@ -32,36 +44,39 @@ export async function searchMusic(
   const trimmed = query.trim();
   if (!trimmed) return [];
 
-  let saavnResults: YouTubeSearchResult[] = [];
-  try {
-    saavnResults = await searchSaavn(trimmed, limit);
-  } catch (err) {
-    logger.warn('[searchMusic] Saavn search failed, will try YouTube:', err);
+  // Fire both providers concurrently. allSettled so one failure doesn't
+  // cancel the other — we still want to return whatever did succeed.
+  const [saavnRes, ytRes] = await Promise.allSettled([
+    withTimeout(searchSaavn(trimmed, limit), PROVIDER_TIMEOUT_MS, 'Saavn search'),
+    withTimeout(searchYouTube(trimmed, limit), PROVIDER_TIMEOUT_MS, 'YouTube search'),
+  ]);
+
+  const saavnResults: YouTubeSearchResult[] =
+    saavnRes.status === 'fulfilled' ? saavnRes.value : [];
+  if (saavnRes.status === 'rejected') {
+    logger.warn('[searchMusic] Saavn failed:', saavnRes.reason);
   }
 
-  // Saavn returned a healthy result set — return it directly. We do not blend
-  // YouTube in because mixing the two confuses dedupe and library-match logic
-  // (same song under two different IDs).
+  const ytResults: YouTubeSearchResult[] =
+    ytRes.status === 'fulfilled' ? ytRes.value : [];
+  if (ytRes.status === 'rejected') {
+    logger.warn('[searchMusic] YouTube failed:', ytRes.reason);
+  }
+
+  if (saavnResults.length === 0 && ytResults.length === 0) {
+    if (ytRes.status === 'rejected') throw ytRes.reason;
+    if (saavnRes.status === 'rejected') throw saavnRes.reason;
+    return [];
+  }
+
   if (saavnResults.length >= 3) {
     return saavnResults.slice(0, limit);
   }
 
-  let ytResults: YouTubeSearchResult[] = [];
-  try {
-    ytResults = await searchYouTube(trimmed, limit);
-  } catch (err) {
-    logger.error('[searchMusic] YouTube fallback also failed:', err);
-    if (saavnResults.length === 0) throw err;
-  }
-
-  // Mark any unmarked results as YouTube for discriminator clarity.
   const taggedYt = ytResults.map((r) => ({
     ...r,
     provider: r.provider ?? ('youtube' as const),
   }));
 
-  // Saavn had < 3 hits but might still have something useful. Show Saavn
-  // first (better source), then YouTube to fill out the list.
-  const merged: YouTubeSearchResult[] = [...saavnResults, ...taggedYt];
-  return merged.slice(0, limit);
+  return [...saavnResults, ...taggedYt].slice(0, limit);
 }

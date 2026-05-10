@@ -29,7 +29,7 @@ import { Q } from '@nozbe/watermelondb';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useActiveTrack, usePlaybackState, State } from 'react-native-track-player';
-import { useAllTracks } from '@/hooks/useTrackDB';
+import { useAllTracks, usePlayCounts } from '@/hooks/useTrackDB';
 import { getScreenBottomInset } from '@/utils/layout';
 import { EqualizerBars } from '@/components/EqualizerBars';
 import { usePlayerQueue } from '@/features/player/useQueue';
@@ -558,12 +558,20 @@ export function LibraryScreen() {
   const insets = useSafeAreaInsets();
 
   const allTracks = useAllTracks();
+  const playCounts = usePlayCounts();
   const activeRntpTrack = useActiveTrack();
   const activeTrackId = activeRntpTrack?.id ? String(activeRntpTrack.id) : null;
   const playbackState = usePlaybackState();
   const isPlaying = playbackState.state === State.Playing;
   const [activeTab, setActiveTab] = useState<TabKey>('Songs');
   const [query, setQuery] = useState('');
+  // Debounce the search input so a 1500-track filter doesn't run on every
+  // keystroke. 120 ms feels instant but suppresses transient renders.
+  const [debouncedQuery, setDebouncedQuery] = useState('');
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQuery(query), 120);
+    return () => clearTimeout(t);
+  }, [query]);
   const [sortMode, setSortMode] = useState<SortMode>('recently_added');
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
   const [isImportingAudio, setIsImportingAudio] = useState(false);
@@ -597,8 +605,9 @@ export function LibraryScreen() {
 
   const filteredTracks = useMemo(() => {
     let result = allTracks;
-    if (query.trim()) {
-      const q = query.toLowerCase();
+    const trimmed = debouncedQuery.trim();
+    if (trimmed) {
+      const q = trimmed.toLowerCase();
       result = result.filter(
         (t) =>
           t.title.toLowerCase().includes(q) ||
@@ -610,12 +619,14 @@ export function LibraryScreen() {
       case 'a_z':
         return [...result].sort((a, b) => a.title.localeCompare(b.title));
       case 'most_played':
-        return result;
+        return [...result].sort(
+          (a, b) => (playCounts.get(b.id) ?? 0) - (playCounts.get(a.id) ?? 0),
+        );
       case 'recently_added':
       default:
         return result;
     }
-  }, [allTracks, query, sortMode]);
+  }, [allTracks, debouncedQuery, sortMode, playCounts]);
 
   // Build section-aware flat list for Songs tab
   const songsListData = useMemo((): SongsListItem[] => {
@@ -773,12 +784,20 @@ export function LibraryScreen() {
         return;
       }
 
-      Alert.alert(
-        'Device music scan complete',
-        result.imported > 0
-          ? `Added ${result.imported} song${result.imported === 1 ? '' : 's'} from your device.`
-          : 'No new audio files were found. Songs already in your library are skipped.',
-      );
+      const lines: string[] = [];
+      if (result.imported > 0) {
+        lines.push(
+          `Added ${result.imported} song${result.imported === 1 ? '' : 's'} from your device.`,
+        );
+      } else {
+        lines.push('No new music files were found.');
+      }
+      if (result.rejected > 0) {
+        lines.push(
+          `Filtered out ${result.rejected} voice memo${result.rejected === 1 ? '' : 's'} and short clip${result.rejected === 1 ? '' : 's'}.`,
+        );
+      }
+      Alert.alert('Device music scan complete', lines.join('\n'));
     } catch (err) {
       Alert.alert(
         'Could not import device songs',
@@ -878,7 +897,12 @@ export function LibraryScreen() {
       <StatusBar barStyle="dark-content" backgroundColor="#F5F5F7" />
 
       {/* Header */}
-      <View style={styles.header}>
+      <View
+        style={[
+          styles.header,
+          { paddingTop: Math.max(insets.top + 8, Platform.OS === 'ios' ? 56 : 36) },
+        ]}
+      >
         <Text style={styles.headerTitle}>Library</Text>
         <Text style={styles.headerCount}>
           {allTracks.length} {allTracks.length === 1 ? 'song' : 'songs'}
@@ -1001,7 +1025,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#F5F5F7',
   },
   header: {
-    paddingTop: Platform.OS === 'ios' ? 56 : 36,
     paddingBottom: 10,
     paddingHorizontal: 20,
     flexDirection: 'row',

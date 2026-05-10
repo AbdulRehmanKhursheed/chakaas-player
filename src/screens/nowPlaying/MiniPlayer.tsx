@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect } from 'react';
+import React, { useCallback, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -6,6 +6,7 @@ import {
   TouchableOpacity,
   Pressable,
   Platform,
+  Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Animated, {
@@ -48,29 +49,51 @@ function MarqueeText({ text, style }: MarqueeTextProps) {
   const offset = useSharedValue(0);
   const containerWidth = useSharedValue(0);
   const textWidth = useSharedValue(0);
+  const isMountedRef = useRef(true);
 
   useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      // Stop any in-flight worklet so a re-chained setTimeout from the
+      // callback can't keep mutating the shared value after unmount.
+      offset.value = 0;
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    let pendingTimer: ReturnType<typeof setTimeout> | null = null;
+
     if (textWidth.value > containerWidth.value && containerWidth.value > 0) {
       const distance = textWidth.value - containerWidth.value + 16;
       const duration = distance * 22;
 
       const animate = () => {
-        offset.value = withTiming(-distance, {
-          duration,
-          easing: Easing.linear,
-        }, (finished) => {
-          if (finished) {
+        if (!active || !isMountedRef.current) return;
+        offset.value = withTiming(
+          -distance,
+          { duration, easing: Easing.linear },
+          (finished) => {
+            if (!finished) return;
             offset.value = withTiming(0, { duration: 600 }, (done) => {
-              if (done) animate();
+              if (done && active && isMountedRef.current) {
+                // Schedule next loop via a tracked timer so the cleanup
+                // below cancels it cleanly.
+                pendingTimer = setTimeout(animate, 0);
+              }
             });
-          }
-        });
+          },
+        );
       };
 
-      const timer = setTimeout(animate, 1200);
-      return () => clearTimeout(timer);
+      pendingTimer = setTimeout(animate, 1200);
     }
-    return undefined;
+
+    return () => {
+      active = false;
+      if (pendingTimer) clearTimeout(pendingTimer);
+    };
   }, [text]);
 
   const animStyle = useAnimatedStyle(() => ({
@@ -132,14 +155,28 @@ export function MiniPlayer() {
   }, [skipToNext]);
 
   const handleClose = useCallback(async () => {
-    // Reset clears the queue, which sets activeTrack to null. The component
-    // auto-hides on the next render via the early `if (!activeTrack)` return.
+    // Reset clears the queue, which is destructive — confirm before
+    // discarding what the user is currently listening to.
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    try {
-      await TrackPlayer.reset();
-    } catch {
-      // Player wasn't initialised — nothing to stop.
-    }
+    Alert.alert(
+      'Stop playback?',
+      'This will clear the current queue.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Stop',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await TrackPlayer.reset();
+            } catch {
+              // Player wasn't initialised — nothing to stop.
+            }
+          },
+        },
+      ],
+      { cancelable: true },
+    );
   }, []);
 
   // Pan gesture — swipe up to open NowPlaying, swipe down to bounce back

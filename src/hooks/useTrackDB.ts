@@ -1,16 +1,13 @@
 /**
  * WatermelonDB reactive hooks.
  *
- * Each hook returns a live Observable that re-renders its subscriber whenever
- * the underlying database rows change. withObservables wires the Observable
- * into the React component lifecycle automatically.
- *
- * These hooks use the low-level `useObservable` pattern rather than the HOC
- * form of withObservables, so they work cleanly with functional components and
- * React hooks conventions.
+ * Each hook subscribes to a WatermelonDB Observable and re-renders when the
+ * underlying rows change. The shared `useStableObservable` helper skips
+ * re-renders when the emitted value's "structural" signature is unchanged —
+ * a like-toggle no longer storms every screen that consumes `useAllTracks`.
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Q } from '@nozbe/watermelondb';
 import type { Observable } from '@nozbe/watermelondb/utils/rx';
 import {
@@ -23,27 +20,52 @@ import type { Play } from '@/db/models/Play';
 import { logger } from '@/utils/logger';
 
 // ---------------------------------------------------------------------------
-// Internal helper — subscribe to a WatermelonDB Observable inside a hook
+// Internal helpers
 // ---------------------------------------------------------------------------
 
 /**
- * Generic hook that subscribes to a WatermelonDB Observable and returns the
- * latest emitted value (initially `undefined` until the first emission).
+ * Subscribes to a WatermelonDB Observable and re-emits to React only when
+ * `signature(v)` changes between consecutive emissions. The default signature
+ * always changes, so this behaves like a plain subscribe — pass a `signature`
+ * function to suppress no-op re-renders.
  */
-function useObservable<T>(observable: Observable<T>): T | undefined {
+function useStableObservable<T>(
+  observable: Observable<T>,
+  signature: (v: T) => string = () => String(Math.random()),
+): T | undefined {
   const [value, setValue] = useState<T | undefined>(undefined);
+  const lastSigRef = useRef<string | null>(null);
 
   useEffect(() => {
     const subscription = observable.subscribe({
-      next: (v) => setValue(v),
+      next: (v) => {
+        const sig = signature(v);
+        if (sig !== lastSigRef.current) {
+          lastSigRef.current = sig;
+          setValue(v);
+        }
+      },
       error: (err: unknown) => logger.error('[useTrackDB] Observable error:', err),
     });
     return () => subscription.unsubscribe();
-  // observable reference is stable for the lifetime of each hook call
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // observable reference is stable for the lifetime of each hook call
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return value;
+}
+
+/**
+ * Signature for the track list that captures structural changes but ignores
+ * `liked` flips. Counts + the first/last track IDs + their addedAt give us a
+ * cheap-to-compute fingerprint: any add/remove/reorder flips at least one
+ * component without doing O(N) work per emit.
+ */
+function trackListSignature(tracks: Track[]): string {
+  if (tracks.length === 0) return 'empty';
+  const first = tracks[0];
+  const last = tracks[tracks.length - 1];
+  return `${tracks.length}:${first.id}:${first.addedAt}:${last.id}:${last.addedAt}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -52,44 +74,42 @@ function useObservable<T>(observable: Observable<T>): T | undefined {
 
 /**
  * Returns all tracks in the library, ordered by most recently added.
- * Re-renders whenever any track row changes.
+ *
+ * Re-emits only when the list **structurally** changes (add / remove / reorder).
+ * Pure metadata flips like `liked` or `last played at` do NOT re-render
+ * consumers — the array reference stays stable, so downstream memoised work
+ * (Fuse index, artist groupings) doesn't churn.
  */
 export function useAllTracks(): Track[] {
   const observable = tracksCollection
     .query(Q.sortBy('added_at', Q.desc))
     .observe();
 
-  return useObservable(observable) ?? [];
+  return useStableObservable(observable, trackListSignature) ?? [];
 }
 
 /**
- * Returns the single track matching `id`, or `undefined` while loading /
- * when not found. Re-renders if the track row changes.
+ * Returns the single track matching `id`. Re-renders on every change to the
+ * row — used by NowPlaying for live like/duration sync.
  */
 export function useTrackById(id: string): Track | undefined {
   const observable = tracksCollection.findAndObserve(id);
-  return useObservable(observable as unknown as Observable<Track>);
+  return useStableObservable(
+    observable as unknown as Observable<Track>,
+    (t) => (t ? `${t.id}:${t.liked}:${t.durationMs}:${t.filePath}` : 'none'),
+  );
 }
 
 /**
  * Returns the tracks belonging to `playlistId`, ordered by their position in
- * the playlist. Re-renders when the playlist or any member track changes.
- *
- * The join is performed client-side: we first observe the PlaylistTrack
- * junction rows for the playlist, then map to their associated Track records.
- *
- * Note: Because this involves a two-step join, the hook returns Track[] rather
- * than an Observable directly.
+ * the playlist. Re-renders when the playlist composition changes.
  */
 export function usePlaylistTracks(playlistId: string): Track[] {
   const [tracks, setTracks] = useState<Track[]>([]);
 
   useEffect(() => {
     const subscription = playlistTracksCollection
-      .query(
-        Q.where('playlist_id', playlistId),
-        Q.sortBy('position', Q.asc),
-      )
+      .query(Q.where('playlist_id', playlistId), Q.sortBy('position', Q.asc))
       .observe()
       .subscribe({
         next: async (playlistTrackRows) => {
@@ -103,7 +123,6 @@ export function usePlaylistTracks(playlistId: string): Track[] {
               .query(Q.where('id', Q.oneOf(trackIds)))
               .fetch();
 
-            // Re-order fetched tracks to match the playlist position order
             const idToTrack = new Map(fetched.map((t) => [t.id, t]));
             const ordered = trackIds
               .map((id) => idToTrack.get(id))
@@ -125,26 +144,23 @@ export function usePlaylistTracks(playlistId: string): Track[] {
 }
 
 /**
- * Returns the most recently played tracks, de-duplicated by track ID.
- * The result contains at most `limit` distinct tracks.
- *
- * Re-renders when any play row is inserted or deleted.
+ * Returns the most recently played tracks, de-duplicated by track ID. Only
+ * re-renders when the *top-N* set changes — repeated plays of the same track
+ * keep the cached array reference intact.
  */
 export function useRecentlyPlayed(limit = 20): Track[] {
   const [tracks, setTracks] = useState<Track[]>([]);
+  const lastTopIdsRef = useRef<string>('');
 
   useEffect(() => {
-    // Observe the play log sorted newest-first
     const subscription = playsCollection
-      .query(Q.sortBy('played_at', Q.desc))
+      .query(Q.sortBy('played_at', Q.desc), Q.take(limit * 5))
       .observe()
       .subscribe({
         next: async (plays: Play[]) => {
           try {
-            // De-duplicate track IDs preserving recency order
             const seen = new Set<string>();
             const recentTrackIds: string[] = [];
-
             for (const play of plays) {
               if (!seen.has(play.trackId)) {
                 seen.add(play.trackId);
@@ -152,6 +168,10 @@ export function useRecentlyPlayed(limit = 20): Track[] {
                 if (recentTrackIds.length >= limit) break;
               }
             }
+
+            const sig = recentTrackIds.join('|');
+            if (sig === lastTopIdsRef.current) return;
+            lastTopIdsRef.current = sig;
 
             if (recentTrackIds.length === 0) {
               setTracks([]);
@@ -184,12 +204,11 @@ export function useRecentlyPlayed(limit = 20): Track[] {
 
 /**
  * Returns the tracks with the most play events, ordered by play count
- * descending. The result contains at most `limit` tracks.
- *
- * Re-renders when any play row changes.
+ * descending. Only re-emits when the top-N ranking actually changes.
  */
 export function useMostPlayed(limit = 20): Track[] {
   const [tracks, setTracks] = useState<Track[]>([]);
+  const lastTopIdsRef = useRef<string>('');
 
   useEffect(() => {
     const subscription = playsCollection
@@ -198,17 +217,19 @@ export function useMostPlayed(limit = 20): Track[] {
       .subscribe({
         next: async (plays: Play[]) => {
           try {
-            // Tally play counts per track
             const counts = new Map<string, number>();
             for (const play of plays) {
               counts.set(play.trackId, (counts.get(play.trackId) ?? 0) + 1);
             }
 
-            // Sort by count descending and take top `limit` IDs
             const topIds = [...counts.entries()]
               .sort((a, b) => b[1] - a[1])
               .slice(0, limit)
               .map(([id]) => id);
+
+            const sig = topIds.join('|');
+            if (sig === lastTopIdsRef.current) return;
+            lastTopIdsRef.current = sig;
 
             if (topIds.length === 0) {
               setTracks([]);
@@ -240,16 +261,48 @@ export function useMostPlayed(limit = 20): Track[] {
 }
 
 /**
- * Returns all tracks the user has liked (hearted), ordered by most recently
- * added. Re-renders whenever a track's `liked` field changes.
+ * Returns play counts per track id. Lightweight — used by Library's
+ * "Most Played" sort to avoid re-emitting full Track objects.
+ */
+export function usePlayCounts(): Map<string, number> {
+  const [counts, setCounts] = useState<Map<string, number>>(new Map());
+  const lastSigRef = useRef<string>('');
+
+  useEffect(() => {
+    const subscription = playsCollection
+      .query()
+      .observe()
+      .subscribe({
+        next: (plays: Play[]) => {
+          const map = new Map<string, number>();
+          for (const play of plays) {
+            map.set(play.trackId, (map.get(play.trackId) ?? 0) + 1);
+          }
+          // Only update when the {id → count} map actually differs.
+          const sig = [...map.entries()]
+            .sort((a, b) => a[0].localeCompare(b[0]))
+            .map(([id, c]) => `${id}:${c}`)
+            .join('|');
+          if (sig === lastSigRef.current) return;
+          lastSigRef.current = sig;
+          setCounts(map);
+        },
+        error: (err: unknown) => logger.error('[usePlayCounts] Observable error:', err),
+      });
+    return () => subscription.unsubscribe();
+  }, []);
+
+  return counts;
+}
+
+/**
+ * Returns all tracks the user has liked, ordered by most recently added.
+ * Re-renders whenever the like set changes (add/remove).
  */
 export function useLikedTracks(): Track[] {
   const observable = tracksCollection
-    .query(
-      Q.where('liked', true),
-      Q.sortBy('added_at', Q.desc),
-    )
+    .query(Q.where('liked', true), Q.sortBy('added_at', Q.desc))
     .observe();
 
-  return useObservable(observable) ?? [];
+  return useStableObservable(observable, trackListSignature) ?? [];
 }

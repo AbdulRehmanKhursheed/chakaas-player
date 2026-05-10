@@ -1,50 +1,37 @@
 /**
- * DownloadManager — orchestrates the full pipeline for adding a YouTube track
- * to the local library:
+ * DownloadManager — orchestrates the full pipeline for adding a track to the
+ * local library:
  *
- *   1. Resolve best audio stream info       (YoutubeExtractor.getBestAudioStream)
+ *   1. Resolve best audio stream info       (provider-specific)
  *   2. Download the raw audio stream        (react-native-blob-util w/ progress)
- *   3. Convert to M4A 320k / stream-copy    (AudioConverter.convertToM4A)
+ *   3. Stream-copy to final container       (no transcode, ExoPlayer-native)
  *   4. Download and cache artwork           (ArtworkDownloader.downloadArtwork)
  *   5. Copy to final music directory        (react-native-blob-util)
- *   6. Probe duration via FFmpeg            (AudioConverter.probeAudioDuration)
- *   7. Insert the track into WatermelonDB   (tracksCollection)
+ *   6. Insert the track into WatermelonDB   (tracksCollection)
+ *
+ * Concurrency
+ * ───────────
+ * Up to MAX_CONCURRENT pipelines run in parallel. The worker pool is started
+ * once when the first item is enqueued and tears down only when the queue is
+ * fully drained. `enqueue` and `enqueueBatch` are atomic with each other: a
+ * single in-flight Promise guards the dedupe + capacity checks so 1200 rapid
+ * enqueue calls cannot race past the cap or insert duplicates.
  *
  * Background / sleep support
  * ──────────────────────────
  * A @notifee/react-native Android Foreground Service is started before the
- * first download begins and stopped once the queue is drained. The service
- * binds the JS thread to an Android foreground context so the OS cannot kill
- * the process while downloads are running, even when the screen is off or the
- * app is removed from the recents tray.
+ * first download begins and stopped once the queue is drained.
  *
  * Library capacity
  * ────────────────
- * The library is capped at MAX_LIBRARY_SIZE (1 500) tracks. `enqueue` checks
- * the current WatermelonDB track count before accepting a new job and returns
- * `{ success: false, reason }` when the limit has been reached.
- *
- * Quality
- * ───────
- * All downloads default to 320k AAC (premium audio). The `quality` field on
- * EnqueueParams is accepted for future flexibility but is overridden to '320k'
- * inside the pipeline to enforce the product decision.
+ * The library is capped at MAX_LIBRARY_SIZE (1500) tracks. The check counts
+ * both DB rows and currently-queued items so a bulk approval cannot blow
+ * past the cap.
  *
  * Cancellation
  * ────────────
- * • `cancelCurrent()` — aborts the actively downloading/converting item.
- *   The pipeline checks `_cancelCurrent` at each stage boundary and throws,
- *   which causes cleanup and moves on to the next queued item.
- * • `cancelAll()` — sets both `_cancelAll` and `_cancelCurrent`, which drains
- *   the loop after the current item finishes its cleanup.
- *
- * Notification actions ("Cancel" / "Cancel All" buttons in the notification)
- * are wired up via both `notifee.onBackgroundEvent` (screen off / app hidden)
- * and `notifee.onForegroundEvent` (app visible), so taps are always handled
- * regardless of the app lifecycle state.
- *
- * Progress & status for every item are kept in the Zustand downloadStore so
- * the UI can react without coupling to this module directly.
+ * • `cancelCurrent()` — aborts every actively downloading/converting item.
+ * • `cancelAll()`     — flushes every remaining queued/active item.
  */
 
 import { Platform } from 'react-native';
@@ -56,11 +43,6 @@ import { useDownloadStore } from '@/stores/downloadStore';
 import type { DownloadStatus } from '@/stores/downloadStore';
 import { getTrackPath, getTempDir, deleteFile } from '@/services/storage/fileSystem';
 import { getBestAudioStream } from './YoutubeExtractor';
-// Note: FFmpeg has been removed from the project (the upstream
-// ffmpeg-kit-react-native package was archived in Jan 2025 and lost its
-// Maven binaries). Downloads now stream-copy whatever container YouTube
-// delivers — AAC streams become .m4a, opus streams become .webm, both
-// playable by RNTP/ExoPlayer at full source quality with zero transcode loss.
 import { downloadArtwork } from './ArtworkDownloader';
 import { getSaavnStreamUrl } from './providers/SaavnProvider';
 import type { AudioStreamInfo } from './providers/types';
@@ -79,66 +61,54 @@ import { logger } from '@/utils/logger';
 /** Hard cap on the number of tracks stored in the local library. */
 export const MAX_LIBRARY_SIZE = 1500;
 
+/** Maximum download pipelines running in parallel. */
+const MAX_CONCURRENT = 1;
+
+/** How many times we'll refresh a stale signed URL during the header loop. */
+const MAX_STREAM_REFRESHES = 5;
+
+/** Number of attempts (across header sets) for a single item before we give up. */
+const MAX_DOWNLOAD_ATTEMPTS = 6;
+
 /**
  * Encoding quality used for every download.
- * Locked to 320k regardless of the `quality` field passed to `enqueue`.
+ * The user-facing Settings → Audio Quality control routes through here.
  */
 const DOWNLOAD_QUALITY = '320k' as const;
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
 export interface EnqueueParams {
-  /**
-   * Provider-native ID. For YouTube this is the 11-char videoId. For Saavn
-   * it's the song id (e.g. "aRZbUYD7"). Named `youtubeId` for backward
-   * compatibility with existing call sites; the field is treated as a
-   * generic external ID and stored in the right DB column based on
-   * `provider`.
-   */
   youtubeId: string;
-  /** Display title of the track. */
   title: string;
-  /** Artist / channel name. */
   artist: string;
-  /** Album name. Defaults to 'Unknown Album' when omitted. */
   album?: string;
-  /** Thumbnail URL used for artwork. */
   thumbnail: string;
-  /**
-   * Track duration in milliseconds, taken from search metadata. Used
-   * directly instead of probing the downloaded file. Pass 0 if unknown.
-   */
   durationMs?: number;
-  /**
-   * Target encoding quality. Accepted for API compatibility — kept at the
-   * original-source quality (no transcoding is performed).
-   */
   quality?: '128k' | '192k' | '256k' | '320k';
-  /**
-   * Which backend to resolve the stream from. Defaults to `youtube` for
-   * back-compat — call sites that didn't pass a provider continue working.
-   */
   provider?: 'youtube' | 'saavn';
-  /** Saavn `encrypted_media_url`. Required when `provider === 'saavn'`. */
   saavnEncryptedUrl?: string;
-  /** Whether Saavn 320 kbps tier is available; falls back to 160 kbps if not. */
   saavnHas320kbps?: boolean;
 }
 
 export interface EnqueueResult {
-  /** Whether the track was accepted into the queue. */
   success: boolean;
-  /** Human-readable reason when `success` is false. */
   reason?: string;
-  /** Stable download-job ID, present when `success` is true. */
   id?: string;
 }
 
-// ── Internal types ─────────────────────────────────────────────────────────
+export interface EnqueueBatchResult {
+  /** How many items were accepted into the queue. */
+  accepted: number;
+  /** Items already in the library or queue (deduped silently). */
+  skipped: number;
+  /** Items rejected because the library cap was reached partway through. */
+  rejected: number;
+  /** Human-readable reason if rejected > 0. */
+  reason?: string;
+}
 
-/** Fully resolved params used inside the pipeline (all fields required). */
 interface ResolvedParams {
-  /** External ID (YouTube videoId or Saavn song id). */
   youtubeId: string;
   title: string;
   artist: string;
@@ -190,7 +160,6 @@ async function publishToMusicLibrary(
       'Audio',
       sourcePath,
     );
-    logger.info(`[DownloadManager] Published to Android Music library: ${uri}`);
     return uri;
   } catch (err) {
     logger.warn('[DownloadManager] Could not publish to Android Music library:', err);
@@ -212,7 +181,7 @@ function toUserFacingDownloadError(error: unknown): string {
     message.includes('stream url') ||
     message.includes('youtube')
   ) {
-    return 'Could not get a playable audio stream from YouTube. Try another result or retry later.';
+    return 'Could not get a playable audio stream. Try another result or retry later.';
   }
   if (
     message.includes('operation not permitted') ||
@@ -234,45 +203,101 @@ function toUserFacingDownloadError(error: unknown): string {
   return raw || 'Download failed. Please try again.';
 }
 
-// ── ID generation ──────────────────────────────────────────────────────────
-
-/**
- * Generates a download-job ID that is unique within the session.
- * Not cryptographically random — it only needs to be collision-free within
- * the in-memory queue, so a timestamp + short random suffix is sufficient.
- */
 function generateId(): string {
   return `dl_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 }
 
-// ── Library capacity check ─────────────────────────────────────────────────
-
-/**
- * Returns true when the WatermelonDB tracks collection has reached or exceeded
- * the MAX_LIBRARY_SIZE limit. Queries the DB directly so the count is always
- * accurate (not subject to stale Zustand state).
- */
-async function isLibraryFull(): Promise<boolean> {
-  const count = await tracksCollection.query().fetchCount();
-  return count >= MAX_LIBRARY_SIZE;
+function keyFor(provider: 'youtube' | 'saavn', id: string): string {
+  return `${provider}:${id}`;
 }
 
-// ── Module-level queue state ───────────────────────────────────────────────
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
-/** True when a pipeline is actively executing (prevents re-entrant loops). */
-let _isRunning = false;
+// ── Module-level state ─────────────────────────────────────────────────────
 
-/** Signals the active pipeline to abort after its current async step. */
+/** How many pipelines are currently running. */
+let _activeCount = 0;
+/** True while at least one pipeline is running. Drives `isRunning`. */
+let _isProcessorRunning = false;
+
+/** Signals every active pipeline to abort at its next async boundary. */
 let _cancelCurrent = false;
+/** Drains the entire queue after currently running pipelines finish. */
+let _cancelAll = false;
+/** Number of items completed successfully since the processor last started. */
+let _completedThisSession = 0;
+/** True when the user cancelled the queue — suppresses the "complete" toast. */
+let _sessionCancelled = false;
 
 /**
- * Signals the queue processor to stop dequeuing new items after the current
- * pipeline finishes its cleanup.  Also sets `_cancelCurrent`.
+ * Atomic dedupe + capacity gate. Every enqueue acquires this lock, so the
+ * library cap check + DB write decision sees a consistent view even when 1200
+ * enqueues fire in parallel.
  */
-let _cancelAll = false;
+let _enqueueLock: Promise<void> = Promise.resolve();
+async function withEnqueueLock<T>(fn: () => Promise<T>): Promise<T> {
+  const previous = _enqueueLock;
+  let release: () => void = () => {};
+  _enqueueLock = new Promise((resolve) => {
+    release = resolve;
+  });
+  try {
+    await previous;
+    return await fn();
+  } finally {
+    release();
+  }
+}
 
-/** Tracks how many songs were successfully written to the DB this session. */
-let _completedThisSession = 0;
+/** Last progress update sent to the notification for each track id. */
+const _lastNotificationProgress = new Map<string, number>();
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+async function countQueueable(): Promise<number> {
+  const dbCount = await tracksCollection.query().fetchCount();
+  const liveQueue = useDownloadStore.getState().queue.filter(
+    (i) => i.status !== 'done' && i.status !== 'error',
+  ).length;
+  return dbCount + liveQueue;
+}
+
+/**
+ * Bulk-checks which (provider, id) pairs already exist in the library. Returns
+ * a Set of `provider:id` keys present in the tracks table.
+ */
+async function fetchExistingLibraryKeys(
+  pairs: Array<{ provider: 'youtube' | 'saavn'; id: string }>,
+): Promise<Set<string>> {
+  const out = new Set<string>();
+  if (pairs.length === 0) return out;
+
+  const youtubeIds = pairs.filter((p) => p.provider === 'youtube').map((p) => p.id);
+  const saavnIds = pairs.filter((p) => p.provider === 'saavn').map((p) => p.id);
+
+  const [ytRows, snRows] = await Promise.all([
+    youtubeIds.length > 0
+      ? tracksCollection.query(Q.where('youtube_id', Q.oneOf(youtubeIds))).fetch()
+      : Promise.resolve([]),
+    saavnIds.length > 0
+      ? tracksCollection.query(Q.where('saavn_id', Q.oneOf(saavnIds))).fetch()
+      : Promise.resolve([]),
+  ]);
+
+  for (const r of ytRows) {
+    if (r.durationMs > 0 && r.filePath) {
+      out.add(keyFor('youtube', r.youtubeId ?? ''));
+    }
+  }
+  for (const r of snRows) {
+    if (r.durationMs > 0 && r.filePath) {
+      out.add(keyFor('saavn', r.saavnId ?? ''));
+    }
+  }
+  return out;
+}
 
 // ── DownloadManagerClass ───────────────────────────────────────────────────
 
@@ -280,14 +305,9 @@ class DownloadManagerClass {
   private _unsubscribeForeground: (() => void) | null = null;
 
   constructor() {
-    // ── Background event handler ────────────────────────────────────────────
-    // Must be registered at module scope (i.e. synchronously during bundle
-    // evaluation) so notifee can hand events to this handler when the app is
-    // in the background / the JS thread is resumed by the foreground service.
     notifee.onBackgroundEvent(async ({ type, detail }) => {
       if (type === EventType.ACTION_PRESS) {
         const actionId = detail.pressAction?.id;
-        logger.info(`[DownloadManager] Background action: ${actionId}`);
         if (actionId === 'cancel-current') this.cancelCurrent();
         if (actionId === 'cancel-all') this.cancelAll();
       }
@@ -296,163 +316,174 @@ class DownloadManagerClass {
 
   // ── Public API ─────────────────────────────────────────────────────────
 
-  /**
-   * Adds a track to the download queue.
-   *
-   * Returns `{ success: true, id }` when the item was accepted.
-   * Returns `{ success: false, reason }` when:
-   *  - The library is at capacity (1 500 tracks).
-   *
-   * If the same `youtubeId` is already present in the queue (any status), the
-   * call is silently de-duplicated and the existing job's ID is returned with
-   * `success: true`.
-   */
   async enqueue(params: EnqueueParams): Promise<EnqueueResult> {
     await ensureNotificationChannel();
 
-    const store = useDownloadStore.getState();
-
-    // ── De-duplicate ───────────────────────────────────────────────────────
-    const existing = store.queue.find(
-      (item) => item.youtubeId === params.youtubeId,
-    );
-    if (existing) {
-      logger.info(
-        `[DownloadManager] Already queued: "${params.title}" (${existing.status})`,
-      );
-      return { success: true, id: existing.id };
-    }
-
-    // Look up by the provider-appropriate ID. When provider isn't given we
-    // assume YouTube (back-compat) so existing call sites keep working.
     const provider = params.provider ?? 'youtube';
-    const idColumn = provider === 'saavn' ? 'saavn_id' : 'youtube_id';
-    const existingLibraryTracks = await tracksCollection
-      .query(Q.where(idColumn, params.youtubeId))
-      .fetch();
-    if (existingLibraryTracks.length > 0) {
-      const brokenTracks = existingLibraryTracks.filter(
-        (track) => track.durationMs <= 0 || !track.filePath,
-      );
+    const key = keyFor(provider, params.youtubeId);
 
-      if (brokenTracks.length === 0) {
-        const reason = 'This song is already in your library.';
-        logger.info(`[DownloadManager] Enqueue rejected — ${reason}`);
-        return { success: false, reason };
+    return withEnqueueLock(async () => {
+      const store = useDownloadStore.getState();
+
+      // Dedupe inside the in-memory queue.
+      const existing = store.queue.find(
+        (item) => keyFor(item.provider ?? 'youtube', item.youtubeId) === key,
+      );
+      if (existing) return { success: true, id: existing.id };
+
+      // Library-row dedupe — also clean up broken records (missing file, 0 ms duration).
+      const idColumn = provider === 'saavn' ? 'saavn_id' : 'youtube_id';
+      const libraryRows = await tracksCollection
+        .query(Q.where(idColumn, params.youtubeId))
+        .fetch();
+      if (libraryRows.length > 0) {
+        const broken = libraryRows.filter(
+          (track) => track.durationMs <= 0 || !track.filePath,
+        );
+        if (broken.length === 0) {
+          return { success: false, reason: 'This song is already in your library.' };
+        }
+        await database.write(async () => {
+          for (const track of broken) {
+            await deleteFile(track.filePath).catch(() => {});
+            if (track.artworkPath) await deleteFile(track.artworkPath).catch(() => {});
+            await track.destroyPermanently();
+          }
+        });
       }
 
-      logger.warn(
-        `[DownloadManager] Removing ${brokenTracks.length} broken existing record(s) before re-download.`,
-      );
-      await database.write(async () => {
-        for (const track of brokenTracks) {
-          await deleteFile(track.filePath).catch(() => {});
-          if (track.artworkPath) {
-            await deleteFile(track.artworkPath).catch(() => {});
-          }
-          await track.destroyPermanently();
-        }
+      if ((await countQueueable()) >= MAX_LIBRARY_SIZE) {
+        return {
+          success: false,
+          reason: `Library is full (${MAX_LIBRARY_SIZE} songs max)`,
+        };
+      }
+
+      const id = generateId();
+      store.addToQueue({
+        id,
+        youtubeId: params.youtubeId,
+        title: params.title,
+        artist: params.artist,
+        thumbnail: params.thumbnail,
+        durationMs: params.durationMs ?? 0,
+        provider,
+        album: params.album,
+        saavnEncryptedUrl: params.saavnEncryptedUrl,
+        saavnHas320kbps: params.saavnHas320kbps,
       });
-    }
 
-    // ── Library capacity ───────────────────────────────────────────────────
-    const full = await isLibraryFull();
-    if (full) {
-      const reason = `Library is full (${MAX_LIBRARY_SIZE} songs max)`;
-      logger.warn(`[DownloadManager] Enqueue rejected — ${reason}`);
-      return { success: false, reason };
-    }
-
-    // ── Accept ─────────────────────────────────────────────────────────────
-    const id = generateId();
-
-    store.addToQueue({
-      id,
-      youtubeId: params.youtubeId,
-      title: params.title,
-      artist: params.artist,
-      thumbnail: params.thumbnail,
-      durationMs: params.durationMs ?? 0,
-      provider,
-      album: params.album,
-      saavnEncryptedUrl: params.saavnEncryptedUrl,
-      saavnHas320kbps: params.saavnHas320kbps,
+      void this._ensureProcessorRunning();
+      return { success: true, id };
     });
-
-    logger.info(`[DownloadManager] Enqueued: "${params.title}" id=${id}`);
-
-    // Kick off the processor — it's a no-op if already running.
-    void this._processQueue().catch((err) => {
-      logger.error('[DownloadManager] Queue processor crashed:', err);
-    });
-
-    return { success: true, id };
   }
 
   /**
-   * Cancels the currently active download/conversion step.
-   * The pipeline aborts after its next async boundary check and the item is
-   * marked as errored. The queue then proceeds to the next item.
+   * Adds many items in a single transaction-like batch. Does one bulk DB
+   * lookup, one store mutation, and starts the worker pool once. Massively
+   * faster than calling enqueue() in a loop for big lists.
    */
+  async enqueueBatch(items: EnqueueParams[]): Promise<EnqueueBatchResult> {
+    if (items.length === 0) return { accepted: 0, skipped: 0, rejected: 0 };
+    await ensureNotificationChannel();
+
+    return withEnqueueLock(async () => {
+      const store = useDownloadStore.getState();
+      const queueKeys = new Set(
+        store.queue.map((d) => keyFor(d.provider ?? 'youtube', d.youtubeId)),
+      );
+
+      // Bulk-fetch which items are already in the library.
+      const lookupPairs = items.map((i) => ({
+        provider: (i.provider ?? 'youtube') as 'youtube' | 'saavn',
+        id: i.youtubeId,
+      }));
+      const libraryKeys = await fetchExistingLibraryKeys(lookupPairs);
+
+      let baseCount = await tracksCollection.query().fetchCount();
+      baseCount += store.queue.filter(
+        (i) => i.status !== 'done' && i.status !== 'error',
+      ).length;
+
+      const toAdd: Array<Omit<import('@/stores/downloadStore').DownloadItem, 'progress' | 'status'>> = [];
+      let skipped = 0;
+      let rejected = 0;
+
+      for (const params of items) {
+        const provider = (params.provider ?? 'youtube') as 'youtube' | 'saavn';
+        const key = keyFor(provider, params.youtubeId);
+
+        if (queueKeys.has(key) || libraryKeys.has(key)) {
+          skipped += 1;
+          continue;
+        }
+
+        if (baseCount + toAdd.length >= MAX_LIBRARY_SIZE) {
+          rejected += 1;
+          continue;
+        }
+
+        queueKeys.add(key);
+        toAdd.push({
+          id: generateId(),
+          youtubeId: params.youtubeId,
+          title: params.title,
+          artist: params.artist,
+          thumbnail: params.thumbnail,
+          durationMs: params.durationMs ?? 0,
+          provider,
+          album: params.album,
+          saavnEncryptedUrl: params.saavnEncryptedUrl,
+          saavnHas320kbps: params.saavnHas320kbps,
+        });
+      }
+
+      if (toAdd.length > 0) {
+        store.addManyToQueue(toAdd);
+        void this._ensureProcessorRunning();
+      }
+
+      const reason =
+        rejected > 0
+          ? `Library would exceed the ${MAX_LIBRARY_SIZE}-song cap — ${rejected} skipped.`
+          : undefined;
+
+      return { accepted: toAdd.length, skipped, rejected, reason };
+    });
+  }
+
   cancelCurrent(): void {
     _cancelCurrent = true;
-    logger.info('[DownloadManager] cancelCurrent requested.');
-
-    // Reflect the cancellation in the Zustand store immediately so the UI
-    // can update before the pipeline's async throw propagates.
     const store = useDownloadStore.getState();
-    const active = store.queue.find(
-      (item) =>
-        item.status === 'downloading' ||
-        item.status === 'converting' ||
-        item.status === 'tagging',
-    );
-    if (active) {
-      store.setError(active.id, 'Cancelled by user');
-    }
-  }
-
-  /**
-   * Cancels the current download and clears all remaining queued items.
-   * Items in 'queued' status are marked as errored immediately; the active
-   * item is aborted at its next async boundary.
-   */
-  cancelAll(): void {
-    _cancelAll = true;
-    _cancelCurrent = true;
-    logger.info('[DownloadManager] cancelAll requested.');
-
-    const store = useDownloadStore.getState();
-    store.queue.forEach((item) => {
+    for (const item of store.queue) {
       if (
-        item.status === 'queued' ||
         item.status === 'downloading' ||
         item.status === 'converting' ||
         item.status === 'tagging'
       ) {
+        store.setError(item.id, 'Cancelled by user');
+      }
+    }
+  }
+
+  cancelAll(): void {
+    _cancelAll = true;
+    _cancelCurrent = true;
+    _sessionCancelled = true;
+    const store = useDownloadStore.getState();
+    for (const item of store.queue) {
+      if (item.status !== 'done' && item.status !== 'error') {
         store.setError(item.id, 'Cancelled');
       }
-    });
-  }
-
-  /** True when a download pipeline is actively executing. */
-  get isRunning(): boolean {
-    return _isRunning;
-  }
-
-  // ── Foreground event subscription ───────────────────────────────────────
-
-  /**
-   * Registers the foreground notification-action handler (for when the app is
-   * visible). Returns the unsubscribe function.
-   *
-   * Call this once from a long-lived component (e.g. the root App) and call
-   * the returned function on unmount.
-   */
-  registerForegroundListener(): () => void {
-    if (this._unsubscribeForeground) {
-      this._unsubscribeForeground();
     }
+  }
+
+  get isRunning(): boolean {
+    return _isProcessorRunning;
+  }
+
+  registerForegroundListener(): () => void {
+    if (this._unsubscribeForeground) this._unsubscribeForeground();
     this._unsubscribeForeground = registerForegroundEventHandler(
       () => this.cancelCurrent(),
       () => this.cancelAll(),
@@ -463,46 +494,56 @@ class DownloadManagerClass {
     };
   }
 
-  // ── Private queue processor ─────────────────────────────────────────────
+  // ── Worker pool ────────────────────────────────────────────────────────
 
   /**
-   * Sequential queue drain loop.
-   *
-   * Runs pipelines one at a time (no concurrent downloads) so we don't
-   * saturate the network or run multiple FFmpeg instances simultaneously.
-   * Each iteration:
-   *   1. Checks for a cancellation signal.
-   *   2. Picks the next 'queued' item.
-   *   3. Starts / updates the foreground service notification.
-   *   4. Runs the pipeline.
-   *   5. Loops back to step 1.
-   *
-   * When the queue is empty (or `_cancelAll` is set), tears down the foreground
-   * service and posts the completion summary notification.
+   * Starts the worker pool if it isn't already running. Spawns up to
+   * MAX_CONCURRENT workers — each pulls one queued item at a time until the
+   * queue is drained.
    */
-  private async _processQueue(): Promise<void> {
-    if (_isRunning) return;
-
-    // Reset the "cancel all" gate for this new queue run.
+  private async _ensureProcessorRunning(): Promise<void> {
+    if (_isProcessorRunning) return;
+    _isProcessorRunning = true;
     _cancelAll = false;
+    _sessionCancelled = false;
     _completedThisSession = 0;
 
-    const getStore = useDownloadStore.getState;
+    const firstTitle = useDownloadStore.getState().queue.find((i) => i.status === 'queued')?.title;
+    try {
+      await startDownloadForegroundService(firstTitle ?? 'Downloading…');
+    } catch (err) {
+      logger.warn('[DownloadManager] Could not start foreground service:', err);
+    }
 
+    const workers: Promise<void>[] = [];
+    for (let i = 0; i < MAX_CONCURRENT; i++) workers.push(this._worker());
+    Promise.all(workers).finally(() => {
+      _isProcessorRunning = false;
+      _activeCount = 0;
+      stopDownloadForegroundService(_sessionCancelled ? 0 : _completedThisSession).catch((err) =>
+        logger.warn('[DownloadManager] Failed to stop foreground service:', err),
+      );
+      _completedThisSession = 0;
+    });
+  }
+
+  /**
+   * Single worker — claims the next 'queued' item atomically by setting its
+   * status to 'downloading' before any other worker can see it.
+   */
+  private async _worker(): Promise<void> {
     while (true) {
-      // Respect a cancelAll that arrived while between items.
-      if (_cancelAll) break;
+      if (_cancelAll) return;
 
-      const next = getStore().queue.find((item) => item.status === 'queued');
-      if (!next) break;
+      const store = useDownloadStore.getState();
+      const next = store.queue.find((item) => item.status === 'queued');
+      if (!next) return;
 
-      _isRunning = true;
+      // Claim atomically — switch to 'downloading' immediately so other
+      // workers see it as taken.
+      store.updateProgress(next.id, 0, 'downloading');
+      _activeCount += 1;
       _cancelCurrent = false;
-
-      // Compute queue depth: items still active or waiting.
-      const queueLength = getStore().queue.filter(
-        (i) => i.status === 'queued' || i.status === 'downloading',
-      ).length;
 
       const resolved: ResolvedParams = {
         youtubeId: next.youtubeId,
@@ -517,30 +558,19 @@ class DownloadManagerClass {
         saavnHas320kbps: next.saavnHas320kbps,
       };
 
+      const remaining = store.queue.filter(
+        (i) => i.status === 'queued' || i.status === 'downloading',
+      ).length;
+
       try {
-        // Start (or refresh) the foreground service notification.
-        await startDownloadForegroundService(next.title);
-        await this._runPipeline(next.id, resolved, queueLength);
-        _completedThisSession++;
-        logger.info(
-          `[DownloadManager] Completed: "${next.title}" ` +
-          `(session total: ${_completedThisSession})`,
-        );
+        await this._runPipeline(next.id, resolved, remaining);
+        _completedThisSession += 1;
       } catch (err) {
-        // Distinguish user cancellations from real failures for the error UI.
-        const rawMessage = err instanceof Error ? err.message : String(err);
+        const raw = err instanceof Error ? err.message : String(err);
         const message = toUserFacingDownloadError(err);
-        const isCancelled =
-          message === 'Cancelled' || message === 'Cancelled by user';
-
-        logger.error(
-          `[DownloadManager] Failed "${next.title}": ${rawMessage}`,
-        );
-
-        // Always update app state before attempting a system notification.
-        getStore().setError(next.id, message);
-
-        // Only show an error notification for genuine failures, not user-initiated cancels.
+        const isCancelled = message === 'Cancelled' || message === 'Cancelled by user';
+        logger.warn(`[DownloadManager] Failed "${next.title}": ${raw}`);
+        useDownloadStore.getState().setError(next.id, message);
         if (!isCancelled) {
           try {
             await showDownloadError(next.title, message);
@@ -549,42 +579,14 @@ class DownloadManagerClass {
           }
         }
       } finally {
-        _isRunning = false;
-        _cancelCurrent = false;
+        _lastNotificationProgress.delete(next.id);
+        _activeCount = Math.max(0, _activeCount - 1);
       }
     }
-
-    // All done (queue empty or cancelAll).
-    _isRunning = false;
-    try {
-      await stopDownloadForegroundService(_completedThisSession);
-    } catch (err) {
-      logger.warn('[DownloadManager] Failed to stop foreground service:', err);
-    }
-    _completedThisSession = 0;
   }
 
-  // ── Private pipeline ────────────────────────────────────────────────────
+  // ── Pipeline ───────────────────────────────────────────────────────────
 
-  /**
-   * Executes the full download-and-encode pipeline for a single track.
-   *
-   * Progress checkpoints (approximate overall %):
-   *   0–5%   : resolving stream URL
-   *   5–65%  : downloading raw audio (RNBlobUtil streaming progress)
-   *   65–85% : converting / stream-copying to M4A 320k (FFmpeg statistics)
-   *   85–90% : downloading artwork
-   *   90–95% : copying to final music directory
-   *   95–100%: writing WatermelonDB record + probing duration
-   *
-   * After every async step, `_cancelCurrent` is checked and an Error is thrown
-   * if cancellation was requested — this unwinds the call stack cleanly, allows
-   * cleanup of temp files, and lets `_processQueue` mark the item as errored
-   * before moving on.
-   *
-   * @throws Error with human-readable message on any unrecoverable failure or
-   *         user cancellation.
-   */
   private async _runPipeline(
     id: string,
     params: ResolvedParams,
@@ -592,27 +594,23 @@ class DownloadManagerClass {
   ): Promise<void> {
     const getStore = useDownloadStore.getState;
 
-    /**
-     * Convenience helper: update store + notification in one call, then check
-     * for a cancellation signal.
-     */
-    const reportProgress = async (
-      pct: number,
-      status: DownloadStatus,
-    ): Promise<void> => {
+    const reportProgress = async (pct: number, status: DownloadStatus): Promise<void> => {
       getStore().updateProgress(id, pct, status);
-      try {
-        await updateDownloadProgress(params.title, params.artist, pct, queueLength);
-      } catch (err) {
-        logger.warn('[DownloadManager] Failed to update progress notification:', err);
+      // Throttle notification updates per-track — only when crossing a 5%
+      // boundary. Notifee bridges to native; firing per byte is wasteful.
+      const last = _lastNotificationProgress.get(id) ?? -10;
+      if (Math.abs(pct - last) >= 5 || pct === 100) {
+        _lastNotificationProgress.set(id, pct);
+        try {
+          await updateDownloadProgress(params.title, params.artist, pct, queueLength);
+        } catch (err) {
+          logger.warn('[DownloadManager] Failed to update progress notification:', err);
+        }
       }
-      if (_cancelCurrent) throw new Error('Cancelled by user');
+      if (_cancelCurrent || _cancelAll) throw new Error('Cancelled by user');
     };
 
-    // ── 1. Resolve best audio stream ────────────────────────────────────────
-    // Pick the resolver based on provider. Saavn is a single deterministic
-    // call; YouTube has the multi-client + cipher fallback chain inside
-    // getBestAudioStream.
+    // ── 1. Resolve stream ────────────────────────────────────────────────
     await reportProgress(5, 'downloading');
 
     let stream: AudioStreamInfo;
@@ -628,58 +626,57 @@ class DownloadManagerClass {
       );
       stream = {
         ...saavnStream,
-        durationMs: params.durationMs > 0 ? params.durationMs : saavnStream.durationMs,
+        durationMs:
+          params.durationMs > 0 ? params.durationMs : saavnStream.durationMs,
       };
     } else {
       const ytStream = await getBestAudioStream(params.youtubeId);
       stream = ytStream as AudioStreamInfo;
     }
 
-    logger.info(
-      `[DownloadManager] Stream resolved — provider:${params.provider} ` +
-      `container:${stream.container} bitrate:${stream.bitrate} ` +
-      `url-len:${stream.url?.length ?? 0} for "${params.title}"`,
-    );
-
     if (!stream.url || stream.url.length < 20) {
       throw new Error(
         `Empty/invalid stream URL returned for "${params.title}" — ` +
-        `${params.provider === 'saavn' ? 'Saavn auth-token request' : 'YouTube cipher decode'} likely failed.`,
+          `${params.provider === 'saavn' ? 'Saavn auth-token request' : 'YouTube cipher decode'} likely failed.`,
       );
     }
 
-    if (_cancelCurrent) throw new Error('Cancelled by user');
+    if (_cancelCurrent || _cancelAll) throw new Error('Cancelled by user');
 
-    // ── 2. Download raw audio stream ────────────────────────────────────────
+    // ── 2. Download raw stream — with retry + refresh ────────────────────
     const tempDir = await getTempDir();
+    // Generate a unique temp path per attempt to avoid collisions when many
+    // workers run in parallel.
     const tempRawPath = `${tempDir}${id}.${stream.container}`;
 
     let downloaded = false;
     let lastDownloadError: unknown = null;
-    // The stream URL may go stale (HTTP 403/410) between resolve and download.
-    // We allow up to 2 stream-URL refreshes during the header-set loop.
     let activeStreamUrl = stream.url;
     let streamRefreshes = 0;
+    let attempt = 0;
 
-    for (const headers of DOWNLOAD_HEADER_SETS) {
-      try {
-        // Delete any leftover from a previous failed attempt before retrying.
+    while (attempt < MAX_DOWNLOAD_ATTEMPTS && !downloaded) {
+      if (_cancelCurrent || _cancelAll) {
         await deleteFile(tempRawPath).catch(() => {});
-        // The stream may carry CDN-required headers (Saavn needs Referer +
-        // matching User-Agent). Stream-supplied headers override the rotating
-        // header set so the User-Agent stays consistent with the auth-token
-        // request that produced the signed URL.
+        throw new Error('Cancelled by user');
+      }
+
+      const headers = DOWNLOAD_HEADER_SETS[attempt % DOWNLOAD_HEADER_SETS.length];
+      attempt += 1;
+
+      try {
+        await deleteFile(tempRawPath).catch(() => {});
         const mergedHeaders = stream.requestHeaders
           ? { ...headers, ...stream.requestHeaders }
           : headers;
         const response = await RNBlobUtil.config({ path: tempRawPath })
           .fetch('GET', activeStreamUrl, mergedHeaders)
-          .progress(
-            { count: 20, interval: 200 },
-            async (received: number, total: number) => {
-              if (total > 0) {
-                // Map download bytes to 5–65 % of overall progress.
-                const pct = 5 + Math.round((received / total) * 60);
+          .progress({ count: 20, interval: 300 }, async (received: number, total: number) => {
+            if (total > 0) {
+              const pct = 5 + Math.round((received / total) * 60);
+              const last = _lastNotificationProgress.get(id) ?? -10;
+              if (Math.abs(pct - last) >= 5) {
+                _lastNotificationProgress.set(id, pct);
                 getStore().updateProgress(id, pct, 'downloading');
                 await updateDownloadProgress(
                   params.title,
@@ -690,77 +687,66 @@ class DownloadManagerClass {
                   logger.warn('[DownloadManager] Failed to update progress notification:', err);
                 });
               }
-            },
-          );
+            }
+          });
         const status = response.info().status;
         if (status < 200 || status >= 300) {
           throw new Error(`Audio download returned HTTP ${status}`);
         }
 
         const stat = await RNBlobUtil.fs.stat(tempRawPath);
-        const size = typeof stat.size === 'string'
-          ? Number.parseInt(stat.size, 10)
-          : stat.size;
+        const size = typeof stat.size === 'string' ? Number.parseInt(stat.size, 10) : stat.size;
         const minExpectedBytes =
           stream.durationMs > 0 && stream.bitrate > 0
-            ? Math.min(256 * 1024, Math.round((stream.durationMs / 1000) * (stream.bitrate / 8) * 0.05))
+            ? Math.min(
+                256 * 1024,
+                Math.round((stream.durationMs / 1000) * (stream.bitrate / 8) * 0.05),
+              )
             : 64 * 1024;
         if (!Number.isFinite(size) || size < minExpectedBytes) {
           throw new Error(`Downloaded audio file is too small (${size || 0} bytes)`);
         }
-        // Sniff the first few bytes — even a 200 OK can deliver an HTML error
-        // body when a CDN reverse-proxies behind a custom error page. If we
-        // don't catch it here it'd save to the library and ExoPlayer would
-        // later throw `android-parsing-container-unsupported`. Fingerprint
-        // valid containers: ftyp box for m4a (offset 4), 0x1A45DFA3 for webm.
-        try {
-          const sample = await RNBlobUtil.fs.readFile(tempRawPath, 'base64');
-          const sampleStr = typeof sample === 'string' ? sample : '';
-          const head = sampleStr.slice(0, 128);
-          if (head.startsWith('PCFET0NUWVBF') || head.startsWith('PEhUTUw') || head.startsWith('PGh0bWw')) {
-            // base64-prefixes for "<!DOCTYPE", "<HTML", "<html"
-            throw new Error('Audio download returned HTML error body (CDN rejected the request)');
-          }
-        } catch (sniffErr) {
-          if (sniffErr instanceof Error && sniffErr.message.includes('HTML error body')) {
-            throw sniffErr;
-          }
-          // readFile failure is non-fatal — the size check already vouches.
-        }
-        logger.info(
-          `[DownloadManager] Audio file downloaded — status:${status} size:${size} path:${tempRawPath}`,
-        );
+
         downloaded = true;
         break;
       } catch (err) {
         lastDownloadError = err;
         await deleteFile(tempRawPath).catch(() => {});
         const errMsg = err instanceof Error ? err.message : String(err);
-        logger.warn(`[DownloadManager] Audio download attempt failed for "${params.title}": ${errMsg}`);
 
-        // 403 / 410 / 401 typically mean the signed CDN URL has expired or
-        // been re-keyed. Re-resolve to a fresh URL and retry once. Use the
-        // same provider for the refresh so we don't accidentally jump
-        // catalogs mid-pipeline.
         const isStaleUrl = /HTTP (403|410|401)/.test(errMsg);
-        if (isStaleUrl && streamRefreshes < 2) {
+        const isTransient =
+          /HTTP 5\d\d|network|timed out|failed to connect|unable to resolve host/i.test(errMsg);
+
+        if (isStaleUrl && streamRefreshes < MAX_STREAM_REFRESHES) {
           streamRefreshes += 1;
           try {
-            logger.info('[DownloadManager] Refreshing stream URL after auth/forbidden response…');
             const refreshed: AudioStreamInfo =
               params.provider === 'saavn' && params.saavnEncryptedUrl
                 ? await getSaavnStreamUrl(
                     params.saavnEncryptedUrl,
                     params.saavnHas320kbps ?? false,
                   )
-                : (await getBestAudioStream(params.youtubeId)) as AudioStreamInfo;
+                : ((await getBestAudioStream(params.youtubeId)) as AudioStreamInfo);
             if (refreshed.url && refreshed.url.length > 20) {
               activeStreamUrl = refreshed.url;
             }
           } catch (refreshErr) {
             logger.warn('[DownloadManager] Stream URL refresh failed:', refreshErr);
           }
+          continue;
         }
+
+        if (isTransient && attempt < MAX_DOWNLOAD_ATTEMPTS) {
+          // Exponential backoff with jitter: 0.8s, 1.6s, 3.2s, 6.4s …
+          const backoff = Math.min(8000, 800 * 2 ** (attempt - 1));
+          const jitter = Math.floor(Math.random() * 300);
+          await delay(backoff + jitter);
+          continue;
+        }
+
+        // Non-retryable — bail out.
+        break;
       }
     }
 
@@ -770,16 +756,12 @@ class DownloadManagerClass {
         : new Error(`Could not download audio stream for "${params.title}"`);
     }
 
-    if (_cancelCurrent) {
+    if (_cancelCurrent || _cancelAll) {
       await deleteFile(tempRawPath).catch(() => {});
       throw new Error('Cancelled by user');
     }
 
-    // ── 3. Stream-copy to final container ──────────────────────────────────
-    // No transcoding. Whatever YouTube delivered, we keep verbatim:
-    //   - AAC stream → .m4a (the common case, ~95% of Bollywood content)
-    //   - Opus stream → .webm (RNTP / ExoPlayer plays this natively at full
-    //     quality on Android)
+    // ── 3. Stream-copy to final container ────────────────────────────────
     await reportProgress(85, 'converting');
 
     const finalExt = stream.container === 'm4a' ? 'm4a' : 'webm';
@@ -790,37 +772,22 @@ class DownloadManagerClass {
       await deleteFile(tempRawPath);
     }
 
-    if (stream.needsTranscode) {
-      logger.info(
-        `[DownloadManager] Saving original Opus/WebM (no transcode) for "${params.title}" — ` +
-        `ExoPlayer plays this natively at source quality.`,
-      );
-    } else {
-      logger.info(
-        `[DownloadManager] AAC passthrough (lossless copy) for "${params.title}"`,
-      );
-    }
-
-    if (_cancelCurrent) {
+    if (_cancelCurrent || _cancelAll) {
       await deleteFile(tempStagePath).catch(() => {});
       throw new Error('Cancelled by user');
     }
 
-    // ── 4. Download artwork ────────────────────────────────────────────────
+    // ── 4. Artwork ───────────────────────────────────────────────────────
     await reportProgress(88, 'tagging');
-
-    // Use the download-job ID as the artwork cache key — it is stable and
-    // unique within the session, matching the path stored in the DB record.
     const artworkPath = await downloadArtwork(params.thumbnail, id);
 
-    if (_cancelCurrent) {
+    if (_cancelCurrent || _cancelAll) {
       await deleteFile(tempStagePath).catch(() => {});
       throw new Error('Cancelled by user');
     }
 
-    // ── 5. Copy to final music directory ───────────────────────────────────
+    // ── 5. Copy to music directory ───────────────────────────────────────
     await reportProgress(92, 'tagging');
-
     const finalPath = await getTrackPath(
       params.artist,
       params.title,
@@ -834,48 +801,24 @@ class DownloadManagerClass {
       await deleteFile(finalPath).catch(() => {});
       throw err;
     }
-
-    const mediaLibraryUri = await publishToMusicLibrary(
-      finalPath,
-      finalFilename,
-      stream.container,
-    );
-    if (mediaLibraryUri) {
-      logger.info(`[DownloadManager] MediaStore copy created for external music apps: ${mediaLibraryUri}`);
-    }
-
-    // Clean up the staged file now that it has been copied.
+    await publishToMusicLibrary(finalPath, finalFilename, stream.container).catch(() => null);
     await deleteFile(tempStagePath);
 
-    // ── 6. Track duration ──────────────────────────────────────────────────
-    // Prefer the duration from yt.getInfo() (always present, accurate to the
-    // millisecond), fall back to the EnqueueParams hint. Stored in the DB so
-    // the UI shows correct duration immediately, before RNTP loads the track.
+    // ── 6. Insert DB row ─────────────────────────────────────────────────
     const durationMs =
-      stream.durationMs > 0
-        ? stream.durationMs
-        : params.durationMs > 0
-        ? params.durationMs
-        : 0;
+      stream.durationMs > 0 ? stream.durationMs : params.durationMs > 0 ? params.durationMs : 0;
 
-    // ── 7. Insert into WatermelonDB ────────────────────────────────────────
     await reportProgress(95, 'tagging');
 
     await database.write(async () => {
       await tracksCollection.create((record) => {
-        // WatermelonDB assigns _raw.id automatically.
         record.title = params.title;
         record.artist = params.artist;
         record.album = params.album;
         record.genre = '';
         record.durationMs = durationMs;
-        // Keep RNTP playback on the app-owned file path. A MediaStore copy is
-        // created for external apps, but content:// playback can report
-        // duration as 0 or fail on some Android/RNTP combinations.
         record.filePath = finalPath;
         record.artworkPath = artworkPath;
-        // Store the external ID in the right column so search/dedupe by ID
-        // works without ambiguity.
         if (params.provider === 'saavn') {
           record.saavnId = params.youtubeId;
           record.youtubeId = null;
@@ -883,33 +826,14 @@ class DownloadManagerClass {
           record.youtubeId = params.youtubeId;
           record.saavnId = null;
         }
-        record.addedAt = Math.floor(Date.now() / 1000); // Unix seconds
+        record.addedAt = Math.floor(Date.now() / 1000);
         record.source = params.provider;
         record.liked = false;
       });
     });
 
     getStore().updateProgress(id, 100, 'done');
-    logger.info(
-      `[DownloadManager] Pipeline complete: "${params.title}" by ${params.artist}`,
-    );
   }
 }
 
-// ── Singleton export ───────────────────────────────────────────────────────
-
-/**
- * Application-wide DownloadManager singleton.
- *
- * Usage:
- *   const result = await DownloadManager.enqueue({ youtubeId, title, artist, thumbnail });
- *   if (!result.success) Alert.alert('Library full', result.reason);
- *
- * Foreground notification actions (Cancel / Cancel All buttons):
- *   Register once in your root App component:
- *     useEffect(() => DownloadManager.registerForegroundListener(), []);
- *
- * Subscribe to per-item progress and status in any React component:
- *   const queue = useDownloadStore((s) => s.queue);
- */
 export const DownloadManager = new DownloadManagerClass();

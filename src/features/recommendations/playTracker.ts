@@ -16,6 +16,7 @@
  *   foreground (e.g. screen off, MiniPlayer hidden). A single module-level
  *   listener registered at app boot is the cleanest way to guarantee that.
  */
+import { AppState } from 'react-native';
 import TrackPlayer, { Event } from 'react-native-track-player';
 import { database, playsCollection, tracksCollection } from '@/db';
 import { Q } from '@nozbe/watermelondb';
@@ -120,9 +121,23 @@ export function startPlayTracker(): () => void {
     },
   );
 
+  // Flush on app background so the final session-ending play is recorded
+  // even when the user kills the app on the last song.
+  const appStateSub = AppState.addEventListener('change', async (state) => {
+    if (state !== 'active' && lastTrack) {
+      try {
+        const progress = await TrackPlayer.getProgress();
+        await flushLastPlay(progress.position);
+      } catch {
+        await flushLastPlay(0);
+      }
+    }
+  });
+
   unsubscribe = () => {
     sub.remove();
     queueEndedSub.remove();
+    appStateSub.remove();
     unsubscribe = null;
     lastTrack = null;
   };
