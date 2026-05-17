@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect } from 'react';
 import {
   View,
   Text,
@@ -18,102 +18,45 @@ import Animated, {
   useAnimatedGestureHandler,
   interpolate,
   Extrapolation,
-  Easing,
 } from 'react-native-reanimated';
 import { PanGestureHandler } from 'react-native-gesture-handler';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useNavigation } from '@react-navigation/native';
 import TrackPlayer, { useActiveTrack, useProgress } from 'react-native-track-player';
 import * as Haptics from 'expo-haptics';
 import { usePlayer } from '@/features/player/usePlayer';
 import type { RootStackNavigationProp } from '@/types/navigation';
 import { TrackArtwork } from '@/components/track/TrackArtwork';
+import { useColorTheme, isDarkOrGrey, GOLD } from '@/features/player/ColorTheme';
+import { MarqueeText } from '@/components/ui/MarqueeText';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
 const MINI_PLAYER_HEIGHT = 70;
 const SWIPE_UP_THRESHOLD = -40;
+const SWIPE_HORIZONTAL_THRESHOLD = 60;
+const SWIPE_HORIZONTAL_VELOCITY = 700;
 const SPRING_CONFIG = {
   damping: 20,
   stiffness: 180,
   mass: 0.8,
 };
 
-// ─── Marquee Text ────────────────────────────────────────────────────────────
-
-interface MarqueeTextProps {
-  text: string;
-  style: object;
-}
-
-function MarqueeText({ text, style }: MarqueeTextProps) {
-  const offset = useSharedValue(0);
-  const containerWidth = useSharedValue(0);
-  const textWidth = useSharedValue(0);
-  const isMountedRef = useRef(true);
-
-  useEffect(() => {
-    isMountedRef.current = true;
-    return () => {
-      isMountedRef.current = false;
-      // Stop any in-flight worklet so a re-chained setTimeout from the
-      // callback can't keep mutating the shared value after unmount.
-      offset.value = 0;
-    };
-  }, []);
-
-  useEffect(() => {
-    let active = true;
-    let pendingTimer: ReturnType<typeof setTimeout> | null = null;
-
-    if (textWidth.value > containerWidth.value && containerWidth.value > 0) {
-      const distance = textWidth.value - containerWidth.value + 16;
-      const duration = distance * 22;
-
-      const animate = () => {
-        if (!active || !isMountedRef.current) return;
-        offset.value = withTiming(
-          -distance,
-          { duration, easing: Easing.linear },
-          (finished) => {
-            if (!finished) return;
-            offset.value = withTiming(0, { duration: 600 }, (done) => {
-              if (done && active && isMountedRef.current) {
-                // Schedule next loop via a tracked timer so the cleanup
-                // below cancels it cleanly.
-                pendingTimer = setTimeout(animate, 0);
-              }
-            });
-          },
-        );
-      };
-
-      pendingTimer = setTimeout(animate, 1200);
-    }
-
-    return () => {
-      active = false;
-      if (pendingTimer) clearTimeout(pendingTimer);
-    };
-  }, [text]);
-
-  const animStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: offset.value }],
-  }));
-
-  return (
-    <View
-      style={{ overflow: 'hidden', flex: 1 }}
-      onLayout={(e) => { containerWidth.value = e.nativeEvent.layout.width; }}
-    >
-      <Animated.Text
-        style={[style, animStyle]}
-        numberOfLines={1}
-        onLayout={(e) => { textWidth.value = e.nativeEvent.layout.width; }}
-      >
-        {text}
-      </Animated.Text>
-    </View>
-  );
+/**
+ * Lighten a hex colour toward white. Used to soften the dominant album
+ * colour for a subtle tint over a white base.
+ */
+function lighten(hex: string, ratio: number): string {
+  const clean = hex.replace('#', '');
+  if (clean.length !== 6) return hex;
+  const r = parseInt(clean.slice(0, 2), 16);
+  const g = parseInt(clean.slice(2, 4), 16);
+  const b = parseInt(clean.slice(4, 6), 16);
+  const blend = (c: number) =>
+    Math.round(c + (255 - c) * ratio)
+      .toString(16)
+      .padStart(2, '0');
+  return `#${blend(r)}${blend(g)}${blend(b)}`;
 }
 
 // ─── Main Component ──────────────────────────────────────────────────────────
@@ -122,11 +65,21 @@ export function MiniPlayer() {
   const navigation = useNavigation<RootStackNavigationProp<'NowPlaying'>>();
   const activeTrack = useActiveTrack();
   const progress = useProgress(250);
-  const { isPlaying, togglePlayPause, skipToNext } = usePlayer();
+  const { isPlaying, togglePlayPause, skipToNext, skipToPrevious } = usePlayer();
+
+  // Themed colours from the active track's artwork — fall back to gold
+  // when the dominant is too dark / grey to read well.
+  const themeColors = useColorTheme((s) => s.colors);
+  const accent =
+    !themeColors.dominant || isDarkOrGrey(themeColors.dominant)
+      ? GOLD
+      : themeColors.dominant;
+  const tintBackground = lighten(accent, 0.78);
 
   // Entrance animation — slide up from below the tab bar
   const translateY = useSharedValue(MINI_PLAYER_HEIGHT + 20);
   const gestureTranslateY = useSharedValue(0);
+  const gestureTranslateX = useSharedValue(0);
   const opacity = useSharedValue(0);
 
   // Animate in when we get an active track
@@ -145,14 +98,32 @@ export function MiniPlayer() {
     navigation.navigate('NowPlaying');
   }, [navigation]);
 
+  // Play/pause press animation for the icon button.
+  const playPressScale = useSharedValue(1);
+  const playPressStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: playPressScale.value }],
+  }));
+
   const handlePlayPause = useCallback(() => {
-    togglePlayPause();
-  }, [togglePlayPause]);
+    // Fire haptic at the call site so it lands immediately rather than after
+    // the async TrackPlayer.play()/pause() round-trip. Medium = primary
+    // transport action.
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    playPressScale.value = withSpring(0.85, { damping: 14, stiffness: 320, mass: 0.5 }, () => {
+      playPressScale.value = withSpring(1, { damping: 14, stiffness: 320, mass: 0.5 });
+    });
+    void togglePlayPause();
+  }, [togglePlayPause, playPressScale]);
 
   const handleSkipNext = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    skipToNext();
+    void skipToNext();
   }, [skipToNext]);
+
+  const handleSkipPrev = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    void skipToPrevious();
+  }, [skipToPrevious]);
 
   const handleClose = useCallback(async () => {
     // Reset clears the queue, which is destructive — confirm before
@@ -179,29 +150,54 @@ export function MiniPlayer() {
     );
   }, []);
 
-  // Pan gesture — swipe up to open NowPlaying, swipe down to bounce back
+  // Pan gesture — vertical: swipe up to open NowPlaying; horizontal: swipe
+  // left/right to skip next/prev. The dominant axis at gesture end decides
+  // which action (if any) fires.
   const gestureHandler = useAnimatedGestureHandler({
-    onStart: (_, ctx: { startY: number }) => {
+    onStart: (_, ctx: { startX: number; startY: number }) => {
+      ctx.startX = gestureTranslateX.value;
       ctx.startY = gestureTranslateY.value;
     },
     onActive: (event, ctx) => {
-      // Only allow upward swipe
-      const newValue = ctx.startY + event.translationY;
-      gestureTranslateY.value = Math.min(0, newValue * 0.6);
+      // Track both axes; clamp upward-only on Y so a downward drag doesn't
+      // tug the mini-player off the screen.
+      const newY = ctx.startY + event.translationY;
+      gestureTranslateY.value = Math.min(0, newY * 0.6);
+      gestureTranslateX.value = (ctx.startX + event.translationX) * 0.6;
     },
     onEnd: (event) => {
-      if (event.translationY < SWIPE_UP_THRESHOLD || event.velocityY < -600) {
-        runOnJS(navigateToNowPlaying)();
-        gestureTranslateY.value = withSpring(0, SPRING_CONFIG);
-      } else {
-        gestureTranslateY.value = withSpring(0, SPRING_CONFIG);
+      const absX = Math.abs(event.translationX);
+      const absY = Math.abs(event.translationY);
+
+      if (absY > absX) {
+        // Vertical-dominant: open NowPlaying on swipe up.
+        if (event.translationY < SWIPE_UP_THRESHOLD || event.velocityY < -600) {
+          runOnJS(navigateToNowPlaying)();
+        }
+      } else if (absX > absY) {
+        // Horizontal-dominant: skip prev (right swipe) / next (left swipe).
+        if (
+          event.translationX < -SWIPE_HORIZONTAL_THRESHOLD ||
+          event.velocityX < -SWIPE_HORIZONTAL_VELOCITY
+        ) {
+          runOnJS(handleSkipNext)();
+        } else if (
+          event.translationX > SWIPE_HORIZONTAL_THRESHOLD ||
+          event.velocityX > SWIPE_HORIZONTAL_VELOCITY
+        ) {
+          runOnJS(handleSkipPrev)();
+        }
       }
+
+      gestureTranslateY.value = withSpring(0, SPRING_CONFIG);
+      gestureTranslateX.value = withSpring(0, SPRING_CONFIG);
     },
   });
 
   const containerAnimStyle = useAnimatedStyle(() => ({
     transform: [
       { translateY: translateY.value + gestureTranslateY.value },
+      { translateX: gestureTranslateX.value },
     ],
     opacity: opacity.value,
   }));
@@ -229,28 +225,53 @@ export function MiniPlayer() {
   if (!activeTrack) return null;
 
   return (
-    <PanGestureHandler onGestureEvent={gestureHandler}>
-      <Animated.View style={[styles.container, containerAnimStyle]}>
-        {/* Progress bar — sits flush at the top edge */}
+    // activeOffsetX/Y ensures small finger jitter on a tap doesn't get
+    // misread as a swipe — fixes the "tap to play sometimes skips/opens
+    // NowPlaying" feel reported on dense rows.
+    <PanGestureHandler
+      onGestureEvent={gestureHandler}
+      activeOffsetX={[-12, 12]}
+      activeOffsetY={[-12, 12]}
+    >
+      <Animated.View
+        style={[
+          styles.container,
+          // Subtle (~30%) album-color tint over the white base.
+          { backgroundColor: tintBackground },
+          containerAnimStyle,
+        ]}
+      >
+        {/* Themed progress bar — sits flush at the top edge */}
         <View style={styles.progressTrack}>
-          <Animated.View style={[styles.progressFill, progressBarStyle]} />
+          <Animated.View
+            style={[styles.progressFill, { backgroundColor: accent }, progressBarStyle]}
+          />
         </View>
 
         <Pressable style={styles.innerRow} onPress={navigateToNowPlaying}>
-          {/* Artwork */}
-          <TrackArtwork
-            uri={activeTrack.artwork ?? null}
-            blurhash={null}
-            size={48}
-            borderRadius={8}
-          />
+          {/* Artwork with subtle accent-color gradient corner overlay so the
+              artwork visually ties into the rest of the mini-player tint. */}
+          <View style={styles.artworkWrap}>
+            <TrackArtwork
+              uri={activeTrack.artwork ?? null}
+              blurhash={null}
+              size={48}
+              borderRadius={8}
+            />
+            <LinearGradient
+              pointerEvents="none"
+              colors={[`${accent}00`, `${accent}33`]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.artworkOverlay}
+            />
+          </View>
 
           {/* Track info */}
           <View style={styles.info}>
-            <MarqueeText
-              text={activeTrack.title ?? 'Unknown Title'}
-              style={styles.title}
-            />
+            <MarqueeText style={styles.title}>
+              {activeTrack.title ?? 'Unknown Title'}
+            </MarqueeText>
             <Text style={styles.artist} numberOfLines={1}>
               {activeTrack.artist ?? 'Unknown Artist'}
             </Text>
@@ -265,12 +286,14 @@ export function MiniPlayer() {
               accessibilityLabel={isPlaying ? 'Pause current song' : 'Play current song'}
               accessibilityRole="button"
             >
-              <Ionicons
-                name={isPlaying ? 'pause' : 'play'}
-                size={22}
-                color="#FA233B"
-                style={!isPlaying ? styles.playIconNudge : undefined}
-              />
+              <Animated.View style={playPressStyle}>
+                <Ionicons
+                  name={isPlaying ? 'pause' : 'play'}
+                  size={22}
+                  color={accent}
+                  style={!isPlaying ? styles.playIconNudge : undefined}
+                />
+              </Animated.View>
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -342,6 +365,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingTop: 2, // offset for the 2px progress bar
     gap: 12,
+  },
+  artworkWrap: {
+    width: 48,
+    height: 48,
+    borderRadius: 8,
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  artworkOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 8,
   },
   info: {
     flex: 1,

@@ -44,18 +44,22 @@ interface IconButtonProps {
 // ─── Helper ──────────────────────────────────────────────────────────────────
 
 function triggerHaptic(style: HapticStyle) {
-  switch (style) {
-    case 'light':
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      break;
-    case 'medium':
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-      break;
-    case 'heavy':
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-      break;
-    default:
-      break;
+  try {
+    switch (style) {
+      case 'light':
+        void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        break;
+      case 'medium':
+        void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+        break;
+      case 'heavy':
+        void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+        break;
+      default:
+        break;
+    }
+  } catch {
+    // ignore — haptics are a nice-to-have
   }
 }
 
@@ -78,21 +82,24 @@ export function IconButton({
   const opacity = useSharedValue(1);
 
   const handlePressIn = useCallback(() => {
+    if (disabled) return;
     scale.value = withSpring(activeScale, { damping: 15, stiffness: 300, mass: 0.6 });
     opacity.value = withTiming(0.75, { duration: 80 });
-  }, [activeScale]);
+  }, [activeScale, disabled, opacity, scale]);
 
   const handlePressOut = useCallback(() => {
+    if (disabled) return;
     scale.value = withSpring(1, { damping: 18, stiffness: 300, mass: 0.6 });
     opacity.value = withTiming(1, { duration: 150 });
-  }, []);
+  }, [disabled, opacity, scale]);
 
   const handlePress = useCallback(() => {
+    if (disabled) return;
     if (hapticStyle !== 'none') {
       triggerHaptic(hapticStyle);
     }
     onPress();
-  }, [hapticStyle, onPress]);
+  }, [disabled, hapticStyle, onPress]);
 
   const animStyle = useAnimatedStyle(() => ({
     transform: [{ scale: scale.value }],
@@ -130,6 +137,9 @@ export function IconButton({
           alignItems: 'center',
           overflow: 'hidden',
         },
+        // A muted look on the disabled state makes it discoverable that
+        // the button is currently inert.
+        disabled && { opacity: 0.4 },
         animStyle,
         style,
       ]}
@@ -141,6 +151,7 @@ export function IconButton({
         disabled={disabled}
         accessibilityLabel={accessibilityLabel}
         accessibilityRole="button"
+        accessibilityState={{ disabled }}
         style={StyleSheet.absoluteFill}
       />
       <View pointerEvents="none">{iconEl}</View>

@@ -36,16 +36,58 @@ export const USER_TASTE_SEED: TasteSeed = {
     'Badshah': 7,
   },
   moodQueries: [
+    // The pool deliberately overshoots — discoverEngine rotates a subset of
+    // these per refresh so the user gets a genuinely fresh slice each tap
+    // instead of the same six queries hammering the same Saavn ranking.
+
+    // Sufi / qawwali
+    'sufi qawwali hindi',
+    'nusrat fateh ali khan qawwali',
+    'rahat fateh ali khan',
+    'ghazal',
+
     // Old sad classics (anchors: "Tujhse Naraz Nahi Zindagi", "Dil Ne Ye Kaha")
     'old hindi sad songs',
     'classic bollywood sad songs',
-    // Sufi
-    'sufi qawwali hindi',
+    'kishore kumar classic',
+    'lata mangeshkar',
+    'mohammed rafi',
+
     // Bollywood mainstream
+    'romantic hindi songs',
     'bollywood romantic hits',
+    'arijit singh romantic',
+    'atif aslam best',
+    'a r rahman bollywood',
+    'pritam best songs',
+
+    // Era buckets
+    'bollywood 90s',
+    'bollywood 2000s',
+
     // Item / dance numbers
-    'bollywood item songs',
+    'hindi item songs',
+    'bollywood dance hits',
+    'bollywood party songs',
+    'bollywood workout',
+
     // Rap / hip hop in Hindi
-    'hindi rap songs',
+    'hindi rap',
+    'desi hip hop',
+
+    // Regional Punjabi / Haryanvi
+    'punjabi pop',
+    'punjabi hits',
+    'haryanvi hits',
+    'bhangra hits',
+
+    // Indie + chill
+    'hindi indie',
+    'bollywood lofi',
+    'classical hindi instrumental',
+
+    // Occasion-driven
+    'monsoon hindi songs',
+    'wedding hindi songs',
   ],
 };

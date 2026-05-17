@@ -153,8 +153,11 @@ export function useRecentlyPlayed(limit = 20): Track[] {
   const lastTopIdsRef = useRef<string>('');
 
   useEffect(() => {
+    // *3 is enough headroom for dedupe in the common case (back-to-back
+    // replays of the same track collapse to a single entry). Earlier this
+    // was *5 which over-fetched every emit for no real upside.
     const subscription = playsCollection
-      .query(Q.sortBy('played_at', Q.desc), Q.take(limit * 5))
+      .query(Q.sortBy('played_at', Q.desc), Q.take(limit * 3))
       .observe()
       .subscribe({
         next: async (plays: Play[]) => {
@@ -205,78 +208,49 @@ export function useRecentlyPlayed(limit = 20): Track[] {
 /**
  * Returns the tracks with the most play events, ordered by play count
  * descending. Only re-emits when the top-N ranking actually changes.
+ *
+ * Reads directly from the denormalised `tracks.play_count` column (bumped
+ * by `playTracker.flushLastPlay` on every completed play). This avoids the
+ * full Plays-table scan the old implementation did on every emit.
  */
 export function useMostPlayed(limit = 20): Track[] {
-  const [tracks, setTracks] = useState<Track[]>([]);
-  const lastTopIdsRef = useRef<string>('');
+  const observable = tracksCollection
+    .query(
+      Q.where('play_count', Q.gt(0)),
+      Q.sortBy('play_count', Q.desc),
+      Q.take(limit),
+    )
+    .observeWithColumns(['play_count']);
 
-  useEffect(() => {
-    const subscription = playsCollection
-      .query()
-      .observe()
-      .subscribe({
-        next: async (plays: Play[]) => {
-          try {
-            const counts = new Map<string, number>();
-            for (const play of plays) {
-              counts.set(play.trackId, (counts.get(play.trackId) ?? 0) + 1);
-            }
-
-            const topIds = [...counts.entries()]
-              .sort((a, b) => b[1] - a[1])
-              .slice(0, limit)
-              .map(([id]) => id);
-
-            const sig = topIds.join('|');
-            if (sig === lastTopIdsRef.current) return;
-            lastTopIdsRef.current = sig;
-
-            if (topIds.length === 0) {
-              setTracks([]);
-              return;
-            }
-
-            const fetched = await tracksCollection
-              .query(Q.where('id', Q.oneOf(topIds)))
-              .fetch();
-
-            const idToTrack = new Map(fetched.map((t) => [t.id, t]));
-            const ordered = topIds
-              .map((id) => idToTrack.get(id))
-              .filter((t): t is Track => t !== undefined);
-
-            setTracks(ordered);
-          } catch (err) {
-            logger.error('[useMostPlayed] Failed to fetch tracks:', err);
-          }
-        },
-        error: (err: unknown) =>
-          logger.error('[useMostPlayed] Observable error:', err),
-      });
-
-    return () => subscription.unsubscribe();
-  }, [limit]);
-
-  return tracks;
+  return (
+    useStableObservable(observable, (rows) => {
+      if (rows.length === 0) return 'empty';
+      // Top-N signature: track ids + their counts. Stable across like flips
+      // (which would normally re-trigger the underlying observable).
+      return rows.map((t) => `${t.id}:${t.playCount}`).join('|');
+    }) ?? []
+  );
 }
 
 /**
  * Returns play counts per track id. Lightweight — used by Library's
  * "Most Played" sort to avoid re-emitting full Track objects.
+ *
+ * Reads from the denormalised `tracks.play_count` column.
  */
 export function usePlayCounts(): Map<string, number> {
   const [counts, setCounts] = useState<Map<string, number>>(new Map());
   const lastSigRef = useRef<string>('');
 
   useEffect(() => {
-    const subscription = playsCollection
-      .query()
-      .observe()
+    const subscription = tracksCollection
+      .query(Q.where('play_count', Q.gt(0)))
+      .observeWithColumns(['play_count'])
       .subscribe({
-        next: (plays: Play[]) => {
+        next: (rows: Track[]) => {
           const map = new Map<string, number>();
-          for (const play of plays) {
-            map.set(play.trackId, (map.get(play.trackId) ?? 0) + 1);
+          for (const t of rows) {
+            map.set(t.id, t.playCount);
           }
           // Only update when the {id → count} map actually differs.
           const sig = [...map.entries()]

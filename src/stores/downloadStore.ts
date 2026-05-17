@@ -32,6 +32,13 @@ export interface DownloadItem {
   saavnEncryptedUrl?: string;
   /** Whether Saavn 320 kbps tier is available. */
   saavnHas320kbps?: boolean;
+  /**
+   * Preferred audio quality stamped at enqueue-time from
+   * `useSettingsStore.downloadQuality`. Captured here so toggling the setting
+   * mid-session doesn't change quality for items already queued. Optional for
+   * back-compat with persisted queues from older builds.
+   */
+  quality?: '128k' | '192k' | '256k' | '320k';
 }
 
 interface DownloadStore {
@@ -43,6 +50,13 @@ interface DownloadStore {
   setError(id: string, error: string): void;
   removeItem(id: string): void;
   clearCompleted(): void;
+  clearErrored(): void;
+  /**
+   * Removes every item in `'done'` OR `'error'` state in a single immer
+   * mutation. Used by DownloadManager after a `cancelAll` so we don't
+   * trigger two back-to-back re-renders for subscribers.
+   */
+  clearCompletedAndErrored(): void;
 }
 
 export const useDownloadStore = create<DownloadStore>()(
@@ -109,6 +123,18 @@ export const useDownloadStore = create<DownloadStore>()(
     clearCompleted: () =>
       set((state) => {
         state.queue = state.queue.filter((d) => d.status !== 'done');
+      }),
+
+    clearErrored: () =>
+      set((state) => {
+        state.queue = state.queue.filter((d) => d.status !== 'error');
+      }),
+
+    clearCompletedAndErrored: () =>
+      set((state) => {
+        state.queue = state.queue.filter(
+          (d) => d.status !== 'done' && d.status !== 'error',
+        );
       }),
   })),
 );

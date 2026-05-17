@@ -84,7 +84,11 @@ export const usePlayerStore = create<PlayerStore>()(
           state.repeatMode = mode;
         });
         const s = get();
-        persist({ repeatMode: mode, shuffleEnabled: s.shuffleEnabled, volume: s.volume });
+        persist({
+          repeatMode: s.repeatMode,
+          shuffleEnabled: s.shuffleEnabled,
+          volume: s.volume,
+        });
       },
 
       toggleShuffle: () => {
@@ -92,15 +96,28 @@ export const usePlayerStore = create<PlayerStore>()(
           state.shuffleEnabled = !state.shuffleEnabled;
         });
         const s = get();
-        persist({ repeatMode: s.repeatMode, shuffleEnabled: s.shuffleEnabled, volume: s.volume });
+        persist({
+          repeatMode: s.repeatMode,
+          shuffleEnabled: s.shuffleEnabled,
+          volume: s.volume,
+        });
       },
 
       setVolume: (volume) => {
+        const clamped = Math.min(1, Math.max(0, volume));
+        // Early-out when the volume didn't actually change. The volume slider
+        // calls this on every gesture commit; without this guard we'd
+        // re-render subscribers and re-stringify to MMKV for no-op events.
+        if (get().volume === clamped) return;
         set((state) => {
-          state.volume = Math.min(1, Math.max(0, volume));
+          state.volume = clamped;
         });
         const s = get();
-        persist({ repeatMode: s.repeatMode, shuffleEnabled: s.shuffleEnabled, volume: s.volume });
+        persist({
+          repeatMode: s.repeatMode,
+          shuffleEnabled: s.shuffleEnabled,
+          volume: s.volume,
+        });
       },
     };
   }),

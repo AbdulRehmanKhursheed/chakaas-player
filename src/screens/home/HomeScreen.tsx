@@ -20,19 +20,26 @@ import Animated, {
 import { useNavigation } from '@react-navigation/native';
 import { useQuery } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
-import { useAllTracks, useRecentlyPlayed } from '@/hooks/useTrackDB';
+import { useRecentlyPlayed } from '@/hooks/useTrackDB';
+import { useSafeTracks } from '@/hooks/useSafeTracks';
 import { usePlayerQueue } from '@/features/player/useQueue';
 import { useDownloadStore } from '@/stores/downloadStore';
 import type { RootStackNavigationProp } from '@/types/navigation';
 import type { Track } from '@/db/models/Track';
 import { modelToTrack, modelsToTracks } from '@/utils/trackMapper';
+import { BlurView } from 'expo-blur';
 import { TrackArtwork } from '@/components/track/TrackArtwork';
 import { HeroCard } from './components/HeroCard';
 import { RecentlyPlayedRow } from './components/RecentlyPlayedRow';
 import { MostPlayedSection } from './components/MostPlayedSection';
 import { FavoritesSection } from '@/screens/library/components/FavoritesSection';
 import { getDiscoverFeed, type DiscoverItem } from '@/features/recommendations/discoverEngine';
+import { addToSkipMemory } from '@/features/recommendations/skipMemory';
 import { DownloadManager } from '@/features/download/DownloadManager';
+import { TrackRowSkeleton } from '@/components/ui/SkeletonShimmer';
+import { MarqueeText } from '@/components/ui/MarqueeText';
+import { HapticPressable } from '@/components/ui/HapticPressable';
+import * as Haptics from 'expo-haptics';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -98,10 +105,13 @@ interface TrackCardProps {
 function TrackCard({ track, onPress }: TrackCardProps) {
   const handlePress = useCallback(() => onPress(track), [track, onPress]);
   return (
-    <TouchableOpacity
-      activeOpacity={0.82}
+    <HapticPressable
+      hapticStyle="light"
       onPress={handlePress}
-      style={styles.trackCard}
+      style={({ pressed }) => [
+        styles.trackCard,
+        pressed ? styles.trackCardPressed : null,
+      ]}
     >
       <TrackArtwork
         uri={track.artworkPath}
@@ -109,13 +119,16 @@ function TrackCard({ track, onPress }: TrackCardProps) {
         size={160}
         borderRadius={12}
       />
-      <Text style={styles.trackCardTitle} numberOfLines={2}>
-        {track.title}
-      </Text>
+      {/* Marquee for the title — long Bollywood / OST names overflow the
+          160-px card width frequently, and the auto-scroll matches Apple
+          Music's "Made For You" tile behaviour. */}
+      <View style={styles.trackCardTitleWrap}>
+        <MarqueeText style={styles.trackCardTitle}>{track.title}</MarqueeText>
+      </View>
       <Text style={styles.trackCardArtist} numberOfLines={1}>
         {track.artist}
       </Text>
-    </TouchableOpacity>
+    </HapticPressable>
   );
 }
 
@@ -124,14 +137,16 @@ function TrackCard({ track, onPress }: TrackCardProps) {
 interface DiscoverRowProps {
   item: DiscoverItem;
   index: number;
+  onDismiss?: (item: DiscoverItem) => void;
 }
 
-function DiscoverRow({ item, index }: DiscoverRowProps) {
+function DiscoverRow({ item, index, onDismiss }: DiscoverRowProps) {
   const [enqueuing, setEnqueuing] = useState(false);
   const [enqueued, setEnqueued] = useState(false);
 
   const handleAdd = useCallback(async () => {
     if (enqueuing || enqueued) return;
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setEnqueuing(true);
     try {
       const result = await DownloadManager.enqueue({
@@ -146,10 +161,16 @@ function DiscoverRow({ item, index }: DiscoverRowProps) {
         saavnHas320kbps: item.saavnHas320kbps,
       });
       setEnqueued(result.success);
+    } catch {
+      // enqueue failed silently — button resets to allow retry
     } finally {
       setEnqueuing(false);
     }
   }, [item, enqueuing, enqueued]);
+
+  const handleDismiss = useCallback(() => {
+    onDismiss?.(item);
+  }, [item, onDismiss]);
 
   return (
     <View style={styles.verticalRow}>
@@ -163,7 +184,19 @@ function DiscoverRow({ item, index }: DiscoverRowProps) {
           {item.author} · {item.reason}
         </Text>
       </View>
-      <TouchableOpacity
+      {/* Dismiss × — tells the engine "never recommend this again". The
+          button is intentionally subtle so it doesn't compete with the
+          primary "+" action. */}
+      <HapticPressable
+        hapticStyle="light"
+        onPress={handleDismiss}
+        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+        style={styles.discoverDismissBtn}
+      >
+        <Ionicons name="close" size={18} color="#8E8E93" />
+      </HapticPressable>
+      <HapticPressable
+        hapticStyle="medium"
         onPress={handleAdd}
         disabled={enqueuing || enqueued}
         hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
@@ -174,7 +207,7 @@ function DiscoverRow({ item, index }: DiscoverRowProps) {
           size={26}
           color={enqueued ? '#1DB954' : '#FA233B'}
         />
-      </TouchableOpacity>
+      </HapticPressable>
     </View>
   );
 }
@@ -224,7 +257,11 @@ export function HomeScreen() {
   const navigation = useNavigation<RootStackNavigationProp>();
   const { playTrack } = usePlayerQueue();
 
-  const allTracks = useAllTracks();
+  // `safeTracks` strips non-music junk (WhatsApp voices, UUID-named files,
+  // ringtones) before any downstream section sees the library. Every memo
+  // below — dailyPicks, recentlyAdded, downloadedFromChakaas, the
+  // play-context for the row tap handler — reads from this filtered list.
+  const safeTracks = useSafeTracks();
   const recentlyPlayed = useRecentlyPlayed(15);
 
   // Active download count for the quick-access badge
@@ -242,42 +279,57 @@ export function HomeScreen() {
   // Daily picks: tracks downloaded today (added_at in last 24h)
   const dailyPicks = useMemo(() => {
     const oneDayAgo = Math.floor(Date.now() / 1000) - 86400;
-    return allTracks.filter((t) => t.addedAt >= oneDayAgo).slice(0, 10);
-  }, [allTracks]);
+    return safeTracks.filter((t) => t.addedAt >= oneDayAgo).slice(0, 10);
+  }, [safeTracks]);
 
   // Recently added: last 7 days
   const recentlyAdded = useMemo(() => {
     const cutoff = SEVEN_DAYS_AGO();
-    return allTracks.filter((t) => t.addedAt >= cutoff).slice(0, 15);
-  }, [allTracks]);
+    return safeTracks.filter((t) => t.addedAt >= cutoff).slice(0, 15);
+  }, [safeTracks]);
 
   // Discover — Saavn-backed suggestions ranked by artist affinity (learned +
-  // seeded from the user's stated taste). Refreshes automatically when the
-  // library changes; the user can also force a fresh sample via the section
-  // header refresh button (which bumps `discoverNonce`).
+  // seeded from the user's stated taste). We deliberately do NOT key on
+  // `allTracks.length`: a 50-song batch download would otherwise refetch
+  // 50 times. Instead we rely on a 5-minute staleTime and let the user
+  // bump `discoverNonce` via the section refresh button when they want a
+  // fresh sample.
   const { data: discoverItems, isLoading: discoverLoading, isFetching: discoverFetching } = useQuery({
-    queryKey: ['discover-feed', allTracks.length, discoverNonce],
-    queryFn: () => getDiscoverFeed(20, discoverNonce > 0),
-    staleTime: 10 * 60 * 1000,
+    queryKey: ['discover-feed', discoverNonce],
+    queryFn: () => getDiscoverFeed(20, discoverNonce),
+    staleTime: 5 * 60 * 1000,
   });
+
+  // Dismiss × on a Discover row — records the song into persistent skip
+  // memory and immediately bumps the nonce so a fresh sample appears.
+  const handleDismissDiscover = useCallback((item: DiscoverItem) => {
+    addToSkipMemory({
+      id: item.id ?? null,
+      source: 'saavn', // Discover is currently Saavn-backed
+      title: item.title,
+      artist: item.author,
+    });
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    setDiscoverNonce((n) => n + 1);
+  }, []);
 
   // "Downloaded from Chakaas" — every track sourced through the in-app
   // download flow, sorted newest first. Source 'local' (device imports) is
   // excluded so this section reflects what Chakaas itself has fetched.
   const downloadedFromChakaas = useMemo(() => {
-    return allTracks
+    return safeTracks
       .filter((t) => t.source === 'saavn' || t.source === 'youtube')
       .slice() // copy before sort
       .sort((a, b) => b.addedAt - a.addedAt);
-  }, [allTracks]);
+  }, [safeTracks]);
 
   // Play a track in context of the full library
   const handleTrackPress = useCallback(
     (track: Track) => {
-      void playTrack(modelToTrack(track), modelsToTracks(allTracks));
+      void playTrack(modelToTrack(track), modelsToTracks(safeTracks));
       navigation.navigate('NowPlaying');
     },
-    [playTrack, allTracks, navigation],
+    [playTrack, safeTracks, navigation],
   );
 
   // Pull-to-refresh actually does something now: bump the discover nonce so
@@ -306,6 +358,16 @@ export function HomeScreen() {
     ],
   }));
 
+  // BlurHeader-style backdrop: the frosted tint fades in as the user scrolls
+  // so the header lifts away from the content beneath it. Same trick the
+  // shared BlurHeader uses; we keep the branded layout here.
+  const headerSurfaceStyle = useAnimatedStyle(() => ({
+    opacity: interpolate(scrollY.value, [0, 60], [0, 1], Extrapolation.CLAMP),
+  }));
+  const headerHairlineStyle = useAnimatedStyle(() => ({
+    opacity: interpolate(scrollY.value, [50, 60], [0, 1], Extrapolation.CLAMP),
+  }));
+
   const renderHeroItem = useCallback(
     ({ item }: { item: Track }) => (
       <HeroCard track={item} onPress={handleTrackPress} />
@@ -324,8 +386,17 @@ export function HomeScreen() {
     <View style={styles.root}>
       <StatusBar barStyle="dark-content" backgroundColor="#F5F5F7" />
 
-      {/* ── Sticky header ── */}
+      {/* ── Sticky frosted header ── */}
       <Animated.View style={[styles.header, headerStyle]}>
+        {/* Frosted backdrop fades in on scroll */}
+        <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+          <BlurView intensity={60} tint="light" style={StyleSheet.absoluteFill} />
+          <Animated.View
+            style={[styles.headerSurface, headerSurfaceStyle]}
+            pointerEvents="none"
+          />
+        </View>
+
         <View>
           <Text style={styles.logoText}>Chakaas</Text>
           <Text style={styles.greeting}>{getGreeting()}</Text>
@@ -336,6 +407,7 @@ export function HomeScreen() {
           activeCount={activeDownloadCount}
           onPress={handleDownloadsPress}
         />
+        <Animated.View style={[styles.headerHairline, headerHairlineStyle]} />
       </Animated.View>
 
       <Animated.ScrollView
@@ -400,15 +472,11 @@ export function HomeScreen() {
             refreshing={discoverFetching}
           />
           {discoverLoading && (discoverItems ?? []).length === 0 ? (
-            <View style={styles.verticalSkeletonContainer}>
+            // Polished shimmer rows — same dimensions as the real list so the
+            // transition to loaded content doesn't reflow.
+            <View>
               {[0, 1, 2, 3].map((i) => (
-                <View key={i} style={styles.verticalSkeletonRow}>
-                  <View style={styles.verticalSkeletonArt} />
-                  <View style={styles.verticalSkeletonText}>
-                    <View style={styles.skeletonLine1} />
-                    <View style={styles.skeletonLine2} />
-                  </View>
-                </View>
+                <TrackRowSkeleton key={i} />
               ))}
             </View>
           ) : (discoverItems ?? []).length === 0 ? (
@@ -421,7 +489,12 @@ export function HomeScreen() {
               {(discoverItems ?? [])
                 .slice(0, 8)
                 .map((item, index) => (
-                  <DiscoverRow key={item.id} item={item} index={index} />
+                  <DiscoverRow
+                    key={item.id}
+                    item={item}
+                    index={index}
+                    onDismiss={handleDismissDiscover}
+                  />
                 ))}
               {discoverFetching && (
                 <View style={styles.discoverInlineLoader}>
@@ -487,11 +560,27 @@ const styles = StyleSheet.create({
     paddingTop: Platform.OS === 'ios' ? 56 : 36,
     paddingBottom: 12,
     paddingHorizontal: 20,
-    backgroundColor: '#F5F5F7',
+    // Solid fallback for environments where the BlurView isn't rendered
+    // (Android <12, RN snapshot tests, etc.) — kept faintly tinted so the
+    // top still reads as a chrome surface even without blur.
+    backgroundColor: 'transparent',
     zIndex: 10,
     flexDirection: 'row',
     alignItems: 'flex-end',
     justifyContent: 'space-between',
+    overflow: 'hidden',
+  },
+  headerSurface: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(245,245,247,0.82)',
+  },
+  headerHairline: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: 'rgba(60,60,67,0.18)',
   },
   logoText: {
     fontSize: 36,
@@ -615,8 +704,14 @@ const styles = StyleSheet.create({
   trackCard: {
     width: 160,
   },
-  trackCardTitle: {
+  trackCardPressed: {
+    opacity: 0.82,
+  },
+  trackCardTitleWrap: {
     marginTop: 8,
+    width: 160,
+  },
+  trackCardTitle: {
     fontSize: 13,
     fontWeight: '600',
     color: '#1D1D1F',
@@ -669,6 +764,13 @@ const styles = StyleSheet.create({
     height: 38,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  discoverDismissBtn: {
+    width: 32,
+    height: 32,
+    justifyContent: 'center',
+    alignItems: 'center',
+    opacity: 0.7,
   },
   // Discovering state
   discoveringContainer: {

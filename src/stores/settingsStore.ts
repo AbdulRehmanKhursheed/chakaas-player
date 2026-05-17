@@ -15,8 +15,18 @@ export interface Settings {
   dailyPicksEnabled: boolean;
   dailyPicksTime: string; // "HH:MM", e.g. "03:00"
   storageLocation: string;
+  /** Legacy seconds-based crossfade duration. Kept for backwards-compat. */
   crossfadeDuration: number; // seconds, 0-12
   normalizationEnabled: boolean;
+  // ── Premium-player additions ───────────────────────────────────────────
+  /** When true, fade between tracks using the JS-side CrossfadeManager. */
+  crossfadeEnabled: boolean;
+  /** Crossfade window in ms. Snap values: 1000/2000/4000/6000/8000/12000. */
+  crossfadeMs: number;
+  /** When true, NowPlaying + MiniPlayer tint from album art; else stays gold. */
+  albumColorThemingEnabled: boolean;
+  /** Default sleep-timer behaviour: pause after current track when armed. */
+  sleepTimerEndOfTrack: boolean;
 }
 
 // ── Defaults ─────────────────────────────────────────────────────────────────
@@ -28,6 +38,10 @@ const DEFAULT_SETTINGS: Settings = {
   storageLocation: '',
   crossfadeDuration: 3,
   normalizationEnabled: true,
+  crossfadeEnabled: false,
+  crossfadeMs: 4000,
+  albumColorThemingEnabled: true,
+  sleepTimerEndOfTrack: false,
 };
 
 // ── Persistence helpers ───────────────────────────────────────────────────────
@@ -61,77 +75,99 @@ interface SettingsStore extends Settings {
   setStorageLocation(location: string): void;
   setCrossfadeDuration(seconds: number): void;
   setNormalizationEnabled(value: boolean): void;
+  setCrossfadeEnabled(value: boolean): void;
+  setCrossfadeMs(ms: number): void;
+  setAlbumColorThemingEnabled(value: boolean): void;
+  setSleepTimerEndOfTrack(value: boolean): void;
 
   resetToDefaults(): void;
+}
+
+/** Pluck just the Settings fields from the store (drops setter refs). */
+function pickSettings(store: SettingsStore): Settings {
+  return {
+    downloadQuality: store.downloadQuality,
+    downloadOnWifiOnly: store.downloadOnWifiOnly,
+    dailyPicksEnabled: store.dailyPicksEnabled,
+    dailyPicksTime: store.dailyPicksTime,
+    storageLocation: store.storageLocation,
+    crossfadeDuration: store.crossfadeDuration,
+    normalizationEnabled: store.normalizationEnabled,
+    crossfadeEnabled: store.crossfadeEnabled,
+    crossfadeMs: store.crossfadeMs,
+    albumColorThemingEnabled: store.albumColorThemingEnabled,
+    sleepTimerEndOfTrack: store.sleepTimerEndOfTrack,
+  };
 }
 
 export const useSettingsStore = create<SettingsStore>((set, get) => {
   const persisted = loadFromMMKV();
 
-  function applyAndPersist(patch: Partial<Settings>): Partial<SettingsStore> {
-    const current = get();
-    const next: Settings = {
-      downloadQuality: current.downloadQuality,
-      downloadOnWifiOnly: current.downloadOnWifiOnly,
-      dailyPicksEnabled: current.dailyPicksEnabled,
-      dailyPicksTime: current.dailyPicksTime,
-      storageLocation: current.storageLocation,
-      crossfadeDuration: current.crossfadeDuration,
-      normalizationEnabled: current.normalizationEnabled,
-      ...patch,
-    };
-    saveToMMKV(next);
-    return next;
+  /**
+   * Apply a partial patch and persist asynchronously. Returns the patch so
+   * `set` can shallow-merge ONLY the changed fields — selectors for fields
+   * that weren't touched never run their equality check and aren't notified.
+   * Persist still snapshots the full Settings object after the merge.
+   */
+  function applyAndPersist(patch: Partial<Settings>): Partial<Settings> {
+    // Build full snapshot for MMKV from the current store + patch. We can't
+    // read `get()` AFTER calling `set` here because we're inside the set
+    // callback in callers — instead callers pass the patch and we merge it
+    // with the current store snapshot for persistence purposes.
+    const snapshot = { ...pickSettings(get()), ...patch };
+    saveToMMKV(snapshot);
+    return patch;
   }
 
   return {
     ...persisted,
 
-    updateSettings: (patch) =>
-      set((state) => {
-        const next: Settings = {
-          downloadQuality: state.downloadQuality,
-          downloadOnWifiOnly: state.downloadOnWifiOnly,
-          dailyPicksEnabled: state.dailyPicksEnabled,
-          dailyPicksTime: state.dailyPicksTime,
-          storageLocation: state.storageLocation,
-          crossfadeDuration: state.crossfadeDuration,
-          normalizationEnabled: state.normalizationEnabled,
-          ...patch,
-        };
-        saveToMMKV(next);
-        return next;
-      }),
+    updateSettings: (patch) => set(applyAndPersist(patch)),
 
     setDownloadQuality: (quality) =>
-      set(() => applyAndPersist({ downloadQuality: quality })),
+      set(applyAndPersist({ downloadQuality: quality })),
 
     setDownloadOnWifiOnly: (value) =>
-      set(() => applyAndPersist({ downloadOnWifiOnly: value })),
+      set(applyAndPersist({ downloadOnWifiOnly: value })),
 
     setDailyPicksEnabled: (value) =>
-      set(() => applyAndPersist({ dailyPicksEnabled: value })),
+      set(applyAndPersist({ dailyPicksEnabled: value })),
 
     setDailyPicksTime: (time) =>
-      set(() => applyAndPersist({ dailyPicksTime: time })),
+      set(applyAndPersist({ dailyPicksTime: time })),
 
     setStorageLocation: (location) =>
-      set(() => applyAndPersist({ storageLocation: location })),
+      set(applyAndPersist({ storageLocation: location })),
 
     setCrossfadeDuration: (seconds) =>
-      set(() =>
+      set(
         applyAndPersist({
           crossfadeDuration: Math.min(12, Math.max(0, seconds)),
         }),
       ),
 
     setNormalizationEnabled: (value) =>
-      set(() => applyAndPersist({ normalizationEnabled: value })),
+      set(applyAndPersist({ normalizationEnabled: value })),
 
-    resetToDefaults: () =>
-      set(() => {
-        saveToMMKV(DEFAULT_SETTINGS);
-        return DEFAULT_SETTINGS;
-      }),
+    setCrossfadeEnabled: (value) =>
+      set(applyAndPersist({ crossfadeEnabled: value })),
+
+    setCrossfadeMs: (ms) =>
+      set(
+        applyAndPersist({
+          crossfadeMs: Math.min(12000, Math.max(1000, Math.round(ms))),
+        }),
+      ),
+
+    setAlbumColorThemingEnabled: (value) =>
+      set(applyAndPersist({ albumColorThemingEnabled: value })),
+
+    setSleepTimerEndOfTrack: (value) =>
+      set(applyAndPersist({ sleepTimerEndOfTrack: value })),
+
+    resetToDefaults: () => {
+      saveToMMKV(DEFAULT_SETTINGS);
+      set(DEFAULT_SETTINGS);
+    },
   };
 });

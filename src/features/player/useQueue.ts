@@ -19,6 +19,12 @@ function showPlaybackError(err: unknown): void {
  *     reset) — `bumpQueueVersion` is invoked from those callbacks so
  *     consumers re-render with the latest snapshot.
  *
+ * Subscriber model: every mounted `usePlayerQueue` registers a callback in
+ * a module-level Set. `bumpQueueVersion()` fans out to all of them, so
+ * multiple screens (NowPlaying, Library, QueueScreen, MiniPlayer, …) can
+ * use the hook concurrently without the latest mount overwriting earlier
+ * subscriptions.
+ *
  * Crucially we do NOT subscribe to `Event.PlaybackState`. That event fires
  * for every play/pause/buffer/loading transition and would force a native
  * `getQueue()` round-trip plus a re-render of every screen using
@@ -26,19 +32,23 @@ function showPlaybackError(err: unknown): void {
  * laggy. Queue contents do not change when the playback state changes, so
  * there's no reason to listen for it.
  */
-const queueVersion: { v: number; bump: () => void } = {
-  v: 0,
-  bump: () => {},
-};
+const queueSubscribers = new Set<() => void>();
 
-function bumpQueueVersion(): void {
-  queueVersion.v += 1;
-  queueVersion.bump();
+export function bumpQueueVersion(): void {
+  queueSubscribers.forEach((fn) => fn());
 }
+
+/**
+ * Backwards-compatible alias. Older code may import `{ queueVersion }` and
+ * call `queueVersion.bump()`. Keep this around so external callers keep
+ * working without modification.
+ */
+export const queueVersion: { bump: () => void } = {
+  bump: bumpQueueVersion,
+};
 
 function useRNTPQueue(): RNTPTrack[] {
   const [queue, setQueue] = useState<RNTPTrack[]>([]);
-  const [, setLocalVersion] = useState(0);
 
   useEffect(() => {
     let mounted = true;
@@ -54,12 +64,10 @@ function useRNTPQueue(): RNTPTrack[] {
 
     refresh();
 
-    queueVersion.bump = () => {
-      if (mounted) {
-        setLocalVersion((n) => n + 1);
-        void refresh();
-      }
+    const onBump = (): void => {
+      if (mounted) void refresh();
     };
+    queueSubscribers.add(onBump);
 
     const subs = [
       TrackPlayer.addEventListener(Event.PlaybackActiveTrackChanged, refresh),
@@ -69,7 +77,7 @@ function useRNTPQueue(): RNTPTrack[] {
     return () => {
       mounted = false;
       subs.forEach((s) => s.remove());
-      queueVersion.bump = () => {};
+      queueSubscribers.delete(onBump);
     };
   }, []);
 

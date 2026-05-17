@@ -2,6 +2,7 @@ import * as MediaLibrary from 'expo-media-library';
 import { database, tracksCollection } from '@/db';
 import { MAX_LIBRARY_SIZE } from '@/features/download/DownloadManager';
 import { logger } from '@/utils/logger';
+import { isNonMusicTrack, type AudioCandidate } from '@/utils/audioFilter';
 
 export interface LocalAudioImportProgress {
   scanned: number;
@@ -25,61 +26,52 @@ interface PendingLocalAudioRecord {
 /**
  * Files shorter than this are almost certainly voice memos, ringtones, or
  * notification sounds — not songs the user wants in their music library.
+ *
+ * Kept here for the importer-specific "60s minimum" cutoff (the shared
+ * `isNonMusicTrack` blocks `< 30s` which is the absolute floor; the importer
+ * is stricter because users overwhelmingly don't want sub-minute clips in
+ * their music library either).
  */
-const MIN_SONG_DURATION_MS = 45_000;
+const MIN_SONG_DURATION_MS = 60_000;
 
 /**
- * Paths and filename patterns that are reliably *not* songs. The match is
- * substring-based on the full URI so it catches both legacy `/sdcard/...`
- * and scoped-storage `content://...` paths.
+ * Common Android system-sound filenames (shipped with stock ROMs) that
+ * MediaStore exposes as audio assets. Kept importer-local because they're
+ * filename-exact rather than substring patterns.
  */
-const NON_MUSIC_PATH_FRAGMENTS: string[] = [
-  // WhatsApp
-  'whatsapp voice notes',
-  'whatsapp audio',
-  'whatsapp/media/whatsapp voice',
-  'whatsapp/media/whatsapp audio',
-  // Telegram
-  'telegram audio',
-  'telegram voice',
-  'org.telegram',
-  // Generic voice / recordings
-  '/voice notes/',
-  '/voicerecorder/',
-  '/recordings/',
-  '/call recordings/',
-  // System sounds the OS exposes as audio assets
-  '/ringtones/',
-  '/notifications/',
-  '/alarms/',
-  '/ui/',
-];
+const SYSTEM_SOUND_FILENAMES = new Set([
+  'over the horizon.mp3',
+  'galaxy.mp3',
+  'whistle.ogg',
+  'silent.ogg',
+]);
 
 /**
- * Filename prefix/suffix patterns that flag a file as a voice memo even when
- * the path is generic (e.g. files copied out of WhatsApp into Downloads).
+ * Backwards-compat shim. Older callers pass `(uri, filename, durationMs)`;
+ * this re-shapes them into the unified `AudioCandidate` form and delegates
+ * to the shared filter. Returns just the boolean.
  */
-const NON_MUSIC_FILENAME_RE =
-  /^(ptt|aud|wa|vn|voice|rec|recording|note|memo|call|audio[-_]\d+)[-_ ]/i;
+export function isNonMusicAsset(
+  uri: string,
+  filename: string,
+  durationMs: number,
+): boolean {
+  // System-sound exact-name check stays inline — these get past substring
+  // filters because they live in OS-managed audio directories that don't
+  // include the keywords above.
+  if (SYSTEM_SOUND_FILENAMES.has(filename.toLowerCase())) return true;
 
-const VOICE_EXTENSIONS = ['.opus', '.amr', '.3gp', '.3ga', '.awb'];
+  const result = isNonMusicTrack({
+    path: uri,
+    uri,
+    filename,
+    durationMs,
+  });
+  if (result.blocked) return true;
 
-function isNonMusicAsset(uri: string, filename: string, durationMs: number): boolean {
-  if (durationMs > 0 && durationMs < MIN_SONG_DURATION_MS) {
-    return true;
-  }
-
-  const lcUri = uri.toLowerCase();
-  for (const fragment of NON_MUSIC_PATH_FRAGMENTS) {
-    if (lcUri.includes(fragment)) return true;
-  }
-
-  const lcName = filename.toLowerCase();
-  if (NON_MUSIC_FILENAME_RE.test(lcName)) return true;
-
-  for (const ext of VOICE_EXTENSIONS) {
-    if (lcName.endsWith(ext)) return true;
-  }
+  // Importer is stricter on duration than the shared filter (which only
+  // blocks <30s). Anything <60s with non-zero duration is rejected here.
+  if (durationMs > 0 && durationMs < MIN_SONG_DURATION_MS) return true;
 
   return false;
 }
@@ -193,6 +185,32 @@ export async function importDeviceAudio(
       }),
     );
 
+    // Verbose sampling: log the first 5 raw assets of the FIRST page so the
+    // user can verify from Metro what the MediaLibrary bridge is actually
+    // returning. Pages 2+ stay quiet to keep the terminal readable.
+    if (scanned === page.assets.length) {
+      const sampleSize = Math.min(5, assetInfos.length);
+      for (let i = 0; i < sampleSize; i += 1) {
+        const { asset, info } = assetInfos[i];
+        logger.info(
+          '[LocalImporter] Asset sample:',
+          JSON.stringify(
+            {
+              id: asset.id,
+              filename: asset.filename,
+              uri: asset.uri,
+              localUri: info?.localUri ?? null,
+              albumId: info?.albumId ?? null,
+              duration: asset.duration,
+              mediaType: asset.mediaType,
+            },
+            null,
+            2,
+          ),
+        );
+      }
+    }
+
     const records: PendingLocalAudioRecord[] = [];
 
     for (const { asset, info } of assetInfos) {
@@ -209,9 +227,33 @@ export async function importDeviceAudio(
 
       const durationMs = Math.max(0, Math.round((asset.duration ?? 0) * 1000));
 
-      if (isNonMusicAsset(uri, asset.filename, durationMs)) {
+      // Layer A — shared filter. Build the full candidate shape so every
+      // path/keyword/filename/extension/duration heuristic runs.
+      const candidate: AudioCandidate = {
+        path: info?.localUri ?? null,
+        uri: asset.uri,
+        filename: asset.filename,
+        name: asset.filename,
+        durationMs,
+      };
+      const decision = isNonMusicTrack(candidate);
+      const systemSound = SYSTEM_SOUND_FILENAMES.has(asset.filename.toLowerCase());
+      const importerDurationCut =
+        !decision.blocked &&
+        durationMs > 0 &&
+        durationMs < MIN_SONG_DURATION_MS;
+
+      if (decision.blocked || systemSound || importerDurationCut) {
         rejected += 1;
         existingPaths.add(uri);
+        const reason = decision.blocked
+          ? decision.reason
+          : systemSound
+            ? 'system-sound'
+            : `duration-lt-${MIN_SONG_DURATION_MS / 1000}s`;
+        logger.info(
+          `[LocalImporter] BLOCKED (${reason}): ${asset.filename} | uri=${asset.uri}`,
+        );
         continue;
       }
 
@@ -260,8 +302,8 @@ export async function importDeviceAudio(
   }
 
   logger.info(
-    `[LocalAudioImporter] Scanned ${scanned}, imported ${imported}, ` +
-      `skipped (dup) ${skipped}, rejected (non-music) ${rejected}.`,
+    `[LocalImporter] DONE — scanned=${scanned} imported=${imported} ` +
+      `skipped=${skipped} blocked=${rejected}`,
   );
   return { scanned, imported, skipped, rejected, permissionDenied: false };
 }

@@ -1,5 +1,6 @@
 import React from 'react';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import type { LinkingOptions } from '@react-navigation/native';
 
 import { BottomTabNavigator } from './BottomTabNavigator';
 import { NowPlayingScreen } from '@/screens/nowPlaying/NowPlayingScreen';
@@ -15,6 +16,53 @@ import type { RootStackParamList } from '@/types/navigation';
 // ---------------------------------------------------------------------------
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
+
+// ---------------------------------------------------------------------------
+// Deep linking
+// ---------------------------------------------------------------------------
+
+/**
+ * Deep-link configuration so notification taps / `chakaas://` URLs can route
+ * straight to the relevant screen.
+ *
+ *   chakaas://nowplaying                       → NowPlayingScreen
+ *   chakaas://queue                            → QueueScreen
+ *   chakaas://album/:album                     → AlbumDetailScreen
+ *   chakaas://artist/:artist                   → ArtistDetailScreen
+ *   chakaas://playlist/:playlistId             → PlaylistDetailScreen
+ *   chakaas://engine                           → ChakaasEngineScreen
+ *   chakaas://(home|library|search|downloads|settings) → tab in MainTabs
+ *
+ * Notifee currently only fires intra-app actions (cancel-current/cancel-all)
+ * so this config is mainly future-proofing — but it costs nothing at runtime
+ * and means we don't have to re-architect when we add a "Tap to open" action.
+ */
+export const linking: LinkingOptions<RootStackParamList> = {
+  prefixes: ['chakaas://', 'https://chakaas.app'],
+  config: {
+    screens: {
+      MainTabs: {
+        screens: {
+          Home: 'home',
+          Library: 'library',
+          Search: 'search',
+          Downloads: 'downloads',
+          Settings: 'settings',
+        },
+      },
+      NowPlaying: 'nowplaying',
+      Queue: 'queue',
+      PlaylistDetail: 'playlist/:playlistId',
+      ArtistDetail: 'artist/:artist',
+      AlbumDetail: 'album/:album',
+      ChakaasEngine: 'engine',
+    },
+  },
+};
+
+// ---------------------------------------------------------------------------
+// RootNavigator
+// ---------------------------------------------------------------------------
 
 /**
  * RootNavigator is the top-level navigator for the entire app.

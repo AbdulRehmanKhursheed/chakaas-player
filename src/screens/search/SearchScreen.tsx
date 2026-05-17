@@ -30,7 +30,7 @@ import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useActiveTrack } from 'react-native-track-player';
-import { useAllTracks } from '@/hooks/useTrackDB';
+import { useSafeTracks } from '@/hooks/useSafeTracks';
 import { useDebounce } from '@/hooks/useDebounce';
 import { usePlayerQueue } from '@/features/player/useQueue';
 import { useDownloadStore } from '@/stores/downloadStore';
@@ -40,6 +40,8 @@ import { getScreenBottomInset } from '@/utils/layout';
 import { settingsStorage } from '@/stores/settingsStore';
 import { TrackArtwork } from '@/components/track/TrackArtwork';
 import { YoutubeResultCard } from './components/YoutubeResultCard';
+import { SwipeableTrackRow } from '@/components/ui/SwipeableTrackRow';
+import { TrackRowSkeleton } from '@/components/ui/SkeletonShimmer';
 import type { Track } from '@/db/models/Track';
 import { modelToTrack, modelsToTracks } from '@/utils/trackMapper';
 import type { YouTubeSearchResult } from '@/types/track';
@@ -99,6 +101,21 @@ function removeRecentSearch(query: string) {
   }
 }
 
+/**
+ * Normalize a title/artist string so trivial parenthetical and punctuation
+ * variations don't break the library-fingerprint match. Keeps Latin
+ * (a–z, 0–9) and the Devanagari block so Hindi titles match too.
+ */
+function normalizeForMatch(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/\s*\((?:from|feat\.?|featuring|with|ft\.?)[^)]*\)\s*/gi, ' ')
+    .replace(/\s*\[(?:from|feat\.?|featuring|with|ft\.?)[^\]]*\]\s*/gi, ' ')
+    .replace(/[^a-z0-9ऀ-ॿ\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 // Quality picking lives in Settings; the Saavn/YouTube providers always
 // resolve to the best available stream (320 kbps when offered, 160 kbps
 // fallback). No per-download chooser — it was a noisy three-tap detour
@@ -110,15 +127,7 @@ function YouTubeSkeleton() {
   return (
     <View style={skeletonStyles.container}>
       {[0, 1, 2, 3].map((i) => (
-        <View key={i} style={skeletonStyles.row}>
-          <View style={skeletonStyles.thumb} />
-          <View style={skeletonStyles.meta}>
-            <View style={skeletonStyles.line1} />
-            <View style={skeletonStyles.line2} />
-            <View style={skeletonStyles.line3} />
-          </View>
-          <View style={skeletonStyles.button} />
-        </View>
+        <TrackRowSkeleton key={i} />
       ))}
     </View>
   );
@@ -145,39 +154,43 @@ const skeletonStyles = StyleSheet.create({
 interface LocalTrackRowProps {
   track: Track;
   onPress: (track: Track) => void;
+  onSwipeQueue: (track: Track) => void;
 }
 
-function LocalTrackRow({ track, onPress }: LocalTrackRowProps) {
+function LocalTrackRow({ track, onPress, onSwipeQueue }: LocalTrackRowProps) {
   const handlePress = useCallback(() => onPress(track), [track, onPress]);
+  const handleSwipeQueue = useCallback(() => onSwipeQueue(track), [track, onSwipeQueue]);
 
   return (
-    <TouchableOpacity
-      activeOpacity={0.78}
-      onPress={handlePress}
-      style={localRowStyles.container}
-    >
-      <View style={localRowStyles.artworkWrapper}>
-        <TrackArtwork uri={track.artworkPath} blurhash={null} size={50} borderRadius={8} />
-        <View style={localRowStyles.downloadedBadge}>
-          <Ionicons name="checkmark" size={10} color="#FFFFFF" />
+    <SwipeableTrackRow onSwipeQueue={handleSwipeQueue}>
+      <TouchableOpacity
+        activeOpacity={0.78}
+        onPress={handlePress}
+        style={localRowStyles.container}
+      >
+        <View style={localRowStyles.artworkWrapper}>
+          <TrackArtwork uri={track.artworkPath} blurhash={null} size={50} borderRadius={8} />
+          <View style={localRowStyles.downloadedBadge}>
+            <Ionicons name="checkmark" size={10} color="#FFFFFF" />
+          </View>
         </View>
-      </View>
 
-      <View style={localRowStyles.meta}>
-        <View style={localRowStyles.titleRow}>
-          <Text style={localRowStyles.title} numberOfLines={1}>
-            {track.title}
+        <View style={localRowStyles.meta}>
+          <View style={localRowStyles.titleRow}>
+            <Text style={localRowStyles.title} numberOfLines={1}>
+              {track.title}
+            </Text>
+          </View>
+          <Text style={localRowStyles.artist} numberOfLines={1}>
+            {track.artist}
+            {track.durationMs > 0 ? ` · ${formatDuration(track.durationMs)}` : ''}
           </Text>
         </View>
-        <Text style={localRowStyles.artist} numberOfLines={1}>
-          {track.artist}
-          {track.durationMs > 0 ? ` · ${formatDuration(track.durationMs)}` : ''}
-        </Text>
-      </View>
 
-      {/* Green local dot indicator */}
-      <View style={localRowStyles.localDot} />
-    </TouchableOpacity>
+        {/* Green local dot indicator */}
+        <View style={localRowStyles.localDot} />
+      </TouchableOpacity>
+    </SwipeableTrackRow>
   );
 }
 
@@ -481,11 +494,16 @@ type SearchSection = LocalSection | YouTubeSection;
 export function SearchScreen() {
   const navigation = useNavigation<RootStackNavigationProp>();
   const insets = useSafeAreaInsets();
-  const { playTrack } = usePlayerQueue();
+  const { playTrack, addTrack } = usePlayerQueue();
   const activeRntpTrack = useActiveTrack();
   const downloadQueue = useDownloadStore((s) => s.queue);
 
-  const allTracks = useAllTracks();
+  // `safeTracks` is the filtered library — non-music junk (WhatsApp voices,
+  // ringtones, status-music clips) is stripped before it ever feeds the Fuse
+  // index or the in-library fingerprint set used by `isInLibrary`. Without
+  // this, junk rows could show up under "In Your Library" or block a real
+  // Saavn match because their parsed title accidentally collided.
+  const safeTracks = useSafeTracks();
   const [query, setQuery] = useState('');
   const debouncedQuery = useDebounce(query, 420);
   const inputRef = useRef<TextInput>(null);
@@ -522,7 +540,7 @@ export function SearchScreen() {
 
   const fuse = useMemo(
     () =>
-      new Fuse(allTracks, {
+      new Fuse(safeTracks, {
         keys: [
           { name: 'title', weight: 0.6 },
           { name: 'artist', weight: 0.3 },
@@ -531,12 +549,12 @@ export function SearchScreen() {
         threshold: 0.35,
         includeScore: true,
       }),
-    [allTracks],
+    [safeTracks],
   );
 
   const localResults = useMemo((): Track[] => {
     if (!debouncedQuery.trim()) return [];
-    return fuse.search(debouncedQuery).map((r) => r.item).slice(0, 8);
+    return fuse.search(debouncedQuery).map((r) => r.item).slice(0, 30);
   }, [fuse, debouncedQuery]);
 
   // ── YouTube search ──
@@ -548,7 +566,10 @@ export function SearchScreen() {
     refetch: retryYouTubeSearch,
   } = useQuery({
     queryKey: ['music-search', debouncedQuery],
-    queryFn: () => searchMusic(debouncedQuery, 15),
+    // Thread React Query's AbortSignal so a rapidly-typing user doesn't
+    // pay for stale results — searchMusic checks `signal.aborted` between
+    // its Saavn + YouTube sub-calls.
+    queryFn: async ({ signal }) => searchMusic(debouncedQuery, 15, { signal }),
     enabled: debouncedQuery.trim().length >= 2,
     staleTime: 2 * 60 * 1000,
     gcTime: 5 * 60 * 1000,
@@ -564,25 +585,28 @@ export function SearchScreen() {
     return map;
   }, [downloadQueue]);
 
-  // Library lookup: build a set of "title|||artist" for fast matching
+  // Library lookup: build a set of "title|||artist" for fast matching.
+  // Normalize both sides so parenthetical variations like
+  // "Tum Hi Ho (From Aashiqui 2)" still match "Tum Hi Ho".
   const libraryFingerprints = useMemo(() => {
     const set = new Set<string>();
-    for (const t of allTracks) {
-      set.add(`${t.title.toLowerCase()}|||${t.artist.toLowerCase()}`);
+    for (const t of safeTracks) {
+      set.add(`${normalizeForMatch(t.title)}|||${normalizeForMatch(t.artist)}`);
     }
     return set;
-  }, [allTracks]);
+  }, [safeTracks]);
 
   const isInLibrary = useCallback(
     (result: YouTubeSearchResult): boolean => {
-      // Try both full title and parsed "Artist - Title"
-      const fullKey = `${result.title.toLowerCase()}|||${result.author.toLowerCase()}`;
+      const fullKey = `${normalizeForMatch(result.title)}|||${normalizeForMatch(result.author)}`;
       if (libraryFingerprints.has(fullKey)) return true;
       const dashIdx = result.title.indexOf(' - ');
       if (dashIdx > 0) {
-        const artist = result.title.substring(0, dashIdx).trim().toLowerCase();
-        const title = result.title.substring(dashIdx + 3).trim().toLowerCase();
-        return libraryFingerprints.has(`${title}|||${artist}`);
+        const artist = result.title.substring(0, dashIdx).trim();
+        const title = result.title.substring(dashIdx + 3).trim();
+        return libraryFingerprints.has(
+          `${normalizeForMatch(title)}|||${normalizeForMatch(artist)}`,
+        );
       }
       return false;
     },
@@ -633,14 +657,25 @@ export function SearchScreen() {
 
   const handleLocalTrackPress = useCallback(
     (track: Track) => {
-      void playTrack(modelToTrack(track), modelsToTracks(allTracks));
+      void playTrack(modelToTrack(track), modelsToTracks(safeTracks));
       navigation.navigate('NowPlaying');
     },
-    [playTrack, allTracks, navigation],
+    [playTrack, safeTracks, navigation],
+  );
+
+  // Left-swipe on a library row inside Search: drop the track into the
+  // upcoming queue without interrupting playback.
+  const handleSwipeQueue = useCallback(
+    (track: Track) => {
+      void addTrack(modelToTrack(track));
+    },
+    [addTrack],
   );
 
   const handleSubmitEditing = useCallback(() => {
     if (query.trim()) {
+      // Subtle confirmation tap when the user commits a search query.
+      void Haptics.selectionAsync();
       saveRecentSearch(query.trim());
       setRecentSearches(loadRecentSearches());
     }
@@ -652,27 +687,31 @@ export function SearchScreen() {
       if (!target) return;
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       void (async () => {
-        const provider = target.provider ?? 'youtube';
-        const album =
-          provider === 'saavn'
-            ? target.saavnAlbum ?? 'JioSaavn'
-            : 'YouTube';
-        const result = await DownloadManager.enqueue({
-          youtubeId: target.id,
-          title: target.title,
-          artist: target.author,
-          album,
-          thumbnail: target.thumbnail,
-          durationMs: target.duration_ms,
-          provider,
-          saavnEncryptedUrl: target.saavnEncryptedUrl,
-          saavnHas320kbps: target.saavnHas320kbps,
-        });
-        if (!result.success) {
-          Alert.alert(
-            'Cannot start download',
-            result.reason ?? 'Please try again.',
-          );
+        try {
+          const provider = target.provider ?? 'youtube';
+          const album =
+            provider === 'saavn'
+              ? target.saavnAlbum ?? 'JioSaavn'
+              : 'YouTube';
+          const result = await DownloadManager.enqueue({
+            youtubeId: target.id,
+            title: target.title,
+            artist: target.author,
+            album,
+            thumbnail: target.thumbnail,
+            durationMs: target.duration_ms,
+            provider,
+            saavnEncryptedUrl: target.saavnEncryptedUrl,
+            saavnHas320kbps: target.saavnHas320kbps,
+          });
+          if (!result.success) {
+            Alert.alert(
+              'Cannot start download',
+              result.reason ?? 'Please try again.',
+            );
+          }
+        } catch {
+          Alert.alert('Download error', 'Could not start download. Please try again.');
         }
       })();
     },
@@ -695,13 +734,20 @@ export function SearchScreen() {
         sectionType: 'local',
       });
     }
-    result.push({
-      title: 'Online',
-      badge: 'STREAMING',
-      badgeColor: '#FA233B',
-      data: ytResults ?? [],
-      sectionType: 'youtube',
-    });
+    // Only render the Online section header when there are zero local
+    // results (so the user still sees a header while online is loading)
+    // OR when we actually have online results to show. Skip it otherwise
+    // so we don't paint an empty "Online" header next to local hits.
+    const ytData = ytResults ?? [];
+    if (localResults.length === 0 || ytData.length > 0) {
+      result.push({
+        title: 'Online',
+        badge: 'STREAMING',
+        badgeColor: '#FA233B',
+        data: ytData,
+        sectionType: 'youtube',
+      });
+    }
     return result;
   }, [isSearching, localResults, ytResults]);
 
@@ -725,6 +771,7 @@ export function SearchScreen() {
           <LocalTrackRow
             track={item as Track}
             onPress={handleLocalTrackPress}
+            onSwipeQueue={handleSwipeQueue}
           />
         );
       }
@@ -740,7 +787,7 @@ export function SearchScreen() {
         />
       );
     },
-    [handleLocalTrackPress, isInLibrary, progressMap, handleDownloadRequest],
+    [handleLocalTrackPress, handleSwipeQueue, isInLibrary, progressMap, handleDownloadRequest],
   );
 
   const keyExtractor = useCallback(
@@ -821,7 +868,7 @@ export function SearchScreen() {
             keyExtractor={keyExtractor}
             renderSectionHeader={renderSectionHeader}
             renderItem={renderItem}
-            stickySectionHeadersEnabled={false}
+            stickySectionHeadersEnabled={true}
             showsVerticalScrollIndicator={false}
             contentContainerStyle={[styles.listContent, { paddingBottom: getScreenBottomInset(insets.bottom, !!activeRntpTrack) }]}
             keyboardShouldPersistTaps="handled"

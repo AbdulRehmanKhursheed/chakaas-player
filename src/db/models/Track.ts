@@ -35,6 +35,7 @@ export class Track extends Model {
   @field('added_at') addedAt!: number;
   @text('source') source!: string;
   @field('liked') liked!: boolean;
+  @field('play_count') playCount!: number;
 
   @children('plays') plays!: Query<Play>;
   @children('playlist_tracks') playlistTracks!: Query<PlaylistTrack>;

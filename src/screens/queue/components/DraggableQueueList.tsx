@@ -1,19 +1,16 @@
 import React, { useState, useCallback, useRef } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { ScrollView, TouchableOpacity } from 'react-native-gesture-handler';
-import Animated, {
-  useSharedValue,
-  useAnimatedStyle,
-  withSpring,
-} from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
+import * as Haptics from 'expo-haptics';
 import { usePlayerQueue } from '@/features/player/useQueue';
-import type { Track } from 'react-native-track-player';
+import TrackPlayer, { type Track } from 'react-native-track-player';
+import { logger } from '@/utils/logger';
+import { TrackArtwork } from '@/components/track/TrackArtwork';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const ITEM_HEIGHT = 64;
-const SPRING_CONFIG = { damping: 20, stiffness: 200, mass: 0.7 };
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -28,86 +25,120 @@ interface DraggableQueueListProps {
   indexOffset?: number;
 }
 
-// ─── Animated Queue Item ──────────────────────────────────────────────────────
+// ─── Queue Item ──────────────────────────────────────────────────────────────
 
 interface QueueItemProps {
   track: Track;
   index: number;
   globalIndex: number;
-  isDragging: boolean;
-  dragIndex: number | null;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
   onRemove: (globalIndex: number) => void;
-  onDragStart: (index: number) => void;
-  onDragEnd: (fromIndex: number, toIndex: number) => void;
+  onMoveUp: (localIndex: number) => void;
+  onMoveDown: (localIndex: number) => void;
+  onJump: (globalIndex: number) => void;
 }
 
 function QueueItem({
   track,
   index,
   globalIndex,
-  isDragging,
-  dragIndex,
+  canMoveUp,
+  canMoveDown,
   onRemove,
-  onDragStart,
+  onMoveUp,
+  onMoveDown,
+  onJump,
 }: QueueItemProps) {
-  const scale = useSharedValue(1);
-  const translateY = useSharedValue(0);
-
-  // When this item is the one being dragged, scale it up
-  const isThisItemDragging = isDragging && dragIndex === index;
-
-  const animStyle = useAnimatedStyle(() => ({
-    transform: [
-      { scale: scale.value },
-      { translateY: translateY.value },
-    ],
-    zIndex: isThisItemDragging ? 100 : 1,
-    opacity: isThisItemDragging ? 0.95 : 1,
-  }));
-
-  // Shift items that are above/below the dragging item to indicate drop target
-  const shiftStyle = useAnimatedStyle(() => {
-    if (!isDragging || dragIndex === null || dragIndex === index) {
-      return { transform: [{ translateY: withSpring(0, SPRING_CONFIG) }] };
-    }
-    return { transform: [{ translateY: withSpring(0, SPRING_CONFIG) }] };
-  });
-
-  const handleLongPress = useCallback(() => {
-    scale.value = withSpring(1.03, SPRING_CONFIG);
-    onDragStart(index);
-  }, [index, onDragStart, scale]);
-
-  const handlePressOut = useCallback(() => {
-    scale.value = withSpring(1, SPRING_CONFIG);
-  }, [scale]);
-
   const handleRemove = useCallback(() => {
     onRemove(globalIndex);
   }, [globalIndex, onRemove]);
 
-  return (
-    <Animated.View style={[styles.itemContainer, animStyle, shiftStyle]}>
-      {/* Drag handle */}
-      <TouchableOpacity
-        onLongPress={handleLongPress}
-        onPressOut={handlePressOut}
-        style={styles.dragHandle}
-        accessibilityLabel="Drag to reorder"
-        accessibilityRole="adjustable"
-      >
-        <Ionicons name="reorder-two" size={23} color="#8E8E93" />
-      </TouchableOpacity>
+  const handleMoveUp = useCallback(() => {
+    try {
+      void Haptics.selectionAsync();
+    } catch {
+      // ignore
+    }
+    onMoveUp(index);
+  }, [index, onMoveUp]);
 
-      {/* Track info */}
-      <View style={styles.trackInfo}>
-        <Text style={styles.trackTitle} numberOfLines={1}>
-          {track.title ?? 'Unknown Title'}
-        </Text>
-        <Text style={styles.trackArtist} numberOfLines={1}>
-          {track.artist ?? 'Unknown Artist'}
-        </Text>
+  const handleMoveDown = useCallback(() => {
+    try {
+      void Haptics.selectionAsync();
+    } catch {
+      // ignore
+    }
+    onMoveDown(index);
+  }, [index, onMoveDown]);
+
+  const handleJump = useCallback(() => {
+    onJump(globalIndex);
+  }, [globalIndex, onJump]);
+
+  return (
+    <View style={styles.itemContainer}>
+      {/* Reorder controls — a true draggable list isn't bundled in this
+          app, but tap-to-move arrows give the user a reliable way to
+          reorder the queue and persist the change through `moveInQueue`.
+          The arrows disable themselves at the list edges. */}
+      <View style={styles.reorderCluster}>
+        <TouchableOpacity
+          onPress={handleMoveUp}
+          disabled={!canMoveUp}
+          style={styles.reorderBtn}
+          hitSlop={{ top: 8, bottom: 4, left: 6, right: 6 }}
+          accessibilityLabel="Move up in queue"
+          accessibilityRole="button"
+        >
+          <Ionicons
+            name="chevron-up"
+            size={18}
+            color={canMoveUp ? '#1D1D1F' : '#D2D2D7'}
+          />
+        </TouchableOpacity>
+        <TouchableOpacity
+          onPress={handleMoveDown}
+          disabled={!canMoveDown}
+          style={styles.reorderBtn}
+          hitSlop={{ top: 4, bottom: 8, left: 6, right: 6 }}
+          accessibilityLabel="Move down in queue"
+          accessibilityRole="button"
+        >
+          <Ionicons
+            name="chevron-down"
+            size={18}
+            color={canMoveDown ? '#1D1D1F' : '#D2D2D7'}
+          />
+        </TouchableOpacity>
       </View>
+
+      {/* Tap the body to skip to this track. Wrapping just the artwork +
+          title (not the close / reorder buttons) so the row controls don't
+          fire jump on every accidental press. */}
+      <TouchableOpacity
+        onPress={handleJump}
+        activeOpacity={0.6}
+        style={styles.bodyPress}
+        accessibilityRole="button"
+        accessibilityLabel={`Play ${track.title ?? 'track'}`}
+      >
+        <TrackArtwork
+          uri={track.artwork ? String(track.artwork) : null}
+          blurhash={null}
+          size={40}
+          borderRadius={6}
+        />
+        {/* Track info */}
+        <View style={styles.trackInfo}>
+          <Text style={styles.trackTitle} numberOfLines={1}>
+            {track.title ?? 'Unknown Title'}
+          </Text>
+          <Text style={styles.trackArtist} numberOfLines={1}>
+            {track.artist ?? 'Unknown Artist'}
+          </Text>
+        </View>
+      </TouchableOpacity>
 
       {/* Remove button */}
       <TouchableOpacity
@@ -119,7 +150,7 @@ function QueueItem({
       >
         <Ionicons name="close" size={15} color="#8E8E93" />
       </TouchableOpacity>
-    </Animated.View>
+    </View>
   );
 }
 
@@ -141,12 +172,6 @@ export function DraggableQueueList({
     setLocalOrder(queue);
   }
 
-  const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
-  const [isDragging, setIsDragging] = useState(false);
-
-  // Track drag gesture manually via scroll position deltas
-  const dragCurrentIndex = useRef<number | null>(null);
-
   const handleRemove = useCallback(
     (globalIndex: number) => {
       // Optimistically remove from local state
@@ -163,62 +188,54 @@ export function DraggableQueueList({
     [removeFromQueue, indexOffset],
   );
 
-  const handleDragStart = useCallback((localIndex: number) => {
-    setDraggingIndex(localIndex);
-    setIsDragging(true);
-    dragCurrentIndex.current = localIndex;
-  }, []);
-
-  const handleDragEnd = useCallback(
-    (fromLocalIndex: number, toLocalIndex: number) => {
-      setIsDragging(false);
-      setDraggingIndex(null);
-      dragCurrentIndex.current = null;
-
-      if (fromLocalIndex === toLocalIndex) return;
-
-      // Update local order optimistically
+  // Reorder one slot at a time. We update the local snapshot immediately
+  // so the rows jump into place without waiting for the RNTP queue
+  // observable to round-trip, then persist via `moveInQueue` which calls
+  // `TrackPlayer.move()` under the hood.
+  const handleMoveUp = useCallback(
+    (localIndex: number) => {
+      if (localIndex <= 0) return;
       setLocalOrder((prev) => {
+        if (localIndex >= prev.length) return prev;
         const next = [...prev];
-        const [moved] = next.splice(fromLocalIndex, 1);
-        next.splice(toLocalIndex, 0, moved);
+        const [moved] = next.splice(localIndex, 1);
+        next.splice(localIndex - 1, 0, moved);
         return next;
       });
-
-      // Tell RNTP about the move (convert to global indices)
-      const fromGlobal = fromLocalIndex + indexOffset;
-      const toGlobal = toLocalIndex + indexOffset;
+      const fromGlobal = localIndex + indexOffset;
+      const toGlobal = localIndex - 1 + indexOffset;
       moveInQueue(fromGlobal, toGlobal);
     },
     [moveInQueue, indexOffset],
   );
 
-  const renderItem = useCallback(
-    (track: Track, localIndex: number) => {
-      const globalIndex = localIndex + indexOffset;
-      return (
-        <QueueItem
-          key={track.id ?? `queue-item-${globalIndex}`}
-          track={track}
-          index={localIndex}
-          globalIndex={globalIndex}
-          isDragging={isDragging}
-          dragIndex={draggingIndex}
-          onRemove={handleRemove}
-          onDragStart={handleDragStart}
-          onDragEnd={handleDragEnd}
-        />
-      );
+  const handleMoveDown = useCallback(
+    (localIndex: number) => {
+      setLocalOrder((prev) => {
+        if (localIndex < 0 || localIndex >= prev.length - 1) return prev;
+        const next = [...prev];
+        const [moved] = next.splice(localIndex, 1);
+        next.splice(localIndex + 1, 0, moved);
+        return next;
+      });
+      const fromGlobal = localIndex + indexOffset;
+      const toGlobal = localIndex + 1 + indexOffset;
+      moveInQueue(fromGlobal, toGlobal);
     },
-    [
-      isDragging,
-      draggingIndex,
-      indexOffset,
-      handleRemove,
-      handleDragStart,
-      handleDragEnd,
-    ],
+    [moveInQueue, indexOffset],
   );
+
+  // Skip-to-queued-track: tapping a row jumps RNTP to that index and
+  // resumes playback so the user gets immediate audio feedback.
+  const handleJump = useCallback(async (globalIndex: number) => {
+    try {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      await TrackPlayer.skip(globalIndex);
+      await TrackPlayer.play();
+    } catch (err) {
+      logger.warn('[QueueList] skip-to-index failed:', err);
+    }
+  }, []);
 
   if (localOrder.length === 0) {
     return null;
@@ -229,10 +246,25 @@ export function DraggableQueueList({
       style={styles.scrollView}
       contentContainerStyle={styles.contentContainer}
       showsVerticalScrollIndicator={false}
-      scrollEnabled={!isDragging}
       keyboardShouldPersistTaps="handled"
     >
-      {localOrder.map((track, index) => renderItem(track, index))}
+      {localOrder.map((track, localIndex) => {
+        const globalIndex = localIndex + indexOffset;
+        return (
+          <QueueItem
+            key={track.id ?? `queue-item-${globalIndex}`}
+            track={track}
+            index={localIndex}
+            globalIndex={globalIndex}
+            canMoveUp={localIndex > 0}
+            canMoveDown={localIndex < localOrder.length - 1}
+            onRemove={handleRemove}
+            onMoveUp={handleMoveUp}
+            onMoveDown={handleMoveDown}
+            onJump={handleJump}
+          />
+        );
+      })}
       {/* Bottom padding so the last item isn't cut off by the mini player */}
       <View style={styles.bottomSpacer} />
     </ScrollView>
@@ -263,14 +295,29 @@ const styles = StyleSheet.create({
     gap: 4,
   },
 
-  // Drag handle
-  dragHandle: {
-    width: 40,
+  // Reorder cluster (stacked up/down arrows)
+  reorderCluster: {
+    width: 32,
     height: ITEM_HEIGHT,
     justifyContent: 'center',
     alignItems: 'center',
   },
+  reorderBtn: {
+    width: 32,
+    height: 22,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
 
+  // Tappable row body (artwork + title/artist)
+  bodyPress: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingRight: 4,
+    height: ITEM_HEIGHT,
+  },
   // Track info
   trackInfo: {
     flex: 1,

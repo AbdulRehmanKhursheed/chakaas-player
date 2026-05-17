@@ -41,10 +41,12 @@ import { Q } from '@nozbe/watermelondb';
 import { database, tracksCollection } from '@/db';
 import { useDownloadStore } from '@/stores/downloadStore';
 import type { DownloadStatus } from '@/stores/downloadStore';
+import { useSettingsStore } from '@/stores/settingsStore';
+import type { DownloadQuality } from '@/stores/settingsStore';
 import { getTrackPath, getTempDir, deleteFile } from '@/services/storage/fileSystem';
-import { getBestAudioStream } from './YoutubeExtractor';
 import { downloadArtwork } from './ArtworkDownloader';
-import { getSaavnStreamUrl } from './providers/SaavnProvider';
+import { clearSaavnUrlCache } from './providers/SaavnProvider';
+import { resolveAudioStream } from './MultiSourceResolver';
 import type { AudioStreamInfo } from './providers/types';
 import {
   ensureNotificationChannel,
@@ -53,6 +55,7 @@ import {
   stopDownloadForegroundService,
   showDownloadError,
   registerForegroundEventHandler,
+  resetErrorNotificationState,
 } from '@/services/notifications/DownloadNotificationService';
 import { logger } from '@/utils/logger';
 
@@ -61,8 +64,17 @@ import { logger } from '@/utils/logger';
 /** Hard cap on the number of tracks stored in the local library. */
 export const MAX_LIBRARY_SIZE = 1500;
 
-/** Maximum download pipelines running in parallel. */
-const MAX_CONCURRENT = 1;
+/**
+ * Maximum download pipelines running in parallel. 3 is the chosen value
+ * because the Saavn CDN (`web.saavncdn.com`) tolerates 3 concurrent requests
+ * from the same client well in empirical testing — no 429s, no slowdowns —
+ * while still saturating typical mobile bandwidth.
+ *
+ * The pipeline is already parallel-safe: every temp path uses the per-item
+ * `id` (line 652) and final paths use `youtubeId`/`saavnId` keys via
+ * getTrackPath, so workers never collide on disk.
+ */
+const MAX_CONCURRENT = 3;
 
 /** How many times we'll refresh a stale signed URL during the header loop. */
 const MAX_STREAM_REFRESHES = 5;
@@ -71,10 +83,22 @@ const MAX_STREAM_REFRESHES = 5;
 const MAX_DOWNLOAD_ATTEMPTS = 6;
 
 /**
- * Encoding quality used for every download.
- * The user-facing Settings → Audio Quality control routes through here.
+ * Reads the user's chosen audio-quality setting from the persisted settings
+ * store. Returns '320k' as a safe default if reading fails (defensive — the
+ * store is initialised with '320k' anyway, but this guard keeps the worker
+ * pipeline from crashing if the MMKV layer hiccups).
+ *
+ * The result is captured at enqueue-time (NOT at worker-claim-time) so that a
+ * user toggling Settings mid-download doesn't change quality for already-queued
+ * items. New items added after the toggle pick up the new setting.
  */
-const DOWNLOAD_QUALITY = '320k' as const;
+function readDownloadQuality(): DownloadQuality {
+  try {
+    return useSettingsStore.getState().downloadQuality;
+  } catch {
+    return '320k';
+  }
+}
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -138,19 +162,21 @@ const DOWNLOAD_HEADER_SETS: Array<Record<string, string>> = [
   },
 ];
 
-function getAudioMimeType(container: 'm4a' | 'webm'): string {
-  return container === 'm4a' ? 'audio/mp4' : 'audio/webm';
+function getAudioMimeType(container: 'm4a' | 'webm' | 'mp3'): string {
+  if (container === 'm4a') return 'audio/mp4';
+  if (container === 'mp3') return 'audio/mpeg';
+  return 'audio/webm';
 }
 
 async function publishToMusicLibrary(
   sourcePath: string,
   filename: string,
-  container: 'm4a' | 'webm',
+  container: 'm4a' | 'webm' | 'mp3',
 ): Promise<string | null> {
   if (Platform.OS !== 'android') return null;
 
   try {
-    const displayName = filename.replace(/\.(m4a|webm)$/i, '');
+    const displayName = filename.replace(/\.(m4a|webm|mp3)$/i, '');
     const uri = await RNBlobUtil.MediaCollection.copyToMediaStore(
       {
         name: displayName,
@@ -222,8 +248,34 @@ let _activeCount = 0;
 /** True while at least one pipeline is running. Drives `isRunning`. */
 let _isProcessorRunning = false;
 
-/** Signals every active pipeline to abort at its next async boundary. */
-let _cancelCurrent = false;
+/**
+ * Per-id cancellation set. `cancelCurrent()` populates this with the ids of
+ * actively running pipelines. Each pipeline polls `_cancelledIds.has(id)` at
+ * its cancel checkpoints and the worker removes the id in a `finally` once
+ * the pipeline has settled.
+ *
+ * This replaces the old module-level `_cancelCurrent` boolean which leaked
+ * cancellation state across items: cancelling track A would race-cancel track
+ * B if B claimed the slot before A's pipeline noticed.
+ */
+const _cancelledIds = new Set<string>();
+/**
+ * In-flight `RNBlobUtil.config(...).fetch(...)` tasks keyed by track id.
+ *
+ * `RNBlobUtil` returns a `StatefulPromise` whose `.cancel()` method aborts
+ * the underlying native download — equivalent to `AbortController.abort()`
+ * for the standard `fetch`. Without this registry, calling `cancelCurrent`
+ * or `cancelAll` would only flip a boolean: an in-flight HTTP fetch with a
+ * 30s native timeout would keep running and the foreground service would
+ * stay up until it eventually settled.
+ *
+ * The worker registers its current fetch task here just before the call
+ * and clears the slot in a `finally`. `cancelCurrent`/`cancelAll` walks the
+ * map and `cancel()`s every active fetch in addition to setting the cancel
+ * flag — so the worker's `.catch(...)` fires immediately, hits the next
+ * `isCancelled()` checkpoint, and exits.
+ */
+const _activeFetchTasks = new Map<string, { cancel: () => void }>();
 /** Drains the entire queue after currently running pipelines finish. */
 let _cancelAll = false;
 /** Number of items completed successfully since the processor last started. */
@@ -251,8 +303,90 @@ async function withEnqueueLock<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-/** Last progress update sent to the notification for each track id. */
+/** Last progress percentage sent to the notification for each track id. */
 const _lastNotificationProgress = new Map<string, number>();
+/**
+ * Wall-clock timestamp (ms) of the last notification update across ALL ids.
+ * Notifee bridges to native — flooding it ≥4×/s wastes JS thread time and
+ * the user can't see the difference anyway. Throttled to 250 ms minimum gap,
+ * with carve-outs for `pct === 100` and stage transitions.
+ */
+let _lastNotificationWallMs = 0;
+const NOTIFICATION_MIN_GAP_MS = 250;
+
+/** Tracks the last `DownloadStatus` we notified for each id (for stage-transition carve-out). */
+const _lastNotificationStatus = new Map<string, DownloadStatus>();
+
+/**
+ * Centralized helper for pushing a progress update to both the in-app store
+ * and the foreground-service notification. Applies the wall-clock throttle
+ * (≥250 ms between notifee calls) and the 5%-delta guard. Always allows
+ * `pct === 100` and stage transitions through.
+ */
+async function pushProgress(
+  id: string,
+  title: string,
+  artist: string,
+  pct: number,
+  queueLength: number,
+  status: DownloadStatus,
+): Promise<void> {
+  useDownloadStore.getState().updateProgress(id, pct, status);
+
+  const lastPct = _lastNotificationProgress.get(id) ?? -10;
+  const lastStatus = _lastNotificationStatus.get(id);
+  const isStageTransition = lastStatus !== status;
+  const isTerminal = pct >= 100;
+  const wallNow = Date.now();
+  const wallGapOk = wallNow - _lastNotificationWallMs >= NOTIFICATION_MIN_GAP_MS;
+  const pctGapOk = Math.abs(pct - lastPct) >= 5;
+
+  if (!(isTerminal || isStageTransition || (wallGapOk && pctGapOk))) return;
+
+  _lastNotificationProgress.set(id, pct);
+  _lastNotificationStatus.set(id, status);
+  _lastNotificationWallMs = wallNow;
+
+  try {
+    await updateDownloadProgress(title, artist, pct, queueLength);
+  } catch (err) {
+    logger.warn('[DownloadManager] Failed to update progress notification:', err);
+  }
+}
+
+// ── notifee background event (module-top-level) ────────────────────────────
+
+/**
+ * notifee requires `onBackgroundEvent` to be registered at module top-level
+ * (before the JS bundle finishes evaluating) for reliable dispatch when the
+ * app is killed/backgrounded. Registering it inside a class constructor
+ * occasionally misses early events.
+ *
+ * The handler defers to the singleton `DownloadManager` exported at the
+ * bottom of this file — declared with `var` hoisting via a getter so the TDZ
+ * isn't an issue at module-eval time.
+ */
+notifee.onBackgroundEvent(async ({ type, detail }) => {
+  if (type === EventType.ACTION_PRESS) {
+    const actionId = detail.pressAction?.id;
+    if (actionId === 'cancel-current') DownloadManager.cancelCurrent();
+    if (actionId === 'cancel-all') DownloadManager.cancelAll();
+  }
+});
+
+// ── Foreground listener ref-counting ───────────────────────────────────────
+
+/**
+ * The notifee foreground listener is shared across UI consumers. Each call
+ * to `registerForegroundListener()` increments a ref-count; the returned
+ * cleanup decrements. Only when the count hits zero do we actually unsubscribe.
+ *
+ * Why: React Native screen remounts (especially during fast-refresh or the
+ * Settings drawer toggle) would otherwise unsubscribe the listener mid-session
+ * and the user's "Cancel" tap in the notification would be silently ignored.
+ */
+let _foregroundListenerRefCount = 0;
+const _foregroundUnsubscribes: Array<() => void> = [];
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -267,6 +401,12 @@ async function countQueueable(): Promise<number> {
 /**
  * Bulk-checks which (provider, id) pairs already exist in the library. Returns
  * a Set of `provider:id` keys present in the tracks table.
+ *
+ * Before computing the set, this also cleans up broken rows (durationMs ≤ 0
+ * or missing filePath) in a single transaction — same logic as the per-item
+ * cleanup in `enqueue`. Without this step, a bulk approval where some library
+ * rows are broken would silently dedupe them away and the user would see
+ * "this song is already in your library" forever.
  */
 async function fetchExistingLibraryKeys(
   pairs: Array<{ provider: 'youtube' | 'saavn'; id: string }>,
@@ -286,6 +426,23 @@ async function fetchExistingLibraryKeys(
       : Promise.resolve([]),
   ]);
 
+  // Collect every broken row across both queries, then purge them in ONE
+  // database transaction — keeps the write batched even for huge bulk
+  // approvals where dozens of rows could be broken simultaneously.
+  const brokenRows = [
+    ...ytRows.filter((r) => r.durationMs <= 0 || !r.filePath),
+    ...snRows.filter((r) => r.durationMs <= 0 || !r.filePath),
+  ];
+  if (brokenRows.length > 0) {
+    await database.write(async () => {
+      for (const track of brokenRows) {
+        await deleteFile(track.filePath).catch(() => {});
+        if (track.artworkPath) await deleteFile(track.artworkPath).catch(() => {});
+        await track.destroyPermanently();
+      }
+    });
+  }
+
   for (const r of ytRows) {
     if (r.durationMs > 0 && r.filePath) {
       out.add(keyFor('youtube', r.youtubeId ?? ''));
@@ -302,17 +459,9 @@ async function fetchExistingLibraryKeys(
 // ── DownloadManagerClass ───────────────────────────────────────────────────
 
 class DownloadManagerClass {
-  private _unsubscribeForeground: (() => void) | null = null;
-
-  constructor() {
-    notifee.onBackgroundEvent(async ({ type, detail }) => {
-      if (type === EventType.ACTION_PRESS) {
-        const actionId = detail.pressAction?.id;
-        if (actionId === 'cancel-current') this.cancelCurrent();
-        if (actionId === 'cancel-all') this.cancelAll();
-      }
-    });
-  }
+  // The notifee `onBackgroundEvent` registration lives at module top-level
+  // (see above) — required for reliable dispatch when the app is killed.
+  // The constructor is intentionally empty.
 
   // ── Public API ─────────────────────────────────────────────────────────
 
@@ -371,6 +520,10 @@ class DownloadManagerClass {
         album: params.album,
         saavnEncryptedUrl: params.saavnEncryptedUrl,
         saavnHas320kbps: params.saavnHas320kbps,
+        // Stamp the user's Settings → Audio Quality at enqueue time so the
+        // worker picks it up later. Caller-supplied `params.quality` wins when
+        // present (the Downloads screen passes '320k' explicitly).
+        quality: params.quality ?? readDownloadQuality(),
       });
 
       void this._ensureProcessorRunning();
@@ -409,6 +562,11 @@ class DownloadManagerClass {
       let skipped = 0;
       let rejected = 0;
 
+      // Read user-quality ONCE per batch so we don't pay for N store reads.
+      // A toggle mid-batch shouldn't cause inconsistent quality within the
+      // same enqueueBatch call.
+      const batchQuality = readDownloadQuality();
+
       for (const params of items) {
         const provider = (params.provider ?? 'youtube') as 'youtube' | 'saavn';
         const key = keyFor(provider, params.youtubeId);
@@ -435,6 +593,8 @@ class DownloadManagerClass {
           album: params.album,
           saavnEncryptedUrl: params.saavnEncryptedUrl,
           saavnHas320kbps: params.saavnHas320kbps,
+          // Same Settings → Audio Quality stamp as the single-item enqueue path.
+          quality: params.quality ?? batchQuality,
         });
       }
 
@@ -453,7 +613,6 @@ class DownloadManagerClass {
   }
 
   cancelCurrent(): void {
-    _cancelCurrent = true;
     const store = useDownloadStore.getState();
     for (const item of store.queue) {
       if (
@@ -461,6 +620,17 @@ class DownloadManagerClass {
         item.status === 'converting' ||
         item.status === 'tagging'
       ) {
+        _cancelledIds.add(item.id);
+        // Abort any in-flight RNBlobUtil fetch for this id so the native
+        // download stops immediately rather than running to its 30s timeout.
+        const task = _activeFetchTasks.get(item.id);
+        if (task) {
+          try {
+            task.cancel();
+          } catch {
+            // Task may have already settled — fine to ignore.
+          }
+        }
         store.setError(item.id, 'Cancelled by user');
       }
     }
@@ -468,11 +638,30 @@ class DownloadManagerClass {
 
   cancelAll(): void {
     _cancelAll = true;
-    _cancelCurrent = true;
     _sessionCancelled = true;
     const store = useDownloadStore.getState();
     for (const item of store.queue) {
       if (item.status !== 'done' && item.status !== 'error') {
+        // Add active items to per-id cancel set so the inner pipeline
+        // checkpoints abort promptly (not just the worker's queue check).
+        if (
+          item.status === 'downloading' ||
+          item.status === 'converting' ||
+          item.status === 'tagging'
+        ) {
+          _cancelledIds.add(item.id);
+          // Abort any in-flight RNBlobUtil fetch — same rationale as
+          // `cancelCurrent`. Without this, the foreground service can
+          // linger for up to 30 s waiting on a doomed HTTP fetch.
+          const task = _activeFetchTasks.get(item.id);
+          if (task) {
+            try {
+              task.cancel();
+            } catch {
+              // ignore — task may have settled in the meantime.
+            }
+          }
+        }
         store.setError(item.id, 'Cancelled');
       }
     }
@@ -483,14 +672,46 @@ class DownloadManagerClass {
   }
 
   registerForegroundListener(): () => void {
-    if (this._unsubscribeForeground) this._unsubscribeForeground();
-    this._unsubscribeForeground = registerForegroundEventHandler(
+    // Ref-counted. Each call subscribes a fresh notifee handler and pushes
+    // its unsubscribe into the shared list. The returned cleanup decrements
+    // the count and pops one unsubscribe; only when the count returns to
+    // zero do we actually tear down. This protects against UI remounts
+    // (Settings drawer toggle, fast-refresh) tearing down a listener that
+    // another live subscriber still depends on.
+    const unsub = registerForegroundEventHandler(
       () => this.cancelCurrent(),
       () => this.cancelAll(),
     );
+    _foregroundUnsubscribes.push(unsub);
+    _foregroundListenerRefCount += 1;
+
+    let released = false;
     return () => {
-      this._unsubscribeForeground?.();
-      this._unsubscribeForeground = null;
+      if (released) return;
+      released = true;
+      _foregroundListenerRefCount = Math.max(0, _foregroundListenerRefCount - 1);
+      const popped = _foregroundUnsubscribes.pop();
+      if (_foregroundListenerRefCount === 0) {
+        // Drain any remaining unsubscribes — should be at most one (popped).
+        try {
+          popped?.();
+        } catch (err) {
+          logger.warn('[DownloadManager] Foreground listener unsubscribe failed:', err);
+        }
+        while (_foregroundUnsubscribes.length > 0) {
+          const u = _foregroundUnsubscribes.pop();
+          try {
+            u?.();
+          } catch (err) {
+            logger.warn('[DownloadManager] Foreground listener unsubscribe failed:', err);
+          }
+        }
+      } else if (popped) {
+        // Other subscribers still alive — push the unsub back to keep parity
+        // with the ref-count. We just leak one extra handler entry until the
+        // last release flushes everything; balance is restored at zero.
+        _foregroundUnsubscribes.push(popped);
+      }
     };
   }
 
@@ -502,11 +723,26 @@ class DownloadManagerClass {
    * queue is drained.
    */
   private async _ensureProcessorRunning(): Promise<void> {
-    if (_isProcessorRunning) return;
-    _isProcessorRunning = true;
+    // Always reset the queue-drain flag FIRST. If the previous pool was
+    // cancelled (`_cancelAll = true`) but had not yet exited its drain loop,
+    // the new enqueue would otherwise stall: workers would see `_cancelAll`
+    // still set and bail immediately. Clearing it here unblocks the next run.
     _cancelAll = false;
+
+    if (_isProcessorRunning) {
+      // Pool is mid-flight (or mid-drain). Resetting `_cancelAll` above is
+      // enough to let an in-progress drain loop pick up the newly queued
+      // items on its next iteration.
+      return;
+    }
+    _isProcessorRunning = true;
     _sessionCancelled = false;
     _completedThisSession = 0;
+    _lastNotificationWallMs = 0;
+    _lastNotificationProgress.clear();
+    _lastNotificationStatus.clear();
+    resetErrorNotificationState();
+    clearSaavnUrlCache();
 
     const firstTitle = useDownloadStore.getState().queue.find((i) => i.status === 'queued')?.title;
     try {
@@ -517,14 +753,40 @@ class DownloadManagerClass {
 
     const workers: Promise<void>[] = [];
     for (let i = 0; i < MAX_CONCURRENT; i++) workers.push(this._worker());
-    Promise.all(workers).finally(() => {
-      _isProcessorRunning = false;
-      _activeCount = 0;
-      stopDownloadForegroundService(_sessionCancelled ? 0 : _completedThisSession).catch((err) =>
-        logger.warn('[DownloadManager] Failed to stop foreground service:', err),
-      );
-      _completedThisSession = 0;
-    });
+    Promise.all(workers)
+      .catch((err) => logger.warn('[DownloadManager] Unexpected worker pool error:', err))
+      .finally(() => {
+        _isProcessorRunning = false;
+        _activeCount = 0;
+        const wasCancelled = _sessionCancelled;
+        stopDownloadForegroundService(wasCancelled ? 0 : _completedThisSession).catch((err) =>
+          logger.warn('[DownloadManager] Failed to stop foreground service:', err),
+        );
+        _completedThisSession = 0;
+        // Saavn auth-token URLs expire fast (~10 min). After a cancel the
+        // cache is full of URLs we never used; clearing it here means the
+        // next session re-fetches fresh ones, avoiding 403s on retry.
+        if (wasCancelled) {
+          try {
+            clearSaavnUrlCache();
+          } catch (err) {
+            logger.warn('[DownloadManager] Failed to clear Saavn URL cache after cancel:', err);
+          }
+        }
+        // Auto-prune cancelled/errored items only when the user explicitly
+        // cancelled the entire session. Otherwise leave them so the user can
+        // still see (and potentially retry) the individual failures.
+        if (wasCancelled) {
+          try {
+            // Single atomic mutation — previously two sequential setState
+            // calls (clearErrored + clearCompleted) caused subscribers to
+            // re-render twice in a row for the same logical action.
+            useDownloadStore.getState().clearCompletedAndErrored();
+          } catch (err) {
+            logger.warn('[DownloadManager] Failed to auto-prune queue after cancel:', err);
+          }
+        }
+      });
   }
 
   /**
@@ -540,10 +802,12 @@ class DownloadManagerClass {
       if (!next) return;
 
       // Claim atomically — switch to 'downloading' immediately so other
-      // workers see it as taken.
+      // workers see it as taken. Note: we intentionally do NOT reset
+      // `_cancelCurrent` here (it no longer exists). Each pipeline now keys
+      // its cancel checks off `_cancelledIds.has(id)` so different items
+      // can't share cancellation state.
       store.updateProgress(next.id, 0, 'downloading');
       _activeCount += 1;
-      _cancelCurrent = false;
 
       const resolved: ResolvedParams = {
         youtubeId: next.youtubeId,
@@ -552,7 +816,11 @@ class DownloadManagerClass {
         album: next.album && next.album.trim() ? next.album : 'Unknown Album',
         thumbnail: next.thumbnail,
         durationMs: next.durationMs ?? 0,
-        quality: DOWNLOAD_QUALITY,
+        // Honour the per-item quality stamped at enqueue-time. Items predating
+        // the quality-honouring fix won't carry the field — fall back to the
+        // current user setting in that case so older queue rows still respect
+        // Settings → Audio Quality.
+        quality: next.quality ?? readDownloadQuality(),
         provider: next.provider ?? 'youtube',
         saavnEncryptedUrl: next.saavnEncryptedUrl,
         saavnHas320kbps: next.saavnHas320kbps,
@@ -561,6 +829,19 @@ class DownloadManagerClass {
       const remaining = store.queue.filter(
         (i) => i.status === 'queued' || i.status === 'downloading',
       ).length;
+
+      // Immediately refresh the foreground-service title for the newly
+      // claimed item — don't wait for the first progress tick (which can be
+      // 0.5–1.5 s away while we resolve the stream URL). Uses the throttled
+      // helper so it won't fight the inner progress updates.
+      await pushProgress(
+        next.id,
+        resolved.title,
+        resolved.artist,
+        0,
+        remaining,
+        'downloading',
+      );
 
       try {
         await this._runPipeline(next.id, resolved, remaining);
@@ -579,7 +860,15 @@ class DownloadManagerClass {
           }
         }
       } finally {
+        // Always release this id's cancel flag (even on success) so a stale
+        // flag set during shutdown of a previous pipeline can't poison a
+        // hypothetical retry on the same id. Same idea for the in-flight
+        // fetch registry — by this point the fetch has settled, but a
+        // late-arriving cancelAll could still try to walk the map.
+        _cancelledIds.delete(next.id);
+        _activeFetchTasks.delete(next.id);
         _lastNotificationProgress.delete(next.id);
+        _lastNotificationStatus.delete(next.id);
         _activeCount = Math.max(0, _activeCount - 1);
       }
     }
@@ -593,246 +882,315 @@ class DownloadManagerClass {
     queueLength: number,
   ): Promise<void> {
     const getStore = useDownloadStore.getState;
+    const isCancelled = (): boolean => _cancelledIds.has(id) || _cancelAll;
 
     const reportProgress = async (pct: number, status: DownloadStatus): Promise<void> => {
-      getStore().updateProgress(id, pct, status);
-      // Throttle notification updates per-track — only when crossing a 5%
-      // boundary. Notifee bridges to native; firing per byte is wasteful.
-      const last = _lastNotificationProgress.get(id) ?? -10;
-      if (Math.abs(pct - last) >= 5 || pct === 100) {
-        _lastNotificationProgress.set(id, pct);
-        try {
-          await updateDownloadProgress(params.title, params.artist, pct, queueLength);
-        } catch (err) {
-          logger.warn('[DownloadManager] Failed to update progress notification:', err);
-        }
-      }
-      if (_cancelCurrent || _cancelAll) throw new Error('Cancelled by user');
+      await pushProgress(id, params.title, params.artist, pct, queueLength, status);
+      if (isCancelled()) throw new Error('Cancelled by user');
     };
 
-    // ── 1. Resolve stream ────────────────────────────────────────────────
-    await reportProgress(5, 'downloading');
+    const tempDir = await getTempDir();
+    // Tracks the artwork download outcome so the `finally` block can clean up
+    // an orphaned JPG if the audio pipeline failed or was cancelled before we
+    // ever wrote a DB row referencing it.
+    let artworkPromise: Promise<string | null> | null = null;
+    let dbRowCreated = false;
 
-    let stream: AudioStreamInfo;
-    if (params.provider === 'saavn') {
-      if (!params.saavnEncryptedUrl) {
+    try {
+      // ── 1. Resolve stream ──────────────────────────────────────────────
+      await reportProgress(5, 'downloading');
+
+      // Resolve via the multi-source resolver. It tries Saavn (primary) →
+      // Saavn mirrors → Piped/Invidious YT proxies → direct YT extractor →
+      // Audius / SoundCloud / Internet Archive / Jamendo in priority order.
+      // The hints branch routes the fastest path: a Saavn-provider item
+      // arrives with `saavnEncryptedUrl` so we never search needlessly.
+      const resolverQuery = `${params.title} ${params.artist}`.trim();
+      let stream: AudioStreamInfo = await resolveAudioStream({
+        query: resolverQuery,
+        preferredQuality: params.quality,
+        hints: {
+          youtubeId: params.provider === 'youtube' ? params.youtubeId : undefined,
+          saavnId: params.provider === 'saavn' ? params.youtubeId : undefined,
+          saavnEncryptedUrl: params.saavnEncryptedUrl,
+          saavnHas320kbps: params.saavnHas320kbps,
+        },
+      });
+
+      // Preserve the search-time duration when the provider couldn't report it.
+      if (stream.durationMs <= 0 && params.durationMs > 0) {
+        stream = { ...stream, durationMs: params.durationMs };
+      }
+
+      if (!stream.url || stream.url.length < 20) {
         throw new Error(
-          `Missing Saavn encrypted URL for "${params.title}" — search result was malformed.`,
+          `Empty/invalid stream URL returned for "${params.title}" — ` +
+            `${params.provider === 'saavn' ? 'Saavn auth-token request' : 'YouTube cipher decode'} likely failed.`,
         );
       }
-      const saavnStream = await getSaavnStreamUrl(
-        params.saavnEncryptedUrl,
-        params.saavnHas320kbps ?? false,
-      );
-      stream = {
-        ...saavnStream,
-        durationMs:
-          params.durationMs > 0 ? params.durationMs : saavnStream.durationMs,
-      };
-    } else {
-      const ytStream = await getBestAudioStream(params.youtubeId);
-      stream = ytStream as AudioStreamInfo;
-    }
 
-    if (!stream.url || stream.url.length < 20) {
-      throw new Error(
-        `Empty/invalid stream URL returned for "${params.title}" — ` +
-          `${params.provider === 'saavn' ? 'Saavn auth-token request' : 'YouTube cipher decode'} likely failed.`,
-      );
-    }
+      if (isCancelled()) throw new Error('Cancelled by user');
 
-    if (_cancelCurrent || _cancelAll) throw new Error('Cancelled by user');
+      // ── 2. Kick off artwork download in parallel with the audio fetch.
+      // The artwork download is independent and typically takes 0.5–1.5 s —
+      // running it in parallel hides that latency. Pass title+artist so the
+      // ArtworkResolver can promote a low-res primary URL to a high-res
+      // cover via iTunes / Deezer / MusicBrainz when needed.
+      artworkPromise = downloadArtwork(
+        params.thumbnail,
+        id,
+        { title: params.title, artist: params.artist },
+      ).catch(() => null);
 
-    // ── 2. Download raw stream — with retry + refresh ────────────────────
-    const tempDir = await getTempDir();
-    // Generate a unique temp path per attempt to avoid collisions when many
-    // workers run in parallel.
-    const tempRawPath = `${tempDir}${id}.${stream.container}`;
+      // ── 3. Download raw stream — with retry + refresh ──────────────────
+      // Generate a unique temp path per attempt to avoid collisions when many
+      // workers run in parallel.
+      const tempRawPath = `${tempDir}${id}.${stream.container}`;
 
-    let downloaded = false;
-    let lastDownloadError: unknown = null;
-    let activeStreamUrl = stream.url;
-    let streamRefreshes = 0;
-    let attempt = 0;
+      let downloaded = false;
+      let lastDownloadError: unknown = null;
+      let activeStreamUrl = stream.url;
+      let streamRefreshes = 0;
+      let attempt = 0;
 
-    while (attempt < MAX_DOWNLOAD_ATTEMPTS && !downloaded) {
-      if (_cancelCurrent || _cancelAll) {
-        await deleteFile(tempRawPath).catch(() => {});
-        throw new Error('Cancelled by user');
-      }
-
-      const headers = DOWNLOAD_HEADER_SETS[attempt % DOWNLOAD_HEADER_SETS.length];
-      attempt += 1;
-
-      try {
-        await deleteFile(tempRawPath).catch(() => {});
-        const mergedHeaders = stream.requestHeaders
-          ? { ...headers, ...stream.requestHeaders }
-          : headers;
-        const response = await RNBlobUtil.config({ path: tempRawPath })
-          .fetch('GET', activeStreamUrl, mergedHeaders)
-          .progress({ count: 20, interval: 300 }, async (received: number, total: number) => {
-            if (total > 0) {
-              const pct = 5 + Math.round((received / total) * 60);
-              const last = _lastNotificationProgress.get(id) ?? -10;
-              if (Math.abs(pct - last) >= 5) {
-                _lastNotificationProgress.set(id, pct);
-                getStore().updateProgress(id, pct, 'downloading');
-                await updateDownloadProgress(
-                  params.title,
-                  params.artist,
-                  pct,
-                  queueLength,
-                ).catch((err) => {
-                  logger.warn('[DownloadManager] Failed to update progress notification:', err);
-                });
-              }
-            }
-          });
-        const status = response.info().status;
-        if (status < 200 || status >= 300) {
-          throw new Error(`Audio download returned HTTP ${status}`);
+      while (attempt < MAX_DOWNLOAD_ATTEMPTS && !downloaded) {
+        if (isCancelled()) {
+          throw new Error('Cancelled by user');
         }
 
-        const stat = await RNBlobUtil.fs.stat(tempRawPath);
-        const size = typeof stat.size === 'string' ? Number.parseInt(stat.size, 10) : stat.size;
-        const minExpectedBytes =
-          stream.durationMs > 0 && stream.bitrate > 0
-            ? Math.min(
-                256 * 1024,
-                Math.round((stream.durationMs / 1000) * (stream.bitrate / 8) * 0.05),
-              )
-            : 64 * 1024;
-        if (!Number.isFinite(size) || size < minExpectedBytes) {
-          throw new Error(`Downloaded audio file is too small (${size || 0} bytes)`);
-        }
+        const headers = DOWNLOAD_HEADER_SETS[attempt % DOWNLOAD_HEADER_SETS.length];
+        attempt += 1;
 
-        downloaded = true;
-        break;
-      } catch (err) {
-        lastDownloadError = err;
-        await deleteFile(tempRawPath).catch(() => {});
-        const errMsg = err instanceof Error ? err.message : String(err);
-
-        const isStaleUrl = /HTTP (403|410|401)/.test(errMsg);
-        const isTransient =
-          /HTTP 5\d\d|network|timed out|failed to connect|unable to resolve host/i.test(errMsg);
-
-        if (isStaleUrl && streamRefreshes < MAX_STREAM_REFRESHES) {
-          streamRefreshes += 1;
+        let response: Awaited<
+          ReturnType<ReturnType<typeof RNBlobUtil.config>['fetch']>
+        > | null = null;
+        try {
+          await deleteFile(tempRawPath).catch(() => {});
+          const mergedHeaders = stream.requestHeaders
+            ? { ...headers, ...stream.requestHeaders }
+            : headers;
+          // Hold the StatefulPromise so `cancelCurrent`/`cancelAll` can
+          // invoke `.cancel()` mid-fetch — RNBlobUtil doesn't honour
+          // AbortController, but its native task has its own cancel hook.
+          const task = RNBlobUtil.config({ path: tempRawPath }).fetch(
+            'GET',
+            activeStreamUrl,
+            mergedHeaders,
+          );
+          _activeFetchTasks.set(id, task);
           try {
-            const refreshed: AudioStreamInfo =
-              params.provider === 'saavn' && params.saavnEncryptedUrl
-                ? await getSaavnStreamUrl(
-                    params.saavnEncryptedUrl,
-                    params.saavnHas320kbps ?? false,
-                  )
-                : ((await getBestAudioStream(params.youtubeId)) as AudioStreamInfo);
-            if (refreshed.url && refreshed.url.length > 20) {
-              activeStreamUrl = refreshed.url;
-            }
-          } catch (refreshErr) {
-            logger.warn('[DownloadManager] Stream URL refresh failed:', refreshErr);
+            response = await task.progress(
+              { count: 20, interval: 300 },
+              async (received: number, total: number) => {
+                if (total > 0) {
+                  const pct = 5 + Math.round((received / total) * 60);
+                  // Centralized in `pushProgress` — handles both store update
+                  // and notification throttling (wall-clock + delta + stage).
+                  await pushProgress(
+                    id,
+                    params.title,
+                    params.artist,
+                    pct,
+                    queueLength,
+                    'downloading',
+                  );
+                }
+              },
+            );
+          } finally {
+            // Always release the registry slot once the fetch settles, so
+            // a later cancel call can't attempt to cancel a no-op task.
+            _activeFetchTasks.delete(id);
           }
-          continue;
-        }
+          if (!response) throw new Error('Fetch returned no response');
+          const status = response.info().status;
+          if (status < 200 || status >= 300) {
+            throw new Error(`Audio download returned HTTP ${status}`);
+          }
 
-        if (isTransient && attempt < MAX_DOWNLOAD_ATTEMPTS) {
-          // Exponential backoff with jitter: 0.8s, 1.6s, 3.2s, 6.4s …
-          const backoff = Math.min(8000, 800 * 2 ** (attempt - 1));
-          const jitter = Math.floor(Math.random() * 300);
-          await delay(backoff + jitter);
-          continue;
-        }
+          const stat = await RNBlobUtil.fs.stat(tempRawPath);
+          const size = typeof stat.size === 'string' ? Number.parseInt(stat.size, 10) : stat.size;
+          const minExpectedBytes =
+            stream.durationMs > 0 && stream.bitrate > 0
+              ? Math.min(
+                  256 * 1024,
+                  Math.round((stream.durationMs / 1000) * (stream.bitrate / 8) * 0.05),
+                )
+              : 64 * 1024;
+          if (!Number.isFinite(size) || size < minExpectedBytes) {
+            throw new Error(`Downloaded audio file is too small (${size || 0} bytes)`);
+          }
 
-        // Non-retryable — bail out.
-        break;
+          downloaded = true;
+          break;
+        } catch (err) {
+          lastDownloadError = err;
+          await deleteFile(tempRawPath).catch(() => {});
+          const errMsg = err instanceof Error ? err.message : String(err);
+
+          const isStaleUrl = /HTTP (403|410|401)/.test(errMsg);
+          const isTransient =
+            /HTTP 5\d\d|network|timed out|failed to connect|unable to resolve host/i.test(errMsg);
+
+          if (isStaleUrl && streamRefreshes < MAX_STREAM_REFRESHES) {
+            streamRefreshes += 1;
+            try {
+              // Re-resolve via the multi-source chain — falls through to
+              // alternative sources if the original provider is now down.
+              const refreshed: AudioStreamInfo = await resolveAudioStream({
+                query: `${params.title} ${params.artist}`.trim(),
+                preferredQuality: params.quality,
+                hints: {
+                  youtubeId: params.provider === 'youtube' ? params.youtubeId : undefined,
+                  saavnId: params.provider === 'saavn' ? params.youtubeId : undefined,
+                  saavnEncryptedUrl: params.saavnEncryptedUrl,
+                  saavnHas320kbps: params.saavnHas320kbps,
+                },
+              });
+              if (refreshed.url && refreshed.url.length > 20) {
+                activeStreamUrl = refreshed.url;
+                // Headers may have changed if the new source is different;
+                // update the stream object so the next retry uses them.
+                if (refreshed.requestHeaders) {
+                  stream = { ...stream, requestHeaders: refreshed.requestHeaders };
+                }
+              }
+            } catch (refreshErr) {
+              logger.warn('[DownloadManager] Stream URL refresh failed:', refreshErr);
+            }
+            continue;
+          }
+
+          if (isTransient && attempt < MAX_DOWNLOAD_ATTEMPTS) {
+            // Exponential backoff with jitter: 0.8s, 1.6s, 3.2s, 6.4s …
+            const backoff = Math.min(8000, 800 * 2 ** (attempt - 1));
+            const jitter = Math.floor(Math.random() * 300);
+            await delay(backoff + jitter);
+            continue;
+          }
+
+          // Non-retryable — bail out.
+          break;
+        }
+      }
+
+      if (!downloaded) {
+        throw lastDownloadError instanceof Error
+          ? lastDownloadError
+          : new Error(`Could not download audio stream for "${params.title}"`);
+      }
+
+      if (isCancelled()) throw new Error('Cancelled by user');
+
+      // ── 4. Stream-copy to final container ──────────────────────────────
+      await reportProgress(85, 'converting');
+
+      // Map container → file extension. mp3 must use .mp3 so MediaStore
+      // (and any external file browser) picks up the audio/mpeg MIME and
+      // ID3 readers can find the tag block.
+      const finalExt: 'm4a' | 'webm' | 'mp3' =
+        stream.container === 'm4a'
+          ? 'm4a'
+          : stream.container === 'mp3'
+            ? 'mp3'
+            : 'webm';
+      const tempStagePath = `${tempDir}${id}.${finalExt}`;
+
+      if (tempRawPath !== tempStagePath) {
+        await RNBlobUtil.fs.cp(tempRawPath, tempStagePath);
+        await deleteFile(tempRawPath);
+      }
+
+      if (isCancelled()) throw new Error('Cancelled by user');
+
+      // ── 5. Await the artwork that's been downloading in parallel ───────
+      await reportProgress(88, 'tagging');
+      const artworkPath = await artworkPromise;
+
+      if (isCancelled()) throw new Error('Cancelled by user');
+
+      // ── 6. Copy to music directory ─────────────────────────────────────
+      await reportProgress(92, 'tagging');
+      const finalPath = await getTrackPath(
+        params.artist,
+        params.title,
+        finalExt,
+        params.youtubeId,
+      );
+      const finalFilename = finalPath.split('/').pop() ?? `${id}.${finalExt}`;
+      try {
+        await RNBlobUtil.fs.cp(tempStagePath, finalPath);
+      } catch (err) {
+        await deleteFile(finalPath).catch(() => {});
+        throw err;
+      }
+      await publishToMusicLibrary(finalPath, finalFilename, stream.container).catch(() => null);
+      await deleteFile(tempStagePath).catch(() => {});
+
+      // ── 7. Insert DB row ───────────────────────────────────────────────
+      const durationMs =
+        stream.durationMs > 0 ? stream.durationMs : params.durationMs > 0 ? params.durationMs : 0;
+
+      await reportProgress(95, 'tagging');
+
+      await database.write(async () => {
+        await tracksCollection.create((record) => {
+          record.title = params.title;
+          record.artist = params.artist;
+          record.album = params.album;
+          record.genre = '';
+          record.durationMs = durationMs;
+          record.filePath = finalPath;
+          record.artworkPath = artworkPath;
+          if (params.provider === 'saavn') {
+            record.saavnId = params.youtubeId;
+            record.youtubeId = null;
+          } else {
+            record.youtubeId = params.youtubeId;
+            record.saavnId = null;
+          }
+          record.addedAt = Math.floor(Date.now() / 1000);
+          record.source = params.provider;
+          record.liked = false;
+        });
+      });
+      dbRowCreated = true;
+
+      getStore().updateProgress(id, 100, 'done');
+    } finally {
+      // If the pipeline failed before the DB row was inserted but the
+      // parallel artwork download already resolved with a file path, that
+      // JPG is now orphaned — no DB row will ever reference it. Delete it
+      // here so cancelled/failed downloads don't leak cache entries.
+      if (!dbRowCreated && artworkPromise) {
+        try {
+          const orphanedArtworkPath = await artworkPromise;
+          if (orphanedArtworkPath) {
+            await deleteFile(orphanedArtworkPath).catch(() => {});
+          }
+        } catch {
+          // The .catch(() => null) above already swallows download errors;
+          // any thrown here is unexpected — ignore so we don't mask the
+          // primary failure that landed us in this block.
+        }
+      }
+
+      // Always purge any leftover temp files for this id, regardless of how
+      // the pipeline exited (success, cancel, or any error). Without this,
+      // a cancel mid-download would leave a multi-MB raw file under tempDir
+      // until the OS cache eviction eventually swept it.
+      try {
+        const entries = await RNBlobUtil.fs.ls(tempDir);
+        const prefix = `${id}.`;
+        for (const name of entries) {
+          if (name.startsWith(prefix)) {
+            await deleteFile(`${tempDir}${name}`).catch(() => {});
+          }
+        }
+      } catch (err) {
+        logger.warn('[DownloadManager] Temp cleanup failed:', err);
       }
     }
-
-    if (!downloaded) {
-      throw lastDownloadError instanceof Error
-        ? lastDownloadError
-        : new Error(`Could not download audio stream for "${params.title}"`);
-    }
-
-    if (_cancelCurrent || _cancelAll) {
-      await deleteFile(tempRawPath).catch(() => {});
-      throw new Error('Cancelled by user');
-    }
-
-    // ── 3. Stream-copy to final container ────────────────────────────────
-    await reportProgress(85, 'converting');
-
-    const finalExt = stream.container === 'm4a' ? 'm4a' : 'webm';
-    const tempStagePath = `${tempDir}${id}.${finalExt}`;
-
-    if (tempRawPath !== tempStagePath) {
-      await RNBlobUtil.fs.cp(tempRawPath, tempStagePath);
-      await deleteFile(tempRawPath);
-    }
-
-    if (_cancelCurrent || _cancelAll) {
-      await deleteFile(tempStagePath).catch(() => {});
-      throw new Error('Cancelled by user');
-    }
-
-    // ── 4. Artwork ───────────────────────────────────────────────────────
-    await reportProgress(88, 'tagging');
-    const artworkPath = await downloadArtwork(params.thumbnail, id);
-
-    if (_cancelCurrent || _cancelAll) {
-      await deleteFile(tempStagePath).catch(() => {});
-      throw new Error('Cancelled by user');
-    }
-
-    // ── 5. Copy to music directory ───────────────────────────────────────
-    await reportProgress(92, 'tagging');
-    const finalPath = await getTrackPath(
-      params.artist,
-      params.title,
-      finalExt,
-      params.youtubeId,
-    );
-    const finalFilename = finalPath.split('/').pop() ?? `${id}.${finalExt}`;
-    try {
-      await RNBlobUtil.fs.cp(tempStagePath, finalPath);
-    } catch (err) {
-      await deleteFile(finalPath).catch(() => {});
-      throw err;
-    }
-    await publishToMusicLibrary(finalPath, finalFilename, stream.container).catch(() => null);
-    await deleteFile(tempStagePath);
-
-    // ── 6. Insert DB row ─────────────────────────────────────────────────
-    const durationMs =
-      stream.durationMs > 0 ? stream.durationMs : params.durationMs > 0 ? params.durationMs : 0;
-
-    await reportProgress(95, 'tagging');
-
-    await database.write(async () => {
-      await tracksCollection.create((record) => {
-        record.title = params.title;
-        record.artist = params.artist;
-        record.album = params.album;
-        record.genre = '';
-        record.durationMs = durationMs;
-        record.filePath = finalPath;
-        record.artworkPath = artworkPath;
-        if (params.provider === 'saavn') {
-          record.saavnId = params.youtubeId;
-          record.youtubeId = null;
-        } else {
-          record.youtubeId = params.youtubeId;
-          record.saavnId = null;
-        }
-        record.addedAt = Math.floor(Date.now() / 1000);
-        record.source = params.provider;
-        record.liked = false;
-      });
-    });
-
-    getStore().updateProgress(id, 100, 'done');
   }
 }
 

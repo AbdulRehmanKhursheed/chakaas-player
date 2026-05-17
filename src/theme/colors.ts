@@ -22,6 +22,13 @@ export const palette = {
   success: '#34C759',
   error: '#FF3B30',
   warning: '#FF9F0A',
+
+  // Glass / shimmer tokens — used by frosted headers and skeleton placeholders.
+  // Kept in `palette` so both dark and light themes can pick them up without
+  // duplicating values.
+  glass: 'rgba(20,20,22,0.7)',
+  shimmerBase: '#222222',
+  shimmerHighlight: '#333333',
 } as const;
 
 export const darkColors = {

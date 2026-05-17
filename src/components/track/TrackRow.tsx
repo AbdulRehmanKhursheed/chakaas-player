@@ -80,7 +80,8 @@ const indicatorStyles = StyleSheet.create({
 
 // ─── Duration formatter ──────────────────────────────────────────────────────
 
-function formatDuration(ms: number): string {
+function formatDuration(ms: number | null | undefined): string {
+  if (!ms || !Number.isFinite(ms) || ms <= 0) return '--:--';
   const totalSec = Math.round(ms / 1000);
   const minutes = Math.floor(totalSec / 60);
   const seconds = totalSec % 60;
@@ -99,7 +100,7 @@ interface TrackRowProps {
 
 // ─── Component ───────────────────────────────────────────────────────────────
 
-export function TrackRow({
+function TrackRowImpl({
   track,
   isPlaying = false,
   onPress,
@@ -120,7 +121,14 @@ export function TrackRow({
   }, []);
 
   const handleLongPress = useCallback(() => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    // Fire-and-forget — expo-haptics returns a Promise we intentionally
+    // don't await, and we never want a missing native module on an older
+    // device to crash the press handler.
+    try {
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    } catch {
+      // ignore
+    }
     onLongPress();
   }, [onLongPress]);
 
@@ -146,6 +154,9 @@ export function TrackRow({
         onPressIn={handlePressIn}
         onPressOut={handlePressOut}
         delayLongPress={350}
+        accessibilityRole="button"
+        accessibilityLabel={`${track.title} by ${track.artist}`}
+        accessibilityState={{ selected: isPlaying }}
       >
         {/* Artwork */}
         {showArtwork && (
@@ -196,6 +207,8 @@ export function TrackRow({
             style={styles.menuButton}
             onPress={handleLongPress}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 4 }}
+            accessibilityRole="button"
+            accessibilityLabel="More options"
           >
             <Ionicons name="ellipsis-vertical" size={17} color="#8E8E93" />
           </TouchableOpacity>
@@ -204,6 +217,12 @@ export function TrackRow({
     </Animated.View>
   );
 }
+
+// Memoised so reordering / unrelated parent renders don't bounce every row
+// in a long list. The default shallow compare is what we want: parent
+// passes new `onPress` callbacks via stable `useCallback`, so identity is
+// preserved across renders that don't actually affect this row.
+export const TrackRow = React.memo(TrackRowImpl);
 
 // ─── Styles ──────────────────────────────────────────────────────────────────
 

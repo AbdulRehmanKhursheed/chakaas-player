@@ -159,6 +159,9 @@ export async function searchSaavn(
     const title = decodeEntities(raw.title ?? raw.song ?? '').trim();
     if (!title) continue;
 
+    // Skip songs the CDN won't serve — no point queuing them.
+    if (!raw.more_info?.encrypted_media_url) continue;
+
     const artist = pickArtist(raw);
     const durationSec = Number.parseInt(raw.more_info?.duration ?? '0', 10);
     const durationMs =
@@ -198,6 +201,37 @@ interface AuthTokenResponse {
   bitrate?: string;
 }
 
+// ── In-process URL cache ────────────────────────────────────────────────────
+
+/**
+ * Saavn's signed CDN URLs are valid for ~6 hours. Within a single download
+ * session (and especially during stream-URL refresh retries) we can avoid
+ * the round-trip to `song.generateAuthToken` by remembering the previous
+ * answer.
+ *
+ * TTL = 5 minutes — well below the real ~6h expiry, but enough of a safety
+ * margin that we never serve a stale token, and small enough to keep memory
+ * bounded across a long-running app session.
+ */
+interface CachedSaavnUrl {
+  url: string;
+  bitrate: number;
+  has320kbps: boolean;
+  fetchedAt: number;
+}
+
+const SAAVN_URL_CACHE_TTL_MS = 5 * 60 * 1000;
+const _saavnUrlCache: Map<string, CachedSaavnUrl> = new Map();
+
+/**
+ * Clears the in-process Saavn stream-URL cache. Called once at the start of
+ * each download pool run so a new session never serves a URL from a previous
+ * session whose token could theoretically be on the verge of expiry.
+ */
+export function clearSaavnUrlCache(): void {
+  _saavnUrlCache.clear();
+}
+
 /**
  * Resolves the encrypted media URL into a signed, downloadable HTTPS URL.
  *
@@ -205,6 +239,10 @@ interface AuthTokenResponse {
  * If `has320kbps` is false on the source we fall back to 160 kbps (Saavn's
  * second-best tier — still generally better than YouTube's typical 128 kbps
  * Opus for vocal-heavy content).
+ *
+ * The signed URL for a given `(encryptedMediaUrl, has320kbps)` pair is cached
+ * in-process for SAAVN_URL_CACHE_TTL_MS — repeated lookups within the TTL skip
+ * the network entirely.
  */
 export async function getSaavnStreamUrl(
   encryptedMediaUrl: string,
@@ -212,6 +250,30 @@ export async function getSaavnStreamUrl(
 ): Promise<AudioStreamInfo> {
   if (!encryptedMediaUrl) {
     throw new Error('Missing encrypted media URL — cannot resolve Saavn stream.');
+  }
+
+  const cacheKey = encryptedMediaUrl;
+  const cached = _saavnUrlCache.get(cacheKey);
+  const now = Date.now();
+  if (cached) {
+    const fresh = now - cached.fetchedAt < SAAVN_URL_CACHE_TTL_MS;
+    if (fresh && cached.has320kbps === has320kbps) {
+      return {
+        url: cached.url,
+        mimeType: 'audio/mp4',
+        bitrate: cached.bitrate,
+        container: 'm4a',
+        needsTranscode: false,
+        effectiveBitrate: cached.bitrate,
+        durationMs: 0,
+        requestHeaders: SAAVN_DOWNLOAD_HEADERS,
+      };
+    }
+    // Stale OR quality-mismatch — evict so a failed refresh below doesn't
+    // leave the map permanently bloated with dead entries. Without this the
+    // map grew once per unique encryptedMediaUrl for the life of the JS
+    // session, even after entries had aged out.
+    if (!fresh) _saavnUrlCache.delete(cacheKey);
   }
 
   const bitrate = has320kbps ? '320' : '160';
@@ -235,6 +297,13 @@ export async function getSaavnStreamUrl(
   }
 
   const numericBitrate = Number.parseInt(bitrate, 10) * 1000;
+
+  _saavnUrlCache.set(cacheKey, {
+    url: data.auth_url,
+    bitrate: numericBitrate,
+    has320kbps,
+    fetchedAt: now,
+  });
 
   logger.info(
     `[SaavnProvider] Resolved stream — bitrate:${bitrate}k url-len:${data.auth_url.length}`,

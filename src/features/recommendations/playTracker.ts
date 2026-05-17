@@ -19,8 +19,9 @@
 import { AppState } from 'react-native';
 import TrackPlayer, { Event } from 'react-native-track-player';
 import { database, playsCollection, tracksCollection } from '@/db';
-import { Q } from '@nozbe/watermelondb';
+import type { Track } from '@/db/models/Track';
 import { bumpArtistFromPlay } from './artistAffinity';
+import { addToSkipMemory, removeFromSkipMemory } from './skipMemory';
 import { logger } from '@/utils/logger';
 
 interface LastTrackSnapshot {
@@ -42,36 +43,106 @@ async function flushLastPlay(positionSec: number): Promise<void> {
   const { id, artist, durationSec } = lastTrack;
   lastTrack = null;
 
-  const completionRatio =
-    durationSec > 0 ? Math.min(1, Math.max(0, positionSec / durationSec)) : 0;
-  // Heuristic: if user moved on with > 30% played, treat as a real listen.
-  // < 30% with the user advancing is a skip.
-  const wasSkipped = completionRatio < 0.3;
-
-  // 1. Persist a Plays row (best-effort; failure is non-fatal).
   try {
-    const tracks = await tracksCollection.query(Q.where('id', id)).fetch();
-    if (tracks.length > 0) {
-      await database.write(async () => {
-        await playsCollection.create((play) => {
-          (play as any).trackId = id;
-          (play as any).playedAt = Math.floor(Date.now() / 1000);
-          (play as any).durationPlayedMs = Math.round(positionSec * 1000);
-          (play as any).completionRatio = completionRatio;
-          (play as any).wasSkipped = wasSkipped;
-        });
-      });
-    }
-  } catch (err) {
-    logger.warn('[playTracker] Could not write Plays row:', err);
-  }
+    const completionRatio =
+      durationSec > 0 ? Math.min(1, Math.max(0, positionSec / durationSec)) : 0;
+    // Only count as a skip when the user actually heard at least a second of
+    // the track. RNTP can fire `PlaybackActiveTrackChanged` with
+    // `lastPosition === 0` on auto-advance (queue stepped to the next track
+    // before the previous one's position event landed), which previously
+    // marked perfectly-played tracks as skips and polluted skip memory.
+    const wasSkipped = positionSec > 1 && completionRatio < 0.3;
 
-  // 2. Update artist affinity.
-  bumpArtistFromPlay(artist, completionRatio, wasSkipped);
-  logger.info(
-    `[playTracker] Logged play: artist="${artist}" ` +
-    `completion=${(completionRatio * 100).toFixed(0)}% skipped=${wasSkipped}`,
-  );
+    // 1. Persist a Plays row + bump denormalised play_count (best-effort).
+    //    Skips (completion < 0.3) still write the Plays row so the engine has
+    //    skip signal, but do NOT bump play_count — that surface is meant for
+    //    "songs you actually listened to".
+    let trackRef: Track | null = null;
+    try {
+      const track = await tracksCollection.find(id).catch(() => null) as Track | null;
+      trackRef = track;
+      if (track) {
+        await database.write(async () => {
+          await playsCollection.create((play) => {
+            (play as unknown as {
+              trackId: string;
+              playedAt: number;
+              durationPlayedMs: number;
+              completionRatio: number;
+              wasSkipped: boolean;
+            }).trackId = id;
+            const p = play as unknown as {
+              trackId: string;
+              playedAt: number;
+              durationPlayedMs: number;
+              completionRatio: number;
+              wasSkipped: boolean;
+            };
+            p.playedAt = Math.floor(Date.now() / 1000);
+            p.durationPlayedMs = Math.round(positionSec * 1000);
+            p.completionRatio = completionRatio;
+            p.wasSkipped = wasSkipped;
+          });
+
+          if (!wasSkipped) {
+            await track.update((t) => {
+              t.playCount = (t.playCount ?? 0) + 1;
+            });
+          }
+        });
+      }
+    } catch (err) {
+      logger.warn('[playTracker] Could not write Plays row:', err);
+    }
+
+    // 1b. Record skip memory so the Discover engine never recommends this
+    //     track again. Library tracks the user themselves added are already
+    //     filtered out of recommendations via the library fingerprint, but
+    //     we still record the skip so the cross-source dedupe (same song,
+    //     different Saavn id) catches it too.
+    //
+    //     Conversely, when the track played through to completion we
+    //     proactively clear any prior skip entry — the user changed their
+    //     mind, and we shouldn't quietly keep a perfectly-loved song out of
+    //     Discover forever.
+    if (wasSkipped && trackRef) {
+      try {
+        addToSkipMemory({
+          id: trackRef.saavnId ?? trackRef.youtubeId ?? null,
+          source: trackRef.source ?? null,
+          title: trackRef.title,
+          artist: trackRef.artist,
+        });
+      } catch (err) {
+        logger.warn('[playTracker] Could not add to skip memory:', err);
+      }
+    } else if (!wasSkipped && trackRef) {
+      try {
+        removeFromSkipMemory({
+          id: trackRef.saavnId ?? trackRef.youtubeId ?? null,
+          source: trackRef.source ?? null,
+          title: trackRef.title,
+          artist: trackRef.artist,
+        });
+      } catch (err) {
+        logger.warn('[playTracker] Could not remove from skip memory:', err);
+      }
+    }
+
+    // 2. Update artist affinity (MMKV write — guarded against storage errors).
+    try {
+      bumpArtistFromPlay(artist, completionRatio, wasSkipped);
+    } catch (err) {
+      logger.warn('[playTracker] Could not bump artist affinity:', err);
+    }
+
+    logger.info(
+      `[playTracker] Logged play: artist="${artist}" ` +
+      `completion=${(completionRatio * 100).toFixed(0)}% skipped=${wasSkipped}`,
+    );
+  } catch (err) {
+    logger.warn('[playTracker] flushLastPlay failed:', err);
+  }
 }
 
 /**
@@ -84,29 +155,31 @@ export function startPlayTracker(): () => void {
   const sub = TrackPlayer.addEventListener(
     Event.PlaybackActiveTrackChanged,
     async (event) => {
-      const { track, lastPosition } = event as {
-        track?: { id?: string; artist?: string; duration?: number } | null;
-        lastPosition?: number;
-      };
-      // Flush the previously active track first.
-      const position =
-        typeof lastPosition === 'number' && lastPosition >= 0
-          ? lastPosition
-          : 0;
-      await flushLastPlay(position);
-
-      // Capture the new active track.
-      if (track && typeof track.id === 'string') {
-        lastTrack = {
-          id: track.id,
-          artist: typeof track.artist === 'string' ? track.artist : 'Unknown Artist',
-          durationSec:
-            typeof track.duration === 'number' && track.duration > 0
-              ? track.duration
-              : 0,
+      try {
+        const { track, lastPosition } = event as {
+          track?: { id?: string; artist?: string; duration?: number } | null;
+          lastPosition?: number;
         };
-      } else {
-        lastTrack = null;
+        const position =
+          typeof lastPosition === 'number' && lastPosition >= 0
+            ? lastPosition
+            : 0;
+        await flushLastPlay(position);
+
+        if (track && typeof track.id === 'string') {
+          lastTrack = {
+            id: track.id,
+            artist: typeof track.artist === 'string' ? track.artist : 'Unknown Artist',
+            durationSec:
+              typeof track.duration === 'number' && track.duration > 0
+                ? track.duration
+                : 0,
+          };
+        } else {
+          lastTrack = null;
+        }
+      } catch (err) {
+        logger.warn('[playTracker] PlaybackActiveTrackChanged handler error:', err);
       }
     },
   );
@@ -114,9 +187,12 @@ export function startPlayTracker(): () => void {
   const queueEndedSub = TrackPlayer.addEventListener(
     Event.PlaybackQueueEnded,
     async () => {
-      // Queue ran out → the last track played to its end.
-      if (lastTrack) {
-        await flushLastPlay(lastTrack.durationSec);
+      try {
+        if (lastTrack) {
+          await flushLastPlay(lastTrack.durationSec);
+        }
+      } catch (err) {
+        logger.warn('[playTracker] PlaybackQueueEnded handler error:', err);
       }
     },
   );

@@ -51,10 +51,36 @@ const CHANNEL_NAME = 'Downloads';
  */
 const FOREGROUND_NOTIFICATION_ID = 'chakaas-dl-foreground';
 
+/**
+ * Stable ID for the rolling "downloads failed" notification. All failures
+ * during a session share this ID so that 12 failures don't produce 12 toasts
+ * in the tray — they collapse into a single rolling notification with a
+ * running count.
+ */
+const ERROR_NOTIFICATION_ID = 'chakaas-dl-errors';
+
+/** Max recent titles preserved in the rolling error notification body. */
+const ERROR_TITLE_BUFFER = 3;
+
 // ── Module-level state ─────────────────────────────────────────────────────
 
 /** Guards against redundant channel-creation calls within the same process. */
 let _channelCreated = false;
+
+/** Count of errors seen since the last `resetErrorNotificationState()`. */
+let _errorCount = 0;
+/** Rolling buffer of the most recent failed titles, oldest first. */
+let _recentErrorTitles: string[] = [];
+
+/**
+ * Resets the rolling error-notification state. Called by DownloadManager at
+ * the start of each new pool run so that the "N downloads failed" count is
+ * scoped to the current session.
+ */
+export function resetErrorNotificationState(): void {
+  _errorCount = 0;
+  _recentErrorTitles = [];
+}
 
 // ── Channel management ─────────────────────────────────────────────────────
 
@@ -227,28 +253,56 @@ export async function stopDownloadForegroundService(
 // ── Error notification ─────────────────────────────────────────────────────
 
 /**
- * Posts a one-shot error notification for a track that failed to download.
- * These are not ongoing and can be dismissed by the user.
+ * Posts (or updates) the rolling error notification for a track that failed
+ * to download. All errors during a session share a single notification ID,
+ * collapsing into a single tray entry that reads e.g.:
+ *
+ *     "3 downloads failed — tap to view"
+ *     Song A, Song B, Song C
+ *
+ * The notification is not ongoing and can be dismissed by the user.
  *
  * @param title   Track title that failed.
- * @param reason  Human-readable failure reason.
+ * @param reason  Human-readable failure reason (used only for the first error
+ *                so that a single-track failure still shows a useful message).
  */
 export async function showDownloadError(
   title: string,
   reason: string,
 ): Promise<void> {
   await ensureNotificationChannel();
+
+  _errorCount += 1;
+  _recentErrorTitles.push(title);
+  if (_recentErrorTitles.length > ERROR_TITLE_BUFFER) {
+    _recentErrorTitles = _recentErrorTitles.slice(-ERROR_TITLE_BUFFER);
+  }
+
+  let displayTitle: string;
+  let displayBody: string;
+  if (_errorCount === 1) {
+    displayTitle = 'Download Failed';
+    displayBody = `${title}: ${reason}`;
+  } else {
+    displayTitle = `${_errorCount} downloads failed — tap to view`;
+    displayBody = _recentErrorTitles.join(', ');
+  }
+
   await notifee.displayNotification({
-    title: 'Download Failed',
-    body: `${title}: ${reason}`,
+    id: ERROR_NOTIFICATION_ID,
+    title: displayTitle,
+    body: displayBody,
     android: {
       channelId: CHANNEL_ID,
       importance: AndroidImportance.DEFAULT,
       smallIcon: 'ic_launcher',
+      onlyAlertOnce: true,
     },
   });
 
-  logger.warn(`[DownloadNotificationService] Error notification: "${title}" — ${reason}`);
+  logger.warn(
+    `[DownloadNotificationService] Error notification (count=${_errorCount}): "${title}" — ${reason}`,
+  );
 }
 
 // ── Foreground event listener ──────────────────────────────────────────────

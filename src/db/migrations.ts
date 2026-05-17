@@ -9,6 +9,12 @@
  *          downloaded from JioSaavn (the Bloomee-style Indian-music source)
  *          alongside the existing YouTube-sourced tracks. The column is
  *          optional so legacy YouTube rows continue to validate.
+ *
+ * v2 → v3: denormalise play counts onto `tracks.play_count`. Lets the
+ *          MostPlayed / PlayCounts hooks read a single column instead of
+ *          scanning every Plays row on each emit. New rows default to 0;
+ *          existing rows are backfilled by `backfillPlayCounts()` on the
+ *          next app launch.
  */
 import {
   schemaMigrations,
@@ -17,6 +23,17 @@ import {
 
 export default schemaMigrations({
   migrations: [
+    {
+      toVersion: 3,
+      steps: [
+        addColumns({
+          table: 'tracks',
+          columns: [
+            { name: 'play_count', type: 'number' },
+          ],
+        }),
+      ],
+    },
     {
       toVersion: 2,
       steps: [

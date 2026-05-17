@@ -49,7 +49,11 @@
       "Bash(awk '{print $2, $11, $12, $13}')",
       "Bash(awk '{print $2, $11, $12}')",
       "Bash(ps -p 15789 -o pid,command)",
-      "Bash(./gradlew --stop)"
+      "Bash(./gradlew --stop)",
+      "Bash(curl *)",
+      "Bash(git stash *)",
+      "Bash(lsof -nP -iTCP:8083 -sTCP:LISTEN)",
+      "Bash(git add *)"
     ]
   }
 }

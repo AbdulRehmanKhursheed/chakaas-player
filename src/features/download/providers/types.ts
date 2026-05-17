@@ -9,6 +9,22 @@
 export type ProviderId = 'youtube' | 'saavn';
 
 /**
+ * All sources the multi-source resolver might attribute a stream to. Optional
+ * field on `AudioStreamInfo` — existing call sites ignore it.
+ */
+export type ResolverSourceId =
+  | 'saavn'
+  | 'saavn-mirror'
+  | 'youtube'
+  | 'piped'
+  | 'invidious'
+  | 'audius'
+  | 'soundcloud'
+  | 'internet_archive'
+  | 'jamendo'
+  | 'hungama';
+
+/**
  * Metadata about an individual audio stream that the DownloadManager will
  * fetch. Mirrors `AudioStreamInfo` from YoutubeExtractor but lifted into a
  * shared module so both providers and the manager can import it without
@@ -21,8 +37,8 @@ export interface AudioStreamInfo {
   mimeType: string;
   /** Source bitrate in bits per second. */
   bitrate: number;
-  /** File-extension hint: 'm4a' (AAC) or 'webm' (Opus). */
-  container: 'm4a' | 'webm';
+  /** File-extension hint: 'm4a' (AAC), 'webm' (Opus), or 'mp3' (MPEG). */
+  container: 'm4a' | 'webm' | 'mp3';
   /** Informational. Always false for Saavn (already AAC). */
   needsTranscode: boolean;
   /** Bitrate the user effectively hears. */
@@ -36,6 +52,12 @@ export interface AudioStreamInfo {
    * default header sets.
    */
   requestHeaders?: Record<string, string>;
+  /**
+   * Source attribution — which resolver branch produced this stream. Useful
+   * for logging / analytics / future quality heuristics. Optional so existing
+   * code keeps working without changes.
+   */
+  source?: ResolverSourceId;
 }
 
 /**

@@ -2,6 +2,7 @@ import React, {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 import {
@@ -13,10 +14,12 @@ import {
   Platform,
   Dimensions,
   StatusBar,
-  ActionSheetIOS,
   Alert,
   ActivityIndicator,
+  RefreshControl,
+  BackHandler,
 } from 'react-native';
+import * as Haptics from 'expo-haptics';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -29,21 +32,28 @@ import { Q } from '@nozbe/watermelondb';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useActiveTrack, usePlaybackState, State } from 'react-native-track-player';
-import { useAllTracks, usePlayCounts } from '@/hooks/useTrackDB';
+import { usePlayCounts } from '@/hooks/useTrackDB';
+import { useSafeTracks } from '@/hooks/useSafeTracks';
 import { getScreenBottomInset } from '@/utils/layout';
 import { EqualizerBars } from '@/components/EqualizerBars';
 import { usePlayerQueue } from '@/features/player/useQueue';
 import { useUIStore } from '@/stores/uiStore';
-import { database, playlistsCollection } from '@/db';
+import { database, playlistsCollection, tracksCollection } from '@/db';
 import type { Playlist } from '@/db/models/Playlist';
 import type { Track } from '@/db/models/Track';
 import { modelToTrack, modelsToTracks } from '@/utils/trackMapper';
 import type { RootStackNavigationProp } from '@/types/navigation';
 import { TrackArtwork } from '@/components/track/TrackArtwork';
+import { BottomSheet } from '@/components/ui/BottomSheet';
+import { PlaylistNameModal } from '@/components/ui/PlaylistNameModal';
+import { SwipeableTrackRow } from '@/components/ui/SwipeableTrackRow';
+import { ListSkeleton } from '@/components/ui/SkeletonShimmer';
+import { BlurView } from 'expo-blur';
 import { AlbumGrid, AlbumItem } from './components/AlbumGrid';
 import { ArtistRow } from './components/ArtistRow';
 import { GenreCard } from './components/GenreCard';
 import { importDeviceAudio } from '@/features/localAudio/LocalAudioImporter';
+import { bulkDeleteTracks, cleanupVoiceNotesAndClips } from '@/db/cleanup';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -129,43 +139,136 @@ interface SortPickerProps {
   onChange: (m: SortMode) => void;
 }
 
-function SortPicker({ mode, onChange }: SortPickerProps) {
-  const labels: Record<SortMode, string> = {
-    recently_added: 'Recently Added',
-    a_z: 'A – Z',
-    most_played: 'Most Played',
-  };
+const SORT_LABELS: Record<SortMode, string> = {
+  recently_added: 'Recently Added',
+  a_z: 'A – Z',
+  most_played: 'Most Played',
+};
 
-  const handlePress = () => {
-    const options = Object.entries(labels).map(([, label]) => label);
-    if (Platform.OS === 'ios') {
-      ActionSheetIOS.showActionSheetWithOptions(
-        { options: [...options, 'Cancel'], cancelButtonIndex: options.length },
-        (index) => {
-          if (index < options.length) {
-            onChange(Object.keys(labels)[index] as SortMode);
-          }
-        },
-      );
-    } else {
-      Alert.alert(
-        'Sort by',
-        undefined,
-        Object.entries(labels).map(([key, label]) => ({
-          text: label,
-          onPress: () => onChange(key as SortMode),
-        })),
-      );
-    }
-  };
+const SORT_KEYS: SortMode[] = ['recently_added', 'a_z', 'most_played'];
+
+function SortPicker({ mode, onChange }: SortPickerProps) {
+  const [sheetOpen, setSheetOpen] = useState(false);
+
+  const handleOpen = useCallback(() => setSheetOpen(true), []);
+  const handleClose = useCallback(() => setSheetOpen(false), []);
+
+  const handlePick = useCallback(
+    (next: SortMode) => {
+      onChange(next);
+      setSheetOpen(false);
+    },
+    [onChange],
+  );
 
   return (
-    <TouchableOpacity onPress={handlePress} style={sortStyles.button}>
-      <Text style={sortStyles.label}>{labels[mode]}</Text>
-      <Text style={sortStyles.chevron}>⌄</Text>
-    </TouchableOpacity>
+    <>
+      <TouchableOpacity onPress={handleOpen} style={sortStyles.button}>
+        <Text style={sortStyles.label}>{SORT_LABELS[mode]}</Text>
+        <Text style={sortStyles.chevron}>⌄</Text>
+      </TouchableOpacity>
+
+      <BottomSheet
+        isVisible={sheetOpen}
+        onClose={handleClose}
+        snapPoint={300}
+        backgroundColor="#F5F5F7"
+      >
+        <View style={sortSheetStyles.header}>
+          <Text style={sortSheetStyles.title}>Sort by</Text>
+        </View>
+        <View style={sortSheetStyles.divider} />
+        {SORT_KEYS.map((key, idx) => {
+          const selected = key === mode;
+          return (
+            <React.Fragment key={key}>
+              <TouchableOpacity
+                onPress={() => handlePick(key)}
+                activeOpacity={0.7}
+                style={sortSheetStyles.row}
+              >
+                <Text
+                  style={[
+                    sortSheetStyles.rowLabel,
+                    selected && sortSheetStyles.rowLabelSelected,
+                  ]}
+                >
+                  {SORT_LABELS[key]}
+                </Text>
+                {selected && (
+                  <Ionicons name="checkmark" size={20} color="#FA233B" />
+                )}
+              </TouchableOpacity>
+              {idx < SORT_KEYS.length - 1 && (
+                <View style={sortSheetStyles.rowSeparator} />
+              )}
+            </React.Fragment>
+          );
+        })}
+        <View style={sortSheetStyles.cancelDivider} />
+        <TouchableOpacity
+          onPress={handleClose}
+          activeOpacity={0.7}
+          style={sortSheetStyles.row}
+        >
+          <Text style={sortSheetStyles.cancelLabel}>Cancel</Text>
+        </TouchableOpacity>
+      </BottomSheet>
+    </>
   );
 }
+
+const sortSheetStyles = StyleSheet.create({
+  header: {
+    paddingHorizontal: 20,
+    paddingTop: 4,
+    paddingBottom: 10,
+  },
+  title: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#8E8E93',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
+  divider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: 'rgba(60,60,67,0.16)',
+    marginHorizontal: 20,
+  },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    height: 54,
+  },
+  rowLabel: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#1D1D1F',
+    letterSpacing: -0.2,
+  },
+  rowLabelSelected: {
+    color: '#FA233B',
+  },
+  rowSeparator: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: 'rgba(60,60,67,0.14)',
+    marginLeft: 20,
+    marginRight: 20,
+  },
+  cancelDivider: {
+    height: 6,
+    backgroundColor: 'transparent',
+  },
+  cancelLabel: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#FA233B',
+    letterSpacing: -0.2,
+  },
+});
 
 const sortStyles = StyleSheet.create({
   button: {
@@ -224,47 +327,85 @@ interface SongRowProps {
   track: Track;
   isActive: boolean;
   isPlaying: boolean;
+  selectMode: boolean;
+  isSelected: boolean;
   onPress: (track: Track) => void;
   onLongPress: (track: Track) => void;
+  onSwipeLike: (track: Track) => void;
+  onSwipeQueue: (track: Track) => void;
 }
 
-function SongRow({ track, isActive, isPlaying, onPress, onLongPress }: SongRowProps) {
+function SongRow({
+  track,
+  isActive,
+  isPlaying,
+  selectMode,
+  isSelected,
+  onPress,
+  onLongPress,
+  onSwipeLike,
+  onSwipeQueue,
+}: SongRowProps) {
   const handlePress = useCallback(() => onPress(track), [track, onPress]);
-  const handleLongPress = useCallback(() => onLongPress(track), [track, onLongPress]);
+  const handleLongPress = useCallback(() => {
+    onLongPress(track);
+  }, [track, onLongPress]);
+  const handleSwipeLike = useCallback(() => onSwipeLike(track), [track, onSwipeLike]);
+  const handleSwipeQueue = useCallback(() => onSwipeQueue(track), [track, onSwipeQueue]);
 
   return (
-    <TouchableOpacity
-      activeOpacity={0.75}
-      onPress={handlePress}
-      onLongPress={handleLongPress}
-      style={[songRowStyles.container, isActive && songRowStyles.containerActive]}
+    <SwipeableTrackRow
+      onSwipeLike={handleSwipeLike}
+      onSwipeQueue={handleSwipeQueue}
+      disabled={selectMode}
     >
-      <TrackArtwork uri={track.artworkPath} blurhash={null} size={50} borderRadius={8} />
-      <View style={songRowStyles.meta}>
-        <Text
-          style={[songRowStyles.title, isActive && songRowStyles.titleActive]}
-          numberOfLines={1}
-        >
-          {track.title}
-        </Text>
-        <Text style={songRowStyles.artist} numberOfLines={1}>
-          {track.artist}
-          {track.album ? ` · ${track.album}` : ''}
-        </Text>
-      </View>
-      {isActive ? (
-        <EqualizerBars
-          playing={isPlaying}
-          count={3}
-          barWidth={3}
-          gap={3}
-          height={16}
-          color="#FA233B"
-        />
-      ) : (
-        <Text style={songRowStyles.duration}>{formatDuration(track.durationMs)}</Text>
-      )}
-    </TouchableOpacity>
+      <TouchableOpacity
+        activeOpacity={0.75}
+        onPress={handlePress}
+        onLongPress={handleLongPress}
+        delayLongPress={280}
+        style={[
+          songRowStyles.container,
+          isActive && songRowStyles.containerActive,
+          isSelected && songRowStyles.containerSelected,
+        ]}
+      >
+        {selectMode ? (
+          <View style={songRowStyles.checkboxWrap}>
+            <Ionicons
+              name={isSelected ? 'checkmark-circle' : 'radio-button-off-outline'}
+              size={26}
+              color={isSelected ? '#FA233B' : '#C7C7CC'}
+            />
+          </View>
+        ) : null}
+        <TrackArtwork uri={track.artworkPath} blurhash={null} size={50} borderRadius={8} />
+        <View style={songRowStyles.meta}>
+          <Text
+            style={[songRowStyles.title, isActive && songRowStyles.titleActive]}
+            numberOfLines={1}
+          >
+            {track.title}
+          </Text>
+          <Text style={songRowStyles.artist} numberOfLines={1}>
+            {track.artist}
+            {track.album ? ` · ${track.album}` : ''}
+          </Text>
+        </View>
+        {selectMode ? null : isActive ? (
+          <EqualizerBars
+            playing={isPlaying}
+            count={3}
+            barWidth={3}
+            gap={3}
+            height={16}
+            color="#FA233B"
+          />
+        ) : (
+          <Text style={songRowStyles.duration}>{formatDuration(track.durationMs)}</Text>
+        )}
+      </TouchableOpacity>
+    </SwipeableTrackRow>
   );
 }
 
@@ -278,6 +419,15 @@ const songRowStyles = StyleSheet.create({
   },
   containerActive: {
     backgroundColor: 'rgba(250,35,59,0.06)',
+  },
+  containerSelected: {
+    backgroundColor: 'rgba(250,35,59,0.08)',
+  },
+  checkboxWrap: {
+    width: 26,
+    height: 26,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   meta: { flex: 1 },
   title: {
@@ -554,10 +704,44 @@ function buildGenreGroups(tracks: Track[]): GenreGroup[] {
 
 export function LibraryScreen() {
   const navigation = useNavigation<RootStackNavigationProp>();
-  const { playTrack } = usePlayerQueue();
+  const { playTrack, addTrack } = usePlayerQueue();
   const insets = useSafeAreaInsets();
+  const [refreshing, setRefreshing] = useState(false);
 
-  const allTracks = useAllTracks();
+  // ── Layer C — UI render filter ────────────────────────────────────────────
+  // Even if a junk row somehow slips past Layer A (import filter) and Layer B
+  // (DB cleanup), the user must never see it. `useSafeTracks` is the LAST
+  // line of defense — it filters the WatermelonDB observable result BEFORE
+  // anything downstream consumes it. Every derivation below (`filteredTracks`,
+  // `artists`, `albums`, `genres`, `hasImportedDeviceAudio`, the header
+  // count) is built off `safeTracks`. The same hook is now used by every
+  // user-visible screen so junk can never leak through Home/Search/Album/etc.
+  //
+  // Saavn / YouTube downloads are app-managed and known-clean — they bypass
+  // the filter inside the hook so a buggy heuristic can never wipe a real
+  // download.
+  const safeTracks = useSafeTracks();
+
+  // Log only when the safeTracks count changes so the Metro terminal stays
+  // readable across re-renders.
+  const lastCountsRef = useRef<string>('');
+  useEffect(() => {
+    const sig = `${safeTracks.length}`;
+    if (sig !== lastCountsRef.current) {
+      lastCountsRef.current = sig;
+      // eslint-disable-next-line no-console
+      console.log('[Library] safeTracks count:', safeTracks.length);
+    }
+  }, [safeTracks.length]);
+
+  // Belt-and-suspenders: run DB cleanup once when the Library screen mounts.
+  // Past filter fixes failed because rows imported BEFORE the filter change
+  // were never re-evaluated. Running cleanup on screen mount means the next
+  // user session self-heals without waiting for them to tap a button.
+  useEffect(() => {
+    void cleanupVoiceNotesAndClips();
+  }, []);
+
   const playCounts = usePlayCounts();
   const activeRntpTrack = useActiveTrack();
   const activeTrackId = activeRntpTrack?.id ? String(activeRntpTrack.id) : null;
@@ -575,13 +759,27 @@ export function LibraryScreen() {
   const [sortMode, setSortMode] = useState<SortMode>('recently_added');
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
   const [isImportingAudio, setIsImportingAudio] = useState(false);
+  const [playlistModalOpen, setPlaylistModalOpen] = useState(false);
+
+  // ── Multi-select / bulk-delete state ─────────────────────────────────────
+  // Ephemeral by design — purely in-component so closing the screen or app
+  // cleanly exits the mode. The Set keeps toggle/contains checks O(1) even
+  // when 748+ junk rows are selected at once.
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  const exitSelectMode = useCallback(() => {
+    setSelectMode(false);
+    setSelectedIds(new Set());
+  }, []);
 
   // Once the user has imported any device audio at all, hide the big
   // promo button — it's only there for the first-launch onboarding moment.
   // They can always re-scan from Settings if they add new files later.
   const hasImportedDeviceAudio = useMemo(
-    () => allTracks.some((t) => t.source === 'local'),
-    [allTracks],
+    () => safeTracks.some((t) => t.source === 'local'),
+    [safeTracks],
   );
 
   // Recompute the list-bottom inset whenever the active-track state changes,
@@ -604,7 +802,7 @@ export function LibraryScreen() {
   // ── Songs tab: filtered + sorted + sectioned ──
 
   const filteredTracks = useMemo(() => {
-    let result = allTracks;
+    let result = safeTracks;
     const trimmed = debouncedQuery.trim();
     if (trimmed) {
       const q = trimmed.toLowerCase();
@@ -626,7 +824,7 @@ export function LibraryScreen() {
       default:
         return result;
     }
-  }, [allTracks, debouncedQuery, sortMode, playCounts]);
+  }, [safeTracks, debouncedQuery, sortMode, playCounts]);
 
   // Build section-aware flat list for Songs tab
   const songsListData = useMemo((): SongsListItem[] => {
@@ -651,7 +849,7 @@ export function LibraryScreen() {
 
   const artists = useMemo(() => {
     const map = new Map<string, { count: number; artworkPath: string | null }>();
-    for (const t of allTracks) {
+    for (const t of safeTracks) {
       const key = t.artist || 'Unknown Artist';
       const existing = map.get(key);
       if (existing) {
@@ -666,13 +864,13 @@ export function LibraryScreen() {
     return [...map.entries()]
       .map(([name, data]) => ({ name, ...data }))
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [allTracks]);
+  }, [safeTracks]);
 
   // ── Albums tab ──
 
   const albums = useMemo((): AlbumItem[] => {
     const map = new Map<string, { artist: string; trackCount: number; artworkPath: string | null }>();
-    for (const t of allTracks) {
+    for (const t of safeTracks) {
       const key = t.album || 'Unknown Album';
       const existing = map.get(key);
       if (existing) {
@@ -691,11 +889,11 @@ export function LibraryScreen() {
     return [...map.entries()]
       .map(([name, data]) => ({ name, ...data }))
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [allTracks]);
+  }, [safeTracks]);
 
   // ── Genres tab ──
 
-  const genreGroups = useMemo(() => buildGenreGroups(allTracks), [allTracks]);
+  const genreGroups = useMemo(() => buildGenreGroups(safeTracks), [safeTracks]);
 
   // ── Playlists tab: grid pairs ──
 
@@ -711,21 +909,173 @@ export function LibraryScreen() {
 
   const handleTrackPress = useCallback(
     (track: Track) => {
+      // In selection mode a tap toggles membership; in normal mode it plays.
+      if (selectMode) {
+        void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          if (next.has(track.id)) next.delete(track.id);
+          else next.add(track.id);
+          return next;
+        });
+        return;
+      }
       void playTrack(modelToTrack(track), modelsToTracks(filteredTracks));
       navigation.navigate('NowPlaying');
     },
-    [playTrack, filteredTracks, navigation],
+    [playTrack, filteredTracks, navigation, selectMode],
   );
 
   const openSheet = useUIStore((s) => s.openSheet);
   const handleLongPress = useCallback(
     (track: Track) => {
-      // Open the global track context menu sheet (Play Next / Add to Queue /
-      // Like / Delete / etc.). Wired centrally in <GlobalSheets />.
-      openSheet('track-context', track.id);
+      // Long-press behaviour:
+      //  • Not in select mode → enter select mode and seed the set with this
+      //    row. Suppress the usual context sheet so the user gets a single
+      //    obvious affordance (the toolbar).
+      //  • Already in select mode → just toggle this row, same as tap.
+      if (!selectMode) {
+        void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+        setSelectMode(true);
+        setSelectedIds(new Set([track.id]));
+        return;
+      }
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(track.id)) next.delete(track.id);
+        else next.add(track.id);
+        return next;
+      });
+      // The full track-context sheet is still reachable from the global
+      // sheets infrastructure; we only intercept long-press while the user
+      // is curating a selection. The original entry point lives unchanged
+      // via `openSheet('track-context', ...)` elsewhere.
+      void openSheet;
     },
-    [openSheet],
+    [openSheet, selectMode],
   );
+
+  // ── Selection-mode handlers ─────────────────────────────────────────────
+
+  const visibleTrackIds = useMemo(
+    () => filteredTracks.map((t) => t.id),
+    [filteredTracks],
+  );
+  const allVisibleSelected = useMemo(() => {
+    if (visibleTrackIds.length === 0) return false;
+    for (const id of visibleTrackIds) {
+      if (!selectedIds.has(id)) return false;
+    }
+    return true;
+  }, [visibleTrackIds, selectedIds]);
+
+  const handleToggleSelectAll = useCallback(() => {
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    if (allVisibleSelected) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(visibleTrackIds));
+    }
+  }, [allVisibleSelected, visibleTrackIds]);
+
+  const handleBulkDelete = useCallback(() => {
+    if (selectedIds.size === 0 || isDeleting) return;
+    const ids = [...selectedIds];
+    const count = ids.length;
+    Alert.alert(
+      `Delete ${count} ${count === 1 ? 'track' : 'tracks'}?`,
+      'Delete these tracks from your library? Their files on your device will NOT be deleted.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            setIsDeleting(true);
+            void (async () => {
+              try {
+                const result = await bulkDeleteTracks(ids);
+                exitSelectMode();
+                Alert.alert(
+                  'Library cleaned',
+                  `Removed ${result.total} ${result.total === 1 ? 'track' : 'tracks'} from your library.`,
+                );
+              } catch (err) {
+                Alert.alert(
+                  'Could not delete tracks',
+                  err instanceof Error ? err.message : 'Please try again.',
+                );
+              } finally {
+                setIsDeleting(false);
+              }
+            })();
+          },
+        },
+      ],
+    );
+  }, [selectedIds, isDeleting, exitSelectMode]);
+
+  // Android hardware back: while selecting, swallow the back press and just
+  // exit select mode instead of navigating away from the Library tab.
+  useEffect(() => {
+    if (!selectMode) return undefined;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      exitSelectMode();
+      return true;
+    });
+    return () => sub.remove();
+  }, [selectMode, exitSelectMode]);
+
+  // Selection mode is Songs-only — if the user flips to a different tab,
+  // bail out cleanly so the selection toolbar never floats above a list it
+  // can't act on.
+  useEffect(() => {
+    if (selectMode && activeTab !== 'Songs') {
+      exitSelectMode();
+    }
+  }, [activeTab, selectMode, exitSelectMode]);
+
+  // Right-swipe on a song row: toggle the DB "liked" flag for that track.
+  // Mirrors what the GlobalSheets sheet does so behaviour stays consistent.
+  const handleSwipeLike = useCallback(async (track: Track) => {
+    try {
+      const model = await tracksCollection.find(track.id);
+      await database.write(async () => {
+        await model.update((rec) => {
+          (rec as { liked: boolean }).liked = !(rec as { liked: boolean }).liked;
+        });
+      });
+    } catch {
+      // ignore — list will refresh via observers if the toggle succeeded.
+    }
+  }, []);
+
+  // Left-swipe: drop the track at the end of the upcoming queue without
+  // interrupting whatever is currently playing.
+  const handleSwipeQueue = useCallback(
+    (track: Track) => {
+      void addTrack(modelToTrack(track));
+    },
+    [addTrack],
+  );
+
+  // Pull-to-refresh: WatermelonDB observers keep the list live already, so
+  // the visible rows can't really be "stale" — but a pull is the user
+  // signalling "fix anything that looks off". We use the gesture to
+  // re-run the cleanup sweep (catches WhatsApp voice notes / UUID-named
+  // clips that may have landed since mount) and only clear the spinner
+  // once the sweep settles, so the feedback is honest about doing work.
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await cleanupVoiceNotesAndClips();
+    } catch {
+      // Non-fatal — sweep failures don't block the UI.
+    } finally {
+      setRefreshing(false);
+    }
+  }, []);
 
   const handleArtistPress = useCallback(
     (artist: string) => navigation.navigate('ArtistDetail', { artist }),
@@ -753,21 +1103,22 @@ export function LibraryScreen() {
   );
 
   const handleNewPlaylist = useCallback(() => {
-    Alert.prompt(
-      'New Playlist',
-      'Enter a name for your playlist',
-      async (name) => {
-        if (!name?.trim()) return;
-        await database.write(async () => {
-          await playlistsCollection.create((record) => {
-            (record as any).name = name.trim();
-            (record as any).createdAt = Math.floor(Date.now() / 1000);
-            (record as any).artworkPath = null;
-          });
-        });
-      },
-      'plain-text',
-    );
+    setPlaylistModalOpen(true);
+  }, []);
+
+  const handleClosePlaylistModal = useCallback(() => {
+    setPlaylistModalOpen(false);
+  }, []);
+
+  const handleCreatePlaylist = useCallback(async (name: string) => {
+    // The modal already trims and validates non-empty; we just persist.
+    await database.write(async () => {
+      await playlistsCollection.create((record) => {
+        (record as any).name = name;
+        (record as any).createdAt = Math.floor(Date.now() / 1000);
+        (record as any).artworkPath = null;
+      });
+    });
   }, []);
 
   const handleImportDeviceAudio = useCallback(async () => {
@@ -820,12 +1171,25 @@ export function LibraryScreen() {
           track={item.track}
           isActive={activeTrackId === item.track.id}
           isPlaying={isPlaying}
+          selectMode={selectMode}
+          isSelected={selectedIds.has(item.track.id)}
           onPress={handleTrackPress}
           onLongPress={handleLongPress}
+          onSwipeLike={handleSwipeLike}
+          onSwipeQueue={handleSwipeQueue}
         />
       );
     },
-    [handleTrackPress, handleLongPress, activeTrackId, isPlaying],
+    [
+      handleTrackPress,
+      handleLongPress,
+      handleSwipeLike,
+      handleSwipeQueue,
+      activeTrackId,
+      isPlaying,
+      selectMode,
+      selectedIds,
+    ],
   );
 
   const renderArtistRow = useCallback(
@@ -896,17 +1260,78 @@ export function LibraryScreen() {
     <View style={styles.root}>
       <StatusBar barStyle="dark-content" backgroundColor="#F5F5F7" />
 
-      {/* Header */}
+      {/* Frosted-glass header — same BlurView treatment as BlurHeader, but
+          inlined so the existing layout (and its non-Animated list views)
+          don't need to be restructured.
+
+          When `selectMode` is on, the title/count is swapped for the bulk-
+          action toolbar (Cancel / N selected / Select All + Delete). The
+          underlying blur + insets stay identical so the layout doesn't
+          jump as the user enters/exits the mode. */}
       <View
         style={[
           styles.header,
           { paddingTop: Math.max(insets.top + 8, Platform.OS === 'ios' ? 56 : 36) },
         ]}
       >
-        <Text style={styles.headerTitle}>Library</Text>
-        <Text style={styles.headerCount}>
-          {allTracks.length} {allTracks.length === 1 ? 'song' : 'songs'}
-        </Text>
+        <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+          <BlurView intensity={50} tint="light" style={StyleSheet.absoluteFill} />
+          <View style={styles.headerSurface} />
+        </View>
+        {selectMode ? (
+          <View style={styles.selectionBar}>
+            <TouchableOpacity
+              onPress={exitSelectMode}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            >
+              <Text style={styles.selectionCancel}>Cancel</Text>
+            </TouchableOpacity>
+            <Text style={styles.selectionCount} numberOfLines={1}>
+              {selectedIds.size} selected
+            </Text>
+            <View style={styles.selectionRightCluster}>
+              <TouchableOpacity
+                onPress={handleToggleSelectAll}
+                hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
+                disabled={visibleTrackIds.length === 0}
+              >
+                <Text
+                  style={[
+                    styles.selectionAction,
+                    visibleTrackIds.length === 0 && styles.selectionActionDisabled,
+                  ]}
+                >
+                  {allVisibleSelected ? 'Deselect All' : 'Select All'}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={handleBulkDelete}
+                disabled={selectedIds.size === 0 || isDeleting}
+                hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
+              >
+                {isDeleting ? (
+                  <ActivityIndicator size="small" color="#FA233B" />
+                ) : (
+                  <Text
+                    style={[
+                      styles.selectionDelete,
+                      (selectedIds.size === 0) && styles.selectionActionDisabled,
+                    ]}
+                  >
+                    Delete
+                  </Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        ) : (
+          <>
+            <Text style={styles.headerTitle}>Library</Text>
+            <Text style={styles.headerCount}>
+              {safeTracks.length} {safeTracks.length === 1 ? 'song' : 'songs'}
+            </Text>
+          </>
+        )}
       </View>
 
       {!hasImportedDeviceAudio && (
@@ -931,23 +1356,41 @@ export function LibraryScreen() {
       {activeTab === 'Songs' && (
         <>
           <SearchBar value={query} onChange={setQuery} />
-          <SortPicker mode={sortMode} onChange={setSortMode} />
+          {/* The sort picker lives inside the regular header chrome and is
+              meaningless while the user is curating a selection — the
+              toolbar already owns that row. */}
+          {!selectMode && <SortPicker mode={sortMode} onChange={setSortMode} />}
           {/* Wrap the list so we can shrink its viewport — without this the
               FlashList fills the screen and content scrolls behind the
               floating MiniPlayer. paddingBottom on the wrapper ends the
               list above the chrome stack. */}
           <View style={{ flex: 1, paddingBottom: bottomPadding }}>
-            <FlashList
-              data={songsListData}
-              renderItem={renderSongsItem}
-              keyExtractor={(item) =>
-                item.type === 'header' ? `hdr-${item.letter}` : item.track.id
-              }
-              estimatedItemSize={70}
-              getItemType={(item) => (item.type === 'header' ? 'header' : 'track')}
-              ListEmptyComponent={emptyComponent}
-              showsVerticalScrollIndicator={false}
-            />
+            {safeTracks.length === 0 && !hasImportedDeviceAudio ? (
+              // First-launch state — no library yet. Show shimmer placeholders
+              // so the screen doesn't feel empty while the user thinks about
+              // tapping "Add songs".
+              <ListSkeleton count={8} />
+            ) : (
+              <FlashList
+                data={songsListData}
+                renderItem={renderSongsItem}
+                keyExtractor={(item) =>
+                  item.type === 'header' ? `hdr-${item.letter}` : item.track.id
+                }
+                estimatedItemSize={70}
+                getItemType={(item) => (item.type === 'header' ? 'header' : 'track')}
+                ListEmptyComponent={emptyComponent}
+                showsVerticalScrollIndicator={false}
+                refreshControl={
+                  <RefreshControl
+                    refreshing={refreshing}
+                    onRefresh={handleRefresh}
+                    tintColor="#FA233B"
+                    colors={['#FA233B']}
+                  />
+                }
+              />
+            )}
           </View>
         </>
       )}
@@ -1013,6 +1456,15 @@ export function LibraryScreen() {
           <PlaylistsFAB onPress={handleNewPlaylist} bottomOffset={bottomPadding + 16} />
         </View>
       )}
+
+      <PlaylistNameModal
+        visible={playlistModalOpen}
+        onClose={handleClosePlaylistModal}
+        onSubmit={handleCreatePlaylist}
+        title="New Playlist"
+        placeholder="Playlist name"
+        submitLabel="Create"
+      />
     </View>
   );
 }
@@ -1030,7 +1482,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'baseline',
     justifyContent: 'space-between',
-    backgroundColor: '#F5F5F7',
+    backgroundColor: 'transparent',
+    overflow: 'hidden',
+  },
+  headerSurface: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(245,245,247,0.78)',
   },
   headerTitle: {
     fontSize: 34,
@@ -1042,6 +1499,47 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '500',
     color: '#8E8E93',
+  },
+  selectionBar: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  selectionCancel: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#1D1D1F',
+    letterSpacing: -0.1,
+  },
+  selectionCount: {
+    flex: 1,
+    textAlign: 'center',
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#FA233B',
+    letterSpacing: -0.2,
+  },
+  selectionRightCluster: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  selectionAction: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#1D1D1F',
+    letterSpacing: -0.1,
+  },
+  selectionDelete: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#FA233B',
+    letterSpacing: -0.1,
+  },
+  selectionActionDisabled: {
+    opacity: 0.35,
   },
   importButton: {
     marginHorizontal: 20,

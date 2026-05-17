@@ -21,6 +21,9 @@ export const borderRadius = {
   xl: 20,
   '2xl': 24,
   '3xl': 30,
+  // Bottom-sheet / large rounded surfaces. Apple Music uses ~24 px on its
+  // pull-up sheets; we use the same here so things feel native.
+  sheet: 24,
   full: 9999,
 } as const;
 

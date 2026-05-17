@@ -12,8 +12,10 @@ import {
   Platform,
   StatusBar,
   Alert,
+  Switch,
+  Pressable,
 } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import {
   getStorageStats,
   getArtworkDir,
@@ -21,6 +23,8 @@ import {
 import RNBlobUtil from 'react-native-blob-util';
 import { Ionicons } from '@expo/vector-icons';
 import type { RootStackNavigationProp } from '@/types/navigation';
+import { useSettingsStore } from '@/stores/settingsStore';
+import { cleanupVoiceNotesAndClips } from '@/db/cleanup';
 
 // ─── Section wrapper ──────────────────────────────────────────────────────────
 
@@ -148,6 +152,124 @@ const rowStyles = StyleSheet.create({
   },
 });
 
+// ─── Toggle + snap-slider rows ───────────────────────────────────────────────
+
+interface ToggleRowProps {
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+  label: string;
+  sublabel?: string;
+  value: boolean;
+  onChange: (next: boolean) => void;
+}
+
+function ToggleRow({ icon, label, sublabel, value, onChange }: ToggleRowProps) {
+  return (
+    <View style={rowStyles.container}>
+      <Ionicons name={icon} size={20} color="#6E6E73" style={rowStyles.icon} />
+      <View style={{ flex: 1 }}>
+        <Text style={rowStyles.label}>{label}</Text>
+        {sublabel && <Text style={rowStyles.sublabel}>{sublabel}</Text>}
+      </View>
+      <Switch
+        value={value}
+        onValueChange={onChange}
+        trackColor={{ false: '#E5E5EA', true: '#FA233B' }}
+        thumbColor={Platform.OS === 'android' ? '#FFFFFF' : undefined}
+      />
+    </View>
+  );
+}
+
+interface SnapPickerRowProps {
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+  label: string;
+  sublabel?: string;
+  options: number[];
+  value: number;
+  formatOption: (v: number) => string;
+  onChange: (next: number) => void;
+  disabled?: boolean;
+}
+
+function SnapPickerRow({
+  icon,
+  label,
+  sublabel,
+  options,
+  value,
+  formatOption,
+  onChange,
+  disabled = false,
+}: SnapPickerRowProps) {
+  return (
+    <View style={[rowStyles.container, { flexDirection: 'column', alignItems: 'stretch' }]}>
+      <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
+        <Ionicons name={icon} size={20} color="#6E6E73" style={rowStyles.icon} />
+        <View style={{ flex: 1 }}>
+          <Text style={[rowStyles.label, disabled && { color: '#C7C7CC' }]}>
+            {label}
+          </Text>
+          {sublabel && <Text style={rowStyles.sublabel}>{sublabel}</Text>}
+        </View>
+      </View>
+      <View style={pickerStyles.pillRow}>
+        {options.map((opt) => {
+          const active = opt === value;
+          return (
+            <Pressable
+              key={opt}
+              disabled={disabled}
+              onPress={() => onChange(opt)}
+              style={({ pressed }) => [
+                pickerStyles.pill,
+                active && pickerStyles.pillActive,
+                pressed && { opacity: 0.7 },
+                disabled && { opacity: 0.4 },
+              ]}
+            >
+              <Text style={[pickerStyles.pillText, active && pickerStyles.pillTextActive]}>
+                {formatOption(opt)}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+const pickerStyles = StyleSheet.create({
+  pillRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginTop: 8,
+    marginLeft: 40,
+  },
+  pill: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    backgroundColor: '#F2F2F7',
+    borderWidth: 1,
+    borderColor: '#E5E5EA',
+  },
+  pillActive: {
+    backgroundColor: '#FA233B',
+    borderColor: '#FA233B',
+  },
+  pillText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#1D1D1F',
+  },
+  pillTextActive: {
+    color: '#FFFFFF',
+  },
+});
+
+const CROSSFADE_OPTIONS = [1000, 2000, 4000, 6000, 8000, 12000];
+
 // ─── Storage stats ────────────────────────────────────────────────────────────
 
 function formatBytes(bytes: number): string {
@@ -171,15 +293,44 @@ export function SettingsScreen() {
 
   const appVersion = '1.0.0';
 
+  // ── Premium-player settings (live store reads) ────────────────────────
+  const crossfadeEnabled = useSettingsStore((s) => s.crossfadeEnabled);
+  const crossfadeMs = useSettingsStore((s) => s.crossfadeMs);
+  const sleepTimerEndOfTrack = useSettingsStore((s) => s.sleepTimerEndOfTrack);
+  const albumColorThemingEnabled = useSettingsStore(
+    (s) => s.albumColorThemingEnabled,
+  );
+  const setCrossfadeEnabled = useSettingsStore((s) => s.setCrossfadeEnabled);
+  const setCrossfadeMs = useSettingsStore((s) => s.setCrossfadeMs);
+  const setSleepTimerEndOfTrack = useSettingsStore(
+    (s) => s.setSleepTimerEndOfTrack,
+  );
+  const setAlbumColorThemingEnabled = useSettingsStore(
+    (s) => s.setAlbumColorThemingEnabled,
+  );
+
   useEffect(() => {
     loadStats();
   }, []);
+
+  // The stats card shows total songs + bytes on disk. Both can change from
+  // outside this screen (downloads finishing, library cleanup running),
+  // so re-pull every time the user returns to Settings instead of leaving
+  // them looking at the snapshot from first mount.
+  useFocusEffect(
+    useCallback(() => {
+      void loadStats();
+      return undefined;
+    }, []),
+  );
 
   const loadStats = async () => {
     setStatsLoading(true);
     try {
       const stats = await getStorageStats();
       setStorageStats(stats);
+    } catch {
+      // Non-fatal — storage stats are display-only
     } finally {
       setStatsLoading(false);
     }
@@ -203,6 +354,36 @@ export function SettingsScreen() {
     }
   }, []);
 
+  const handleCleanLibrary = useCallback(() => {
+    Alert.alert(
+      'Clean Library',
+      'Remove WhatsApp voice notes, status music clips, ringtones, and ' +
+        'UUID-named files from your library. Your songs downloaded via ' +
+        'Chakaas are never touched. Original device files are not deleted.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clean',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const removed = await cleanupVoiceNotesAndClips();
+              Alert.alert(
+                'Done',
+                removed === 0
+                  ? 'No non-music tracks found. Your library is clean.'
+                  : `Removed ${removed} non-music ${removed === 1 ? 'track' : 'tracks'} from your library.`,
+              );
+              await loadStats();
+            } catch {
+              Alert.alert('Error', 'Could not clean library.');
+            }
+          },
+        },
+      ],
+    );
+  }, []);
+
   const handleClearArtworkCache = useCallback(() => {
     Alert.alert(
       'Clear Artwork Cache',
@@ -215,6 +396,15 @@ export function SettingsScreen() {
           onPress: async () => {
             try {
               const dir = await getArtworkDir();
+              // The cache directory may not exist yet if no artwork has
+              // ever been downloaded — that's "already clear", not an
+              // error. lstat throws on a missing path, so guard it.
+              const dirExists = await RNBlobUtil.fs.exists(dir);
+              if (!dirExists) {
+                Alert.alert('Done', 'Artwork cache is already empty.');
+                await loadStats();
+                return;
+              }
               const entries = await RNBlobUtil.fs.lstat(dir);
               for (const entry of entries) {
                 if (entry.type === 'file') {
@@ -256,6 +446,64 @@ export function SettingsScreen() {
           />
         </Section>
 
+        {/* ── Playback ── */}
+        <Section title="Playback">
+          <ToggleRow
+            icon="swap-horizontal"
+            label="Crossfade"
+            sublabel="Smoothly blend the end of one song into the start of the next"
+            value={crossfadeEnabled}
+            onChange={setCrossfadeEnabled}
+          />
+          <Separator />
+          <SnapPickerRow
+            icon="time"
+            label="Crossfade duration"
+            sublabel="How long the fade-over lasts"
+            options={CROSSFADE_OPTIONS}
+            value={crossfadeMs}
+            disabled={!crossfadeEnabled}
+            formatOption={(ms) => `${ms / 1000}s`}
+            onChange={setCrossfadeMs}
+          />
+          <Separator />
+          <ToggleRow
+            icon="moon"
+            label="Sleep timer: stop after current track"
+            sublabel="Use end-of-track mode by default when arming the sleep timer"
+            value={sleepTimerEndOfTrack}
+            onChange={setSleepTimerEndOfTrack}
+          />
+          <Separator />
+          <View style={[rowStyles.container, { alignItems: 'flex-start' }]}>
+            <Ionicons
+              name="information-circle-outline"
+              size={20}
+              color="#6E6E73"
+              style={rowStyles.icon}
+            />
+            <View style={{ flex: 1 }}>
+              <Text style={rowStyles.label}>Audio focus &amp; ducking</Text>
+              <Text style={rowStyles.sublabel}>
+                Chakaas automatically pauses for calls and lowers volume for
+                navigation prompts. Other apps requesting focus will pause us
+                until they release it.
+              </Text>
+            </View>
+          </View>
+        </Section>
+
+        {/* ── Appearance ── */}
+        <Section title="Appearance">
+          <ToggleRow
+            icon="color-palette"
+            label="Album color theming"
+            sublabel="Tint the Now Playing screen and Mini Player using the current artwork. When off, the UI uses the static gold accent."
+            value={albumColorThemingEnabled}
+            onChange={setAlbumColorThemingEnabled}
+          />
+        </Section>
+
         {/* ── Storage ── */}
         <Section title="Storage">
           <View style={styles.statsRow}>
@@ -285,6 +533,14 @@ export function SettingsScreen() {
                 : 'Stored inside the app'
             }
             onPress={handleShowMusicLocation}
+          />
+          <Separator />
+          <TapRow
+            icon="sparkles"
+            label="Clean Library"
+            sublabel="Remove WhatsApp voices, clips & UUID files"
+            onPress={handleCleanLibrary}
+            destructive
           />
           <Separator />
           <TapRow

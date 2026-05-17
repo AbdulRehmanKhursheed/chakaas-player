@@ -58,13 +58,15 @@ function sanitise(name: string): string {
  * Returns the full, sanitised file path for a track.
  * Format: <musicDir>/<artist> - <title>.<ext>
  *
- * The extension defaults to `m4a` (AAC), but `webm` is used for opus
- * passthrough downloads (no transcoding is performed).
+ * The extension defaults to `m4a` (AAC); `webm` is used for opus
+ * passthrough downloads from YouTube/Piped; `mp3` is used for sources
+ * that natively serve mp3 (Audius, Jamendo, SoundCloud, Internet Archive)
+ * — no transcoding is performed in any case.
  */
 export async function getTrackPath(
   artist: string,
   title: string,
-  extension: 'm4a' | 'webm' = 'm4a',
+  extension: 'm4a' | 'webm' | 'mp3' = 'm4a',
   uniqueSuffix?: string,
 ): Promise<string> {
   const musicDir = await getMusicDir();

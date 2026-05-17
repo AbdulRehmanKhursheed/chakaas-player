@@ -61,6 +61,8 @@ function MenuItem({
       style={styles.menuItem}
       onPress={onPress}
       activeOpacity={0.65}
+      accessibilityRole="button"
+      accessibilityLabel={label}
     >
       <View style={styles.menuItemIconWrap}>
         <Ionicons
@@ -96,9 +98,20 @@ export function TrackContextMenu({
 }: TrackContextMenuProps) {
   const withClose = useCallback(
     (fn?: () => void) => () => {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      try {
+        void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      } catch {
+        // ignore — haptics are a nice-to-have
+      }
       onClose();
-      fn?.();
+      // Defer the action by one frame so the sheet's close animation can
+      // start before the parent screen pushes a new route / opens another
+      // sheet on top of us. Avoids the "snap to invisible" jank we used to
+      // see when tapping "View Artist" → navigation unmounted the sheet
+      // mid-anim.
+      if (fn) {
+        requestAnimationFrame(fn);
+      }
     },
     [onClose],
   );

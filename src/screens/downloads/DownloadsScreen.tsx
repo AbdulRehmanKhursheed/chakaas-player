@@ -23,6 +23,7 @@
  */
 
 import React, { useState, useCallback, useEffect, useMemo } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
   Text,
@@ -820,6 +821,18 @@ export function DownloadsScreen() {
   useEffect(() => {
     void refreshStorage();
   }, [refreshStorage]);
+
+  // Re-pull storage + recommendation whenever the screen regains focus.
+  // Without this the library count + "free space" pills stay frozen on the
+  // numbers we saw at mount, so a user who finishes a 50-song batch and
+  // taps back here sees stale headline figures. `useFocusEffect`
+  // fires after every focus event (initial AND return-to-tab).
+  useFocusEffect(
+    useCallback(() => {
+      void refreshStorage();
+      return undefined;
+    }, [refreshStorage]),
+  );
 
   // ── Derived data ───────────────────────────────────────────────────────────
 

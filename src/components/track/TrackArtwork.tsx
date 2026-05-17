@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, StyleSheet } from 'react-native';
 import FastImage from 'react-native-fast-image';
 import { Blurhash } from 'react-native-blurhash';
@@ -49,6 +49,15 @@ export function TrackArtwork({
   // call site doesn't have to.
   const resolvedUri = normalizeLocalUri(uri);
   const placeholderColor = getColorForString(resolvedUri ?? 'default');
+
+  // Recycled rows in a FlatList swap the `uri` prop without unmounting this
+  // component — without resetting the loaded/error flags here, a previously
+  // errored row would stick to its placeholder forever and a previously
+  // loaded row would render the OLD artwork until the new one loads.
+  useEffect(() => {
+    setImageLoaded(false);
+    setImageError(false);
+  }, [resolvedUri]);
 
   const containerStyle = {
     width: size,

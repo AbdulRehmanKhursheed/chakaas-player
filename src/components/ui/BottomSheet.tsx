@@ -5,6 +5,7 @@ import {
   Dimensions,
   Pressable,
   Platform,
+  Keyboard,
 } from 'react-native';
 import Animated, {
   useAnimatedStyle,
@@ -64,22 +65,26 @@ export function BottomSheet({
   const openSheet = useCallback(() => {
     backdropOpacity.value = withTiming(1, { duration: 250 });
     translateY.value = withSpring(0, SPRING_CONFIG);
-  }, []);
+  }, [backdropOpacity, translateY]);
 
   const closeSheet = useCallback(() => {
     backdropOpacity.value = withTiming(0, { duration: 200 });
     translateY.value = withSpring(sheetHeight, SPRING_CONFIG);
-  }, [sheetHeight]);
+  }, [backdropOpacity, sheetHeight, translateY]);
 
   useEffect(() => {
     if (isVisible) {
       openSheet();
     } else {
+      // Dismiss any open keyboard when the sheet is being hidden — e.g. a
+      // playlist-create sheet that had focused a TextInput.
+      Keyboard.dismiss();
       closeSheet();
     }
-  }, [isVisible]);
+  }, [isVisible, openSheet, closeSheet]);
 
   const handleClose = useCallback(() => {
+    Keyboard.dismiss();
     closeSheet();
     // Delay the state update slightly so animation can begin
     setTimeout(onClose, 250);

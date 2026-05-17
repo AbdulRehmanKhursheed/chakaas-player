@@ -9,8 +9,8 @@
  *   - Elapsed time (left) + total duration (right)
  */
 
-import React, { useCallback } from 'react';
-import { View, Text, StyleSheet, Platform } from 'react-native';
+import React, { useCallback, useState } from 'react';
+import { View, Text, StyleSheet, Platform, Pressable } from 'react-native';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -187,8 +187,19 @@ export function ProgressSlider({
   });
 
   // ── Time labels ────────────────────────────────────────────────────────────
+  // The right label can toggle between "total duration" and "time remaining"
+  // (negative-prefixed). Tap to switch — same affordance as the iOS Music app.
+  const [showRemaining, setShowRemaining] = useState(false);
   const elapsedLabel = formatDuration(position * 1000);
-  const totalLabel = formatDuration(duration * 1000);
+  const remainingMs = Math.max(0, (duration - position) * 1000);
+  const rightLabel = showRemaining
+    ? `-${formatDuration(remainingMs)}`
+    : formatDuration(duration * 1000);
+
+  const handleToggleRightLabel = useCallback(() => {
+    Haptics.selectionAsync().catch(() => undefined);
+    setShowRemaining((v) => !v);
+  }, []);
 
   // ─────────────────────────────────────────────────────────────────────────
 
@@ -221,7 +232,16 @@ export function ProgressSlider({
       {/* Time labels */}
       <View style={styles.timeRow}>
         <Text style={styles.timeLabel}>{elapsedLabel}</Text>
-        <Text style={styles.timeLabel}>{totalLabel}</Text>
+        <Pressable
+          onPress={handleToggleRightLabel}
+          hitSlop={{ top: 10, bottom: 10, left: 14, right: 4 }}
+          accessibilityRole="button"
+          accessibilityLabel={
+            showRemaining ? 'Show total duration' : 'Show time remaining'
+          }
+        >
+          <Text style={styles.timeLabel}>{rightLabel}</Text>
+        </Pressable>
       </View>
     </View>
   );

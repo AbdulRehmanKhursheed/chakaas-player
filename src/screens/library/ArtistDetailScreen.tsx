@@ -13,7 +13,7 @@ import { FlashList } from '@shopify/flash-list';
 import FastImage from 'react-native-fast-image';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
-import { useAllTracks } from '@/hooks/useTrackDB';
+import { useSafeTracks } from '@/hooks/useSafeTracks';
 import { usePlayerQueue } from '@/features/player/useQueue';
 import { TrackArtwork } from '@/components/track/TrackArtwork';
 import type { LibraryStackParamList } from '@/app/navigation/LibraryStack';
@@ -340,12 +340,14 @@ export function ArtistDetailScreen() {
   const route = useRoute<ArtistDetailRoute>();
   const { artist } = route.params;
 
-  const allTracks = useAllTracks();
+  const safeTracks = useSafeTracks();
   const { playTrack, playNext } = usePlayerQueue();
 
-  // Filter tracks by artist and sort by album then title
+  // Filter tracks by artist and sort by album then title. Use `safeTracks`
+  // so an artist view can't surface non-music junk (e.g. a voice recording
+  // whose parsed "artist" happens to collide with a real one).
   const artistTracks = useMemo(() => {
-    return allTracks
+    return safeTracks
       .filter((t) => t.artist === artist)
       .sort((a, b) => {
         const albumA = a.album ?? '';
@@ -354,7 +356,7 @@ export function ArtistDetailScreen() {
         if (albumCmp !== 0) return albumCmp;
         return a.title.localeCompare(b.title);
       });
-  }, [allTracks, artist]);
+  }, [safeTracks, artist]);
 
   // Derive representative artwork (from first track that has one)
   const artistArtwork = useMemo(

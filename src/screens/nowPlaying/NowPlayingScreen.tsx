@@ -20,6 +20,8 @@
 import React, {
   useCallback,
   useEffect,
+  useMemo,
+  useRef,
   useState,
 } from 'react';
 import {
@@ -32,6 +34,7 @@ import {
   Platform,
   StatusBar,
   Image,
+  Pressable,
 } from 'react-native';
 import Animated, {
   useSharedValue,
@@ -41,6 +44,8 @@ import Animated, {
   withSequence,
   withTiming,
   cancelAnimation,
+  FadeIn,
+  FadeOut,
 } from 'react-native-reanimated';
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -58,7 +63,13 @@ import { usePlayerQueue } from '@/features/player/useQueue';
 import { tracksCollection } from '@/db';
 import { logger } from '@/utils/logger';
 import { EqualizerBars } from '@/components/EqualizerBars';
+import { MarqueeText } from '@/components/ui/MarqueeText';
 import type { RootStackNavigationProp } from '@/types/navigation';
+import { BottomSheet } from '@/components/ui/BottomSheet';
+import { SleepTimer, type SleepTimerState } from '@/features/player/SleepTimer';
+import { useColorTheme, isDarkOrGrey, GOLD } from '@/features/player/ColorTheme';
+import { useSettingsStore } from '@/stores/settingsStore';
+import TrackPlayer from 'react-native-track-player';
 
 import { PlayerControls } from './components/PlayerControls';
 import { ProgressSlider } from './components/ProgressSlider';
@@ -176,9 +187,24 @@ interface QueuePanelProps {
 function QueuePanel({ activeTrackId, accentColor, isPlaying }: QueuePanelProps) {
   const { queue } = usePlayerQueue();
 
+  const handleJump = useCallback(
+    async (index: number, alreadyActive: boolean) => {
+      if (alreadyActive) return;
+      try {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        await TrackPlayer.skip(index);
+        await TrackPlayer.play();
+      } catch (err) {
+        logger.warn('[NowPlaying] queue jump failed:', err);
+      }
+    },
+    [],
+  );
+
   if (!queue || queue.length === 0) {
     return (
       <View style={styles.queueEmpty}>
+        <Ionicons name="musical-notes-outline" size={28} color="#C7C7CC" />
         <Text style={styles.queueEmptyText}>Queue is empty</Text>
       </View>
     );
@@ -193,9 +219,13 @@ function QueuePanel({ activeTrackId, accentColor, isPlaying }: QueuePanelProps) 
         const isActive =
           activeTrackId != null && String(track.id ?? '') === activeTrackId;
         return (
-          <View
+          <Pressable
             key={`${track.id ?? index}`}
-            style={[
+            onPress={() => {
+              void handleJump(index, isActive);
+            }}
+            android_ripple={{ color: `${accentColor}1A`, borderless: false }}
+            style={({ pressed }) => [
               styles.queueItem,
               isActive && {
                 backgroundColor: `${accentColor}14`,
@@ -203,7 +233,14 @@ function QueuePanel({ activeTrackId, accentColor, isPlaying }: QueuePanelProps) 
                 paddingHorizontal: 8,
                 marginHorizontal: -8,
               },
+              pressed && !isActive && { opacity: 0.6 },
             ]}
+            accessibilityRole="button"
+            accessibilityLabel={
+              isActive
+                ? `Now playing ${track.title ?? 'Unknown Title'}`
+                : `Play ${track.title ?? 'Unknown Title'}`
+            }
           >
             {track.artwork ? (
               <FastImage source={{ uri: track.artwork }} style={styles.queueArt} />
@@ -238,11 +275,165 @@ function QueuePanel({ activeTrackId, accentColor, isPlaying }: QueuePanelProps) 
             ) : (
               <Text style={styles.queueIndex}>{index + 1}</Text>
             )}
-          </View>
+          </Pressable>
         );
       })}
     </View>
   );
+}
+
+// ─── Sleep-timer sheet ────────────────────────────────────────────────────────
+
+interface SleepTimerSheetProps {
+  isVisible: boolean;
+  onClose: () => void;
+  accentColor: string;
+  state: SleepTimerState;
+}
+
+function SleepTimerSheet({ isVisible, onClose, accentColor, state }: SleepTimerSheetProps) {
+  const options = [5, 15, 30, 45, 60] as const;
+  const handlePick = useCallback(
+    (mins: number) => {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      SleepTimer.start(mins);
+      setTimeout(onClose, 100);
+    },
+    [onClose],
+  );
+  const handleEOT = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    SleepTimer.startEndOfTrack();
+    setTimeout(onClose, 100);
+  }, [onClose]);
+  const handleCancel = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    SleepTimer.cancel();
+    setTimeout(onClose, 100);
+  }, [onClose]);
+
+  return (
+    <BottomSheet isVisible={isVisible} onClose={onClose} snapPoint={420}>
+      <View style={sheetStyles.body}>
+        <Text style={sheetStyles.title}>Sleep Timer</Text>
+        <Text style={sheetStyles.subtitle}>Pause playback after…</Text>
+        <View style={sheetStyles.grid}>
+          {options.map((mins) => (
+            <Pressable
+              key={mins}
+              onPress={() => handlePick(mins)}
+              style={({ pressed }) => [
+                sheetStyles.pill,
+                pressed && { opacity: 0.7 },
+                state.mode === 'duration' &&
+                  Math.round(state.totalMs / 60_000) === mins && {
+                    backgroundColor: `${accentColor}22`,
+                    borderColor: accentColor,
+                  },
+              ]}
+            >
+              <Text style={sheetStyles.pillText}>{mins} min</Text>
+            </Pressable>
+          ))}
+          <Pressable
+            onPress={handleEOT}
+            style={({ pressed }) => [
+              sheetStyles.pill,
+              sheetStyles.pillWide,
+              pressed && { opacity: 0.7 },
+              state.mode === 'end-of-track' && {
+                backgroundColor: `${accentColor}22`,
+                borderColor: accentColor,
+              },
+            ]}
+          >
+            <Ionicons name="musical-notes" size={16} color="#1D1D1F" />
+            <Text style={sheetStyles.pillText}>End of track</Text>
+          </Pressable>
+        </View>
+        {state.isActive ? (
+          <Pressable
+            onPress={handleCancel}
+            style={({ pressed }) => [
+              sheetStyles.cancelButton,
+              pressed && { opacity: 0.7 },
+            ]}
+          >
+            <Text style={sheetStyles.cancelText}>Cancel timer</Text>
+          </Pressable>
+        ) : null}
+      </View>
+    </BottomSheet>
+  );
+}
+
+const sheetStyles = StyleSheet.create({
+  body: {
+    paddingHorizontal: 20,
+    paddingTop: 8,
+    paddingBottom: 24,
+    gap: 14,
+  },
+  title: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#1D1D1F',
+    letterSpacing: -0.3,
+  },
+  subtitle: {
+    fontSize: 13,
+    color: '#6E6E73',
+  },
+  grid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginTop: 4,
+  },
+  pill: {
+    paddingVertical: 12,
+    paddingHorizontal: 18,
+    borderRadius: 22,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E5E5EA',
+    minWidth: 84,
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  pillWide: {
+    flexBasis: '100%',
+  },
+  pillText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#1D1D1F',
+  },
+  cancelButton: {
+    paddingVertical: 12,
+    alignItems: 'center',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#FF3B30',
+    marginTop: 12,
+  },
+  cancelText: {
+    color: '#FF3B30',
+    fontWeight: '700',
+    fontSize: 14,
+  },
+});
+
+// ─── Sleep-timer hook ─────────────────────────────────────────────────────────
+
+function useSleepTimerState(): SleepTimerState {
+  const [state, setState] = useState<SleepTimerState>(SleepTimer.getState());
+  useEffect(() => {
+    return SleepTimer.subscribe(setState);
+  }, []);
+  return state;
 }
 
 // ─── Main screen ──────────────────────────────────────────────────────────────
@@ -271,10 +462,67 @@ export function NowPlayingScreen() {
 
   const artworkUri = activeTrack?.artwork ?? null;
   const { accentColor: extractedAccentColor } = useAccentColor(artworkUri);
-  const accentColor = artworkUri ? extractedAccentColor : '#FA233B';
+
+  // Premium theming: when album-color theming is on, blend the ColorTheme
+  // store's dominant colour (with gold fallback for dark/grey art) into the
+  // existing accent extraction. When the setting is off, lock to gold so
+  // the UI stays consistent.
+  const albumThemingEnabled = useSettingsStore((s) => s.albumColorThemingEnabled);
+  const themedColors = useColorTheme((s) => s.colors);
+  const accentColor = useMemo(() => {
+    if (!albumThemingEnabled) return GOLD;
+    if (!artworkUri) return '#FA233B';
+    const candidate = themedColors.dominant ?? extractedAccentColor;
+    if (isDarkOrGrey(candidate)) return GOLD;
+    return candidate;
+  }, [albumThemingEnabled, artworkUri, themedColors.dominant, extractedAccentColor]);
+
+  // Sleep-timer wiring.
+  const sleepState = useSleepTimerState();
+  const [sleepSheetVisible, setSleepSheetVisible] = useState(false);
+  const openSleepSheet = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setSleepSheetVisible(true);
+  }, []);
+  const closeSleepSheet = useCallback(() => setSleepSheetVisible(false), []);
+
+  // Gold-glow pulse when a sleep timer is active.
+  const sleepGlow = useSharedValue(0);
+  useEffect(() => {
+    if (sleepState.isActive) {
+      sleepGlow.value = withRepeat(
+        withSequence(
+          withTiming(1, { duration: 900 }),
+          withTiming(0.35, { duration: 900 }),
+        ),
+        -1,
+        true,
+      );
+    } else {
+      cancelAnimation(sleepGlow);
+      sleepGlow.value = withTiming(0, { duration: 180 });
+    }
+    return () => {
+      cancelAnimation(sleepGlow);
+    };
+  }, [sleepState.isActive]);
+  const sleepGlowStyle = useAnimatedStyle(() => ({ opacity: sleepGlow.value }));
+
+  const sleepLabel = sleepState.isActive
+    ? sleepState.mode === 'end-of-track'
+      ? 'EOT'
+      : `${Math.max(1, Math.ceil(sleepState.remainingMs / 60_000))}m`
+    : null;
 
   // ── Like state (DB-backed via Track.like()/.unlike() writers) ────────────
   const [liked, setLiked] = useState(false);
+  // Mirror `liked` in a ref so `handleLike` (a stable callback) can read the
+  // latest value without re-creating itself on every toggle. Crucially this
+  // also avoids the rapid-tap race where two taps captured the same `liked`
+  // closure and both flipped in the same direction.
+  const likedRef = useRef(false);
+  // Guard against overlapping DB writes when the user spams the heart.
+  const likeWriteInFlightRef = useRef(false);
   const likeScale = useSharedValue(1);
 
   // Sync local "liked" with the DB record for the active track. Re-runs
@@ -285,14 +533,22 @@ export function NowPlayingScreen() {
     const id = activeTrack?.id;
     if (!id) {
       setLiked(false);
+      likedRef.current = false;
       return;
     }
     (async () => {
       try {
         const record = await tracksCollection.find(String(id));
-        if (!cancelled) setLiked(!!record.liked);
+        if (!cancelled) {
+          const v = !!record.liked;
+          setLiked(v);
+          likedRef.current = v;
+        }
       } catch {
-        if (!cancelled) setLiked(false);
+        if (!cancelled) {
+          setLiked(false);
+          likedRef.current = false;
+        }
       }
     })();
     return () => {
@@ -301,20 +557,26 @@ export function NowPlayingScreen() {
   }, [activeTrack?.id]);
 
   const handleLike = useCallback(async () => {
+    // Heavy haptic on a sticky toggle — Spotify / Apple Music feel.
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
     likeScale.value = withSequence(
-      withSpring(1.4, SPRING_FAST),
+      withSpring(0.85, { ...SPRING_FAST, mass: 0.5 }),
+      withSpring(1.35, { ...SPRING_FAST, damping: 10 }),
       withSpring(1, SPRING_FAST),
     );
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
     const id = activeTrack?.id;
     if (!id) return;
+    if (likeWriteInFlightRef.current) {
+      // Coalesce rapid taps: ignore until the in-flight write resolves so the
+      // DB doesn't end up out-of-sync with optimistic state.
+      return;
+    }
 
-    // Optimistic flip — gives instant visual feedback. The DB write below
-    // will either succeed (matching our optimistic state) or fail and we
-    // revert.
-    const next = !liked;
+    const next = !likedRef.current;
+    likedRef.current = next;
     setLiked(next);
+    likeWriteInFlightRef.current = true;
     try {
       const record = await tracksCollection.find(String(id));
       if (next) {
@@ -324,9 +586,12 @@ export function NowPlayingScreen() {
       }
     } catch (err) {
       logger.warn('[NowPlaying] like toggle failed:', err);
+      likedRef.current = !next;
       setLiked(!next);
+    } finally {
+      likeWriteInFlightRef.current = false;
     }
-  }, [activeTrack?.id, liked, likeScale]);
+  }, [activeTrack?.id, likeScale]);
 
   const likeStyle = useAnimatedStyle(() => ({
     transform: [{ scale: likeScale.value }],
@@ -360,6 +625,37 @@ export function NowPlayingScreen() {
     transform: [{ scale: artworkScale.value }],
   }));
 
+  // ── Play/pause morph pulse ─────────────────────────────────────────────────
+  // The PlayerControls component owns the icon swap; we add a subtle ring
+  // pulse around it whenever the playing-state flips, giving a "morph"
+  // feeling without editing the sibling component.
+  const morphPulse = useSharedValue(0);
+  useEffect(() => {
+    morphPulse.value = 0;
+    morphPulse.value = withSequence(
+      withTiming(1, { duration: 220 }),
+      withTiming(0, { duration: 320 }),
+    );
+  }, [isPlaying]);
+  const morphStyle = useAnimatedStyle(() => ({
+    opacity: morphPulse.value * 0.55,
+    transform: [{ scale: 0.85 + morphPulse.value * 0.45 }],
+  }));
+
+  // Haptic on play/pause + skip — primary actions.
+  const handleTogglePlayPause = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    void togglePlayPause();
+  }, [togglePlayPause]);
+  const handleSkipNext = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    void skipToNext();
+  }, [skipToNext]);
+  const handleSkipPrev = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    void skipToPrevious();
+  }, [skipToPrevious]);
+
   // ── Dismiss ────────────────────────────────────────────────────────────────
   const handleDismiss = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -375,11 +671,19 @@ export function NowPlayingScreen() {
   }, [activeTrack?.id, openSheet]);
 
   // ── Gradient colours derived from accent ──────────────────────────────────
-  const gradientColors: [string, string, string] = [
-    `${accentColor}12`,
-    '#F5F5F7f7',
+  // Build a smooth 4-stop gradient: a stronger dominant-tint at the top
+  // (where the blurred art shows through), fading through a near-white mid
+  // band, and settling into the page background so the bottom controls have
+  // crisp contrast. The extra alpha stop kills the visible "seam" between
+  // the accent wash and the white plate that the 3-stop version produced
+  // when the dominant colour was very saturated.
+  const gradientColors: [string, string, string, string] = [
+    `${accentColor}33`,
+    `${accentColor}10`,
+    '#F5F5F7f2',
     '#F5F5F7',
   ];
+  const gradientLocations: [number, number, number, number] = [0, 0.28, 0.62, 1];
 
   // ─────────────────────────────────────────────────────────────────────────
 
@@ -408,10 +712,10 @@ export function NowPlayingScreen() {
         <View style={[StyleSheet.absoluteFillObject, { backgroundColor: '#F5F5F7' }]} />
       )}
 
-      {/* Soft light gradient overlay */}
+      {/* Soft light gradient overlay — dominant accent fades to background */}
       <LinearGradient
         colors={gradientColors}
-        locations={[0, 0.45, 1]}
+        locations={gradientLocations}
         style={StyleSheet.absoluteFillObject}
       />
 
@@ -441,45 +745,81 @@ export function NowPlayingScreen() {
             ) : null}
           </View>
 
-          <TouchableOpacity
-            onPress={handleMenu}
-            style={styles.headerButton}
-            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-          >
-            <Ionicons name="ellipsis-horizontal" size={25} color="#1D1D1F" />
-          </TouchableOpacity>
+          <View style={styles.headerRight}>
+            <TouchableOpacity
+              onPress={openSleepSheet}
+              style={styles.headerButton}
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              accessibilityLabel="Sleep timer"
+              accessibilityRole="button"
+            >
+              <View>
+                <Animated.View
+                  pointerEvents="none"
+                  style={[styles.sleepGlow, { backgroundColor: GOLD }, sleepGlowStyle]}
+                />
+                <Ionicons
+                  name="moon"
+                  size={22}
+                  color={sleepState.isActive ? GOLD : '#1D1D1F'}
+                />
+              </View>
+              {sleepLabel ? (
+                <Text style={[styles.sleepLabel, { color: GOLD }]}>{sleepLabel}</Text>
+              ) : null}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={handleMenu}
+              style={styles.headerButton}
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            >
+              <Ionicons name="ellipsis-horizontal" size={25} color="#1D1D1F" />
+            </TouchableOpacity>
+          </View>
         </View>
 
         {/* ── 2. Artwork ─────────────────────────────────────────────────── */}
         <View style={styles.artworkWrapper}>
           <Animated.View style={[styles.artworkShadow, artworkAnimStyle]}>
-            {artworkUri ? (
-              <FastImage
-                source={{ uri: artworkUri, priority: FastImage.priority.high }}
-                style={styles.artwork}
-                resizeMode={FastImage.resizeMode.cover}
-              />
-            ) : (
-              <ArtworkPlaceholder
-                size={ARTWORK_SIZE}
-                seed={`${activeTrack?.title ?? ''}-${activeTrack?.artist ?? ''}`}
-                isPlaying={isPlaying}
-              />
-            )}
+            {/* Keyed inner so each track change drives a FadeIn/FadeOut. */}
+            <Animated.View
+              key={String(activeTrack?.id ?? 'empty')}
+              entering={FadeIn.duration(280)}
+              exiting={FadeOut.duration(180)}
+              style={styles.artworkFadeBox}
+            >
+              {artworkUri ? (
+                <FastImage
+                  source={{ uri: artworkUri, priority: FastImage.priority.high }}
+                  style={styles.artwork}
+                  resizeMode={FastImage.resizeMode.cover}
+                />
+              ) : (
+                <ArtworkPlaceholder
+                  size={ARTWORK_SIZE}
+                  seed={`${activeTrack?.title ?? ''}-${activeTrack?.artist ?? ''}`}
+                  isPlaying={isPlaying}
+                />
+              )}
+            </Animated.View>
           </Animated.View>
         </View>
 
         {/* ── 3. Track info ──────────────────────────────────────────────── */}
         <View style={styles.trackInfo}>
           <View style={styles.titleRow}>
-            <Text
-              style={styles.trackTitle}
-              numberOfLines={2}
-              ellipsizeMode="tail"
+            <View style={styles.titleMarqueeWrap}>
+              <MarqueeText style={styles.trackTitle}>
+                {activeTrack?.title ?? 'Not Playing'}
+              </MarqueeText>
+            </View>
+            <TouchableOpacity
+              onPress={handleLike}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityRole="button"
+              accessibilityLabel={liked ? 'Unlike song' : 'Like song'}
             >
-              {activeTrack?.title ?? 'Not Playing'}
-            </Text>
-            <TouchableOpacity onPress={handleLike} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
               <Animated.View style={[styles.likeButton, likeStyle]}>
                 <Ionicons
                   name={liked ? 'heart' : 'heart-outline'}
@@ -490,9 +830,9 @@ export function NowPlayingScreen() {
             </TouchableOpacity>
           </View>
 
-          <Text style={styles.trackArtist} numberOfLines={1}>
+          <MarqueeText style={styles.trackArtist}>
             {activeTrack?.artist ?? '—'}
-          </Text>
+          </MarqueeText>
         </View>
 
         {/* ── 4. Progress slider ─────────────────────────────────────────── */}
@@ -502,12 +842,20 @@ export function NowPlayingScreen() {
 
         {/* ── 5. Controls ─────────────────────────────────────────────────── */}
         <View style={styles.controlsWrapper}>
+          <Animated.View
+            pointerEvents="none"
+            style={[
+              styles.morphRing,
+              { borderColor: accentColor },
+              morphStyle,
+            ]}
+          />
           <PlayerControls
             isPlaying={isPlaying}
             isLoading={isLoading}
-            onPlayPause={togglePlayPause}
-            onPrevious={skipToPrevious}
-            onNext={skipToNext}
+            onPlayPause={handleTogglePlayPause}
+            onPrevious={handleSkipPrev}
+            onNext={handleSkipNext}
             repeatMode={repeatMode}
             onRepeat={cycleRepeatMode}
             shuffleEnabled={shuffleEnabled}
@@ -532,6 +880,13 @@ export function NowPlayingScreen() {
           isPlaying={isPlaying}
         />
       </ScrollView>
+
+      <SleepTimerSheet
+        isVisible={sleepSheetVisible}
+        onClose={closeSleepSheet}
+        accentColor={accentColor}
+        state={sleepState}
+      />
     </View>
   );
 }
@@ -563,6 +918,25 @@ const styles = StyleSheet.create({
     height: 40,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  sleepGlow: {
+    position: 'absolute',
+    top: -4,
+    left: -4,
+    right: -4,
+    bottom: -4,
+    borderRadius: 20,
+    opacity: 0,
+  },
+  sleepLabel: {
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.4,
+    marginTop: 2,
   },
   headerCenter: {
     flex: 1,
@@ -600,6 +974,12 @@ const styles = StyleSheet.create({
       android: { elevation: 24 },
     }),
   },
+  artworkFadeBox: {
+    width: ARTWORK_SIZE,
+    height: ARTWORK_SIZE,
+    borderRadius: 22,
+    overflow: 'hidden',
+  },
   artwork: {
     width: ARTWORK_SIZE,
     height: ARTWORK_SIZE,
@@ -630,8 +1010,10 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     gap: 12,
   },
-  trackTitle: {
+  titleMarqueeWrap: {
     flex: 1,
+  },
+  trackTitle: {
     fontSize: 22,
     fontWeight: '800',
     color: '#1D1D1F',
@@ -660,6 +1042,17 @@ const styles = StyleSheet.create({
   controlsWrapper: {
     paddingHorizontal: 28,
     marginBottom: 22,
+    position: 'relative',
+  },
+  morphRing: {
+    position: 'absolute',
+    width: 92,
+    height: 92,
+    borderRadius: 46,
+    borderWidth: 2,
+    alignSelf: 'center',
+    top: -13,
+    zIndex: 0,
   },
 
   // ── Volume ────────────────────────────────────────────────────────────────
@@ -699,6 +1092,7 @@ const styles = StyleSheet.create({
     height: 120,
     justifyContent: 'center',
     alignItems: 'center',
+    gap: 8,
   },
   queueEmptyText: {
     fontSize: 14,

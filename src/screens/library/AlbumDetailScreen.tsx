@@ -13,7 +13,7 @@ import { FlashList } from '@shopify/flash-list';
 import FastImage from 'react-native-fast-image';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
-import { useAllTracks } from '@/hooks/useTrackDB';
+import { useSafeTracks } from '@/hooks/useSafeTracks';
 import { usePlayerQueue } from '@/features/player/useQueue';
 import type { LibraryStackParamList } from '@/app/navigation/LibraryStack';
 import type { RootStackNavigationProp } from '@/types/navigation';
@@ -328,15 +328,17 @@ export function AlbumDetailScreen() {
   const route = useRoute<AlbumDetailRoute>();
   const { album } = route.params;
 
-  const allTracks = useAllTracks();
+  const safeTracks = useSafeTracks();
   const { playTrack, playNext } = usePlayerQueue();
 
-  // Filter tracks for this album, sorted by title
+  // Filter tracks for this album, sorted by title. Use `safeTracks` so an
+  // album view never surfaces non-music junk that happened to share the
+  // album tag (e.g. a "Recordings" pseudo-album from a voice recorder).
   const albumTracks = useMemo(() => {
-    return allTracks
+    return safeTracks
       .filter((t) => (t.album ?? 'Unknown Album') === album)
       .sort((a, b) => a.title.localeCompare(b.title));
-  }, [allTracks, album]);
+  }, [safeTracks, album]);
 
   // Derive album metadata
   const albumArtwork = useMemo(
