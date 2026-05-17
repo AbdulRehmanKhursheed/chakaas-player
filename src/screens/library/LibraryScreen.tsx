@@ -335,7 +335,18 @@ interface SongRowProps {
   onSwipeQueue: (track: Track) => void;
 }
 
-function SongRow({
+/**
+ * Wrapped in `React.memo` with a custom equality check so the FlashList
+ * doesn't re-render every visible row when only the *active* track id
+ * changes. Without this, scrolling 700+ tracks while a song plays runs the
+ * whole row pipeline on every `useActiveTrack` tick — measurably janky.
+ *
+ * The equality check skips re-render unless one of the props that actually
+ * influences the rendered output has changed. `onPress`/`onLongPress`/
+ * `onSwipeLike`/`onSwipeQueue` are referentially stable across renders
+ * (memoised in the parent's `useCallback`), so we compare them by identity.
+ */
+function SongRowImpl({
   track,
   isActive,
   isPlaying,
@@ -408,6 +419,29 @@ function SongRow({
     </SwipeableTrackRow>
   );
 }
+
+const SongRow = React.memo(SongRowImpl, (prev, next) => {
+  // Re-render only when something the row actually displays has changed. The
+  // `isPlaying` flag only matters when this row is the active one — when it
+  // isn't, the equaliser isn't on screen so we can safely skip the diff.
+  if (prev.track.id !== next.track.id) return false;
+  if (prev.isActive !== next.isActive) return false;
+  if (prev.isActive && prev.isPlaying !== next.isPlaying) return false;
+  if (prev.selectMode !== next.selectMode) return false;
+  if (prev.isSelected !== next.isSelected) return false;
+  if (prev.track.title !== next.track.title) return false;
+  if (prev.track.artist !== next.track.artist) return false;
+  if (prev.track.album !== next.track.album) return false;
+  if (prev.track.artworkPath !== next.track.artworkPath) return false;
+  if (prev.track.durationMs !== next.track.durationMs) return false;
+  // Callback identity is stable thanks to useCallback in the parent; if the
+  // parent reissues them we must re-render to capture the new closure.
+  if (prev.onPress !== next.onPress) return false;
+  if (prev.onLongPress !== next.onLongPress) return false;
+  if (prev.onSwipeLike !== next.onSwipeLike) return false;
+  if (prev.onSwipeQueue !== next.onSwipeQueue) return false;
+  return true;
+});
 
 const songRowStyles = StyleSheet.create({
   container: {

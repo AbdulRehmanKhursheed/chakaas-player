@@ -37,8 +37,16 @@ let unsubscribe: (() => void) | null = null;
 /**
  * Records a finished/skipped play event for the previously active track.
  * Called both by the active-track-changed event and on queue-ended.
+ *
+ * `treatAsSkipCandidate` — when false, we never mark this play as a skip,
+ * regardless of position. Used by the AppState background flush where the
+ * user may have simply paused; pausing-then-backgrounding shouldn't pollute
+ * skip memory or count as a skipped play.
  */
-async function flushLastPlay(positionSec: number): Promise<void> {
+async function flushLastPlay(
+  positionSec: number,
+  treatAsSkipCandidate: boolean = true,
+): Promise<void> {
   if (!lastTrack) return;
   const { id, artist, durationSec } = lastTrack;
   lastTrack = null;
@@ -46,12 +54,16 @@ async function flushLastPlay(positionSec: number): Promise<void> {
   try {
     const completionRatio =
       durationSec > 0 ? Math.min(1, Math.max(0, positionSec / durationSec)) : 0;
-    // Only count as a skip when the user actually heard at least a second of
-    // the track. RNTP can fire `PlaybackActiveTrackChanged` with
-    // `lastPosition === 0` on auto-advance (queue stepped to the next track
-    // before the previous one's position event landed), which previously
-    // marked perfectly-played tracks as skips and polluted skip memory.
-    const wasSkipped = positionSec > 1 && completionRatio < 0.3;
+    // Only count as a skip when:
+    //   1. The caller permits it (AppState background flushes do NOT — the
+    //      user may just have paused), AND
+    //   2. The user actually heard at least a second of the track. RNTP can
+    //      fire `PlaybackActiveTrackChanged` with `lastPosition === 0` on
+    //      auto-advance (queue stepped to the next track before the previous
+    //      one's position event landed), which previously marked
+    //      perfectly-played tracks as skips and polluted skip memory.
+    const wasSkipped =
+      treatAsSkipCandidate && positionSec > 1 && completionRatio < 0.3;
 
     // 1. Persist a Plays row + bump denormalised play_count (best-effort).
     //    Skips (completion < 0.3) still write the Plays row so the engine has
@@ -199,13 +211,20 @@ export function startPlayTracker(): () => void {
 
   // Flush on app background so the final session-ending play is recorded
   // even when the user kills the app on the last song.
+  //
+  // IMPORTANT: pass `treatAsSkipCandidate=false`. If the user simply paused
+  // mid-song and backgrounded, their play position would otherwise compute
+  // completionRatio < 0.3 and be wrongly recorded as a skip — polluting
+  // skipMemory and suppressing the song from future Discover recommendations.
+  // The skip signal is owned solely by the `PlaybackActiveTrackChanged` path
+  // where we know the user actually advanced the queue.
   const appStateSub = AppState.addEventListener('change', async (state) => {
     if (state !== 'active' && lastTrack) {
       try {
         const progress = await TrackPlayer.getProgress();
-        await flushLastPlay(progress.position);
+        await flushLastPlay(progress.position, false);
       } catch {
-        await flushLastPlay(0);
+        await flushLastPlay(0, false);
       }
     }
   });

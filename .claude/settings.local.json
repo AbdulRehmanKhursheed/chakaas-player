@@ -53,7 +53,8 @@
       "Bash(curl *)",
       "Bash(git stash *)",
       "Bash(lsof -nP -iTCP:8083 -sTCP:LISTEN)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)"
     ]
   }
 }
