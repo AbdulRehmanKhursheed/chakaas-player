@@ -25,6 +25,8 @@ import { Ionicons } from '@expo/vector-icons';
 import type { RootStackNavigationProp } from '@/types/navigation';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { cleanupVoiceNotesAndClips } from '@/db/cleanup';
+import { CrashLogsModal } from './CrashLogsModal';
+import { crashSink } from '@/utils/crashSink';
 
 // ─── Section wrapper ──────────────────────────────────────────────────────────
 
@@ -292,6 +294,20 @@ export function SettingsScreen() {
   const [statsLoading, setStatsLoading] = useState(false);
 
   const appVersion = '1.0.0';
+
+  // Crash-logs modal: surfaces the in-app crashSink dump so the user can
+  // see (and copy) what's been captured between reloads.
+  const [crashLogsOpen, setCrashLogsOpen] = useState(false);
+  const [crashCount, setCrashCount] = useState(0);
+  useFocusEffect(
+    useCallback(() => {
+      try {
+        setCrashCount(crashSink.getEntries().length);
+      } catch {
+        setCrashCount(0);
+      }
+    }, []),
+  );
 
   // ── Premium-player settings (live store reads) ────────────────────────
   const crossfadeEnabled = useSettingsStore((s) => s.crossfadeEnabled);
@@ -566,6 +582,28 @@ export function SettingsScreen() {
           </View>
         </Section>
 
+        {/* ── Diagnostics ── */}
+        <Section title="Diagnostics">
+          <TouchableOpacity
+            onPress={() => setCrashLogsOpen(true)}
+            activeOpacity={0.7}
+            style={diagStyles.row}
+          >
+            <View style={diagStyles.iconWrap}>
+              <Ionicons name="bug" size={20} color="#FA233B" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={diagStyles.label}>View Crash Logs</Text>
+              <Text style={diagStyles.sublabel}>
+                {crashCount === 0
+                  ? 'No errors captured yet'
+                  : `${crashCount} entr${crashCount === 1 ? 'y' : 'ies'} captured — tap to view & copy`}
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color="#C7C7CC" />
+          </TouchableOpacity>
+        </Section>
+
         {/* ── About ── */}
         <Section title="About">
           <View style={styles.aboutRow}>
@@ -577,9 +615,50 @@ export function SettingsScreen() {
 
         <View style={{ height: 40 }} />
       </ScrollView>
+
+      <CrashLogsModal
+        visible={crashLogsOpen}
+        onClose={() => {
+          setCrashLogsOpen(false);
+          try {
+            setCrashCount(crashSink.getEntries().length);
+          } catch {
+            /* ignore */
+          }
+        }}
+      />
     </View>
   );
 }
+
+const diagStyles = StyleSheet.create({
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    gap: 14,
+  },
+  iconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(250,35,59,0.08)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  label: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#1D1D1F',
+  },
+  sublabel: {
+    fontSize: 12,
+    color: '#6E6E73',
+    marginTop: 2,
+  },
+});
+
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
