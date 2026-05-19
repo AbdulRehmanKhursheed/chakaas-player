@@ -1,10 +1,11 @@
 import TrackPlayer, {
-  useActiveTrack,
   usePlaybackState,
   State,
   RepeatMode,
+  Event,
 } from 'react-native-track-player';
-import { useCallback } from 'react';
+import type { Track as RNTPTrack } from 'react-native-track-player';
+import { useCallback, useEffect, useState } from 'react';
 import * as Haptics from 'expo-haptics';
 import { usePlayerStore } from '@/stores/playerStore';
 
@@ -18,6 +19,107 @@ const REPEAT_MODE_MAP: Record<RepeatModeKey, RepeatMode> = {
   queue: RepeatMode.Queue,
 };
 
+// ── Stable active-track hook ───────────────────────────────────────────────
+//
+// RNTP's bundled `useActiveTrack` rebuilds its event subscription on every
+// render because `useTrackPlayerEvents` uses the inline `[Event.X]` array as
+// its effect-dep array (a fresh array literal on every render). In components
+// that re-render at high frequency — e.g. MiniPlayer, which subscribes to
+// `useProgress(250)` — the listener is torn down and re-added every 250 ms.
+// If a `PlaybackActiveTrackChanged` event fires during that tiny gap, the
+// component MISSES it and stays stuck on the previous track. Library, which
+// re-renders far less, catches the event — producing the user-visible
+// "Library highlights track 5, MiniPlayer shows track 1" desync after
+// rapidly tapping a new track in a long queue.
+//
+// `useStableActiveTrack` fixes this with one module-level subscription that
+// fans out to all mounted hooks. The subscription never tears down on
+// re-render, so events are never dropped — Library + MiniPlayer + NowPlaying
+// all see the same truth.
+//
+// We initialise from `TrackPlayer.getActiveTrack()` once on first import so
+// late mounts (e.g. opening NowPlaying mid-playback) get the current track
+// synchronously after the very first event tick.
+
+type ActiveTrackSnapshot = RNTPTrack | undefined;
+
+let currentActiveTrack: ActiveTrackSnapshot = undefined;
+const activeTrackSubscribers = new Set<(t: ActiveTrackSnapshot) => void>();
+let activeTrackBootstrapped = false;
+let activeTrackEventSub: { remove: () => void } | null = null;
+
+function bootstrapActiveTrackSubscription(): void {
+  if (activeTrackBootstrapped) return;
+  activeTrackBootstrapped = true;
+
+  // Seed with whatever RNTP says is currently active. May resolve after the
+  // first listener fires — the `??` in the setter below handles that case.
+  TrackPlayer.getActiveTrack()
+    .then((t) => {
+      if (currentActiveTrack === undefined && t) {
+        currentActiveTrack = t;
+        activeTrackSubscribers.forEach((cb) => cb(currentActiveTrack));
+      }
+    })
+    .catch(() => {
+      // Not yet setup or no active — fine, listener will populate later.
+    });
+
+  // Single, never-torn-down listener. The whole point: re-renders in
+  // consumers do NOT touch this subscription.
+  activeTrackEventSub = TrackPlayer.addEventListener(
+    Event.PlaybackActiveTrackChanged,
+    (payload) => {
+      // RNTP 4.x payload shape: { track, index, lastTrack, lastPosition, ... }
+      const next = (payload as { track?: RNTPTrack | null }).track ?? undefined;
+      currentActiveTrack = next;
+      activeTrackSubscribers.forEach((cb) => cb(currentActiveTrack));
+    },
+  );
+}
+
+/**
+ * Stable single-source-of-truth replacement for RNTP's `useActiveTrack`.
+ * Use this in ALL player UI (MiniPlayer, NowPlayingScreen, etc.) — the
+ * Library/Search screens may keep using RNTP's hook directly, but the value
+ * will be the same because they share the underlying RNTP event stream.
+ */
+export function useStableActiveTrack(): ActiveTrackSnapshot {
+  const [track, setTrack] = useState<ActiveTrackSnapshot>(currentActiveTrack);
+
+  useEffect(() => {
+    bootstrapActiveTrackSubscription();
+    // Sync immediately in case the snapshot already changed between render
+    // and effect — without this, late mounts could sit on the old `undefined`
+    // until the next event arrives.
+    if (track !== currentActiveTrack) {
+      setTrack(currentActiveTrack);
+    }
+    const cb = (t: ActiveTrackSnapshot) => setTrack(t);
+    activeTrackSubscribers.add(cb);
+    return () => {
+      activeTrackSubscribers.delete(cb);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return track;
+}
+
+/**
+ * Used by tests / re-init flows to drop the module-level subscription so a
+ * fresh RNTP setup picks up clean state. Production code does not call this.
+ */
+export function __resetStableActiveTrackForTest(): void {
+  if (activeTrackEventSub) {
+    activeTrackEventSub.remove();
+    activeTrackEventSub = null;
+  }
+  activeTrackBootstrapped = false;
+  currentActiveTrack = undefined;
+  activeTrackSubscribers.clear();
+}
+
 // ── Hook ───────────────────────────────────────────────────────────────────
 
 /**
@@ -29,7 +131,11 @@ const REPEAT_MODE_MAP: Record<RepeatModeKey, RepeatMode> = {
  * read playback state without importing RNTP.
  */
 export function usePlayer() {
-  const activeTrack = useActiveTrack();
+  // Use the stable, module-singleton subscription rather than RNTP's
+  // `useActiveTrack` — see the comment block above `useStableActiveTrack`.
+  // This eliminates the high-frequency-render listener-resubscribe race that
+  // caused MiniPlayer to drop active-track-changed events.
+  const activeTrack = useStableActiveTrack();
   const playbackState = usePlaybackState();
   // INTENTIONALLY no useProgress here — polling caused every consumer of
   // usePlayer (NowPlayingScreen, MiniPlayer, PlayerControls) to re-render

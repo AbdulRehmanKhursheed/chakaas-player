@@ -50,12 +50,12 @@ import Animated, {
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useNavigation } from '@react-navigation/native';
-import { useActiveTrack, useProgress } from 'react-native-track-player';
+import { useProgress } from 'react-native-track-player';
 import FastImage from 'react-native-fast-image';
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
 
-import { usePlayer } from '@/features/player/usePlayer';
+import { usePlayer, useStableActiveTrack } from '@/features/player/usePlayer';
 import { usePlayerStore } from '@/stores/playerStore';
 import { useUIStore } from '@/stores/uiStore';
 import { useAccentColor } from '@/hooks/useAccentColor';
@@ -100,7 +100,9 @@ function ConnectedProgressSlider({ onSeek, accentColor }: ConnectedProgressSlide
   // re-renders on each tick — the parent NowPlayingScreen and PlayerControls
   // are isolated from progress updates by living above this connector.
   const progress = useProgress(250);
-  const activeTrack = useActiveTrack();
+  // Stable subscription — RNTP's bundled `useActiveTrack` would resubscribe
+  // every 250 ms here and could drop active-track-changed events.
+  const activeTrack = useStableActiveTrack();
   const metadataDuration =
     typeof activeTrack?.duration === 'number' && activeTrack.duration > 0
       ? activeTrack.duration
@@ -441,7 +443,10 @@ function useSleepTimerState(): SleepTimerState {
 export function NowPlayingScreen() {
   const navigation = useNavigation<RootStackNavigationProp<'NowPlaying'>>();
 
-  const activeTrack = useActiveTrack();
+  // Stable module-singleton subscription — see comment on
+  // `useStableActiveTrack`. RNTP's bundled `useActiveTrack` would re-subscribe
+  // on every render, dropping events during high-frequency UI updates.
+  const activeTrack = useStableActiveTrack();
   // NOTE: useProgress is intentionally NOT called at this level — see
   // <ConnectedProgressSlider /> below. Polling progress here would cause
   // the entire screen (and PlayerControls' button animations) to re-render
@@ -636,6 +641,12 @@ export function NowPlayingScreen() {
       withTiming(1, { duration: 220 }),
       withTiming(0, { duration: 320 }),
     );
+    // Cancel on unmount so the worklet doesn't keep mutating the shared
+    // value after the screen is gone — matches the artwork-scale pattern
+    // just above and prevents a slow shared-value-leak across mount cycles.
+    return () => {
+      cancelAnimation(morphPulse);
+    };
   }, [isPlaying]);
   const morphStyle = useAnimatedStyle(() => ({
     opacity: morphPulse.value * 0.55,

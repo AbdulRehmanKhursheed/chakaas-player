@@ -22,9 +22,9 @@ import Animated, {
 import { PanGestureHandler } from 'react-native-gesture-handler';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useNavigation } from '@react-navigation/native';
-import TrackPlayer, { useActiveTrack, useProgress } from 'react-native-track-player';
+import TrackPlayer, { useProgress } from 'react-native-track-player';
 import * as Haptics from 'expo-haptics';
-import { usePlayer } from '@/features/player/usePlayer';
+import { usePlayer, useStableActiveTrack } from '@/features/player/usePlayer';
 import type { RootStackNavigationProp } from '@/types/navigation';
 import { TrackArtwork } from '@/components/track/TrackArtwork';
 import { useColorTheme, isDarkOrGrey, GOLD } from '@/features/player/ColorTheme';
@@ -63,7 +63,11 @@ function lighten(hex: string, ratio: number): string {
 
 export function MiniPlayer() {
   const navigation = useNavigation<RootStackNavigationProp<'NowPlaying'>>();
-  const activeTrack = useActiveTrack();
+  // Stable subscription — does NOT tear down on each useProgress tick, so
+  // PlaybackActiveTrackChanged events fired mid-render are never dropped.
+  // Fixes the "MiniPlayer stuck on previous track while Library highlights
+  // the new one" desync.
+  const activeTrack = useStableActiveTrack();
   const progress = useProgress(250);
   const { isPlaying, togglePlayPause, skipToNext, skipToPrevious } = usePlayer();
 

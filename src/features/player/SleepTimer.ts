@@ -26,6 +26,21 @@ import TrackPlayer, { Event } from 'react-native-track-player';
 import { MMKV } from 'react-native-mmkv';
 import { logger } from '@/utils/logger';
 
+// ── EOT manual-skip threshold ──────────────────────────────────────────────
+//
+// `Event.PlaybackActiveTrackChanged` fires for BOTH natural end-of-track AND
+// manual skips. If we treat both the same way, the user arming "pause at end
+// of track" and then tapping next would pause immediately — clearly wrong.
+//
+// The fix: when the event fires, inspect the previous track's playback
+// progress. If the user was less than 85% of the way through, it was a
+// manual skip — let playback continue and keep the timer armed. At >= 85%
+// we treat it as natural end-of-track (crossfade / lead-in events can fire
+// a touch early so the threshold isn't 100%).
+//
+// `PlaybackQueueEnded` always means the queue actually ran out — always pause.
+const EOT_NATURAL_END_RATIO = 0.85;
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export type SleepTimerMode = 'duration' | 'end-of-track' | null;
@@ -157,23 +172,79 @@ class SleepTimerManager {
     this.totalMs = 0;
     this.endsAtEpochMs = 0;
 
-    const onTrackEnd = () => {
-      // Fired whenever the active track changes — which is what we want:
-      // when the current track finishes naturally, RNTP advances and we pause.
+    // We listen to PlaybackProgressUpdated as a fallback for RNTP versions
+    // where the ActiveTrackChanged payload does not carry `lastPosition` /
+    // `lastTrack`. We stash the latest position/duration so the change
+    // handler can derive a play-completion ratio.
+    let lastKnownPosition = 0;
+    let lastKnownDuration = 0;
+
+    // Typed loosely (`unknown`) and then narrowed inline — keeps the
+    // handler signature trivially compatible with any future RNTP payload
+    // shape changes and lets us defend against missing `lastPosition` /
+    // `lastTrack.duration` fields on older RNTP builds.
+    const onActiveTrackChanged = (event: unknown) => {
+      // Derive how far the previous track had played. RNTP 4.x ships
+      // `lastPosition` and `lastTrack.duration` in the event payload — use
+      // them when available. Otherwise fall back to the position we sampled
+      // from PlaybackProgressUpdated just before the change.
+      const e = (event ?? {}) as {
+        lastPosition?: number;
+        lastTrack?: { duration?: number };
+      };
+      const payloadPos =
+        typeof e.lastPosition === 'number' ? e.lastPosition : null;
+      const payloadDur =
+        typeof e.lastTrack?.duration === 'number'
+          ? e.lastTrack.duration
+          : null;
+
+      const position = payloadPos ?? lastKnownPosition;
+      const duration = payloadDur ?? lastKnownDuration;
+
+      // If we have no duration info at all, we can't tell skip from
+      // natural end — err on the safe side and DO NOT pause (manual skips
+      // should never silence the player). The user can re-arm if they want.
+      if (!duration || duration <= 0) {
+        return;
+      }
+
+      const ratio = position / duration;
+      if (ratio < EOT_NATURAL_END_RATIO) {
+        // Manual skip — keep the timer armed so the *next* natural end
+        // still pauses. Don't fire.
+        return;
+      }
       void this.fireEndOfTrack();
+    };
+
+    const onProgress = (data: unknown) => {
+      const d = (data ?? {}) as { position?: number; duration?: number };
+      if (typeof d.position === 'number') lastKnownPosition = d.position;
+      if (typeof d.duration === 'number') lastKnownDuration = d.duration;
     };
 
     this.eotSubscriptions = [
       TrackPlayer.addEventListener(
         Event.PlaybackActiveTrackChanged,
-        onTrackEnd,
+        onActiveTrackChanged,
       ),
       // Single-track queues (or last track w/ repeat=off) never fire an
       // ActiveTrackChanged event — only QueueEnded — so we must listen
-      // to both to be sure the timer trips at end of playback.
+      // to both to be sure the timer trips at end of playback. QueueEnded
+      // genuinely means the queue ran out, so ALWAYS pause regardless of
+      // position.
       TrackPlayer.addEventListener(
         Event.PlaybackQueueEnded,
-        onTrackEnd,
+        () => {
+          void this.fireEndOfTrack();
+        },
+      ),
+      // Fallback position tracker for RNTP builds whose ActiveTrackChanged
+      // payload omits `lastPosition` / `lastTrack`.
+      TrackPlayer.addEventListener(
+        Event.PlaybackProgressUpdated,
+        onProgress,
       ),
     ];
 

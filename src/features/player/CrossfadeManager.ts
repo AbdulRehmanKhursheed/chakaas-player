@@ -42,6 +42,7 @@ const FADE_UP_TOTAL_MS = 1_000;
 
 let progressSub: { remove: () => void } | null = null;
 let trackChangeSub: { remove: () => void } | null = null;
+let settingsUnsub: (() => void) | null = null;
 let isFading = false;
 let lastFadeAtTrackIndex: number | null = null;
 let savedVolume = 1;
@@ -54,6 +55,13 @@ let savedVolume = 1;
  * the user just turned the feature off.
  */
 let fadeEpoch = 0;
+
+// Cached settings — read once at setup, refreshed via store subscription.
+// The progress handler runs at 1 Hz during playback; reading `getState()`
+// on every tick is 3600 store reads / hour even when crossfade is OFF.
+// Caching makes the hot path a pair of local-variable comparisons.
+let cachedCrossfadeEnabled = false;
+let cachedCrossfadeMs = 0;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -185,11 +193,25 @@ export const CrossfadeManager = {
   setupCrossfade(): void {
     if (progressSub != null) return; // already set up
 
+    // Read settings once. The progress handler must NOT call
+    // `useSettingsStore.getState()` per tick — see the cache vars at the
+    // top of this file and the subscription below.
+    const initial = useSettingsStore.getState();
+    cachedCrossfadeEnabled = initial.crossfadeEnabled;
+    cachedCrossfadeMs = initial.crossfadeMs;
+    settingsUnsub = useSettingsStore.subscribe((s, prev) => {
+      if (s.crossfadeEnabled !== prev.crossfadeEnabled) {
+        cachedCrossfadeEnabled = s.crossfadeEnabled;
+      }
+      if (s.crossfadeMs !== prev.crossfadeMs) {
+        cachedCrossfadeMs = s.crossfadeMs;
+      }
+    });
+
     progressSub = TrackPlayer.addEventListener(
       Event.PlaybackProgressUpdated,
       async (data) => {
-        const { crossfadeEnabled, crossfadeMs } = useSettingsStore.getState();
-        if (!crossfadeEnabled) return;
+        if (!cachedCrossfadeEnabled) return;
         if (isFading) return;
 
         const position = typeof data.position === 'number' ? data.position : 0;
@@ -197,7 +219,7 @@ export const CrossfadeManager = {
         if (duration <= 0) return;
 
         const remainingMs = (duration - position) * 1000;
-        if (remainingMs > crossfadeMs) return;
+        if (remainingMs > cachedCrossfadeMs) return;
 
         // Only fade if there's a next track.
         try {
@@ -237,6 +259,10 @@ export const CrossfadeManager = {
       trackChangeSub.remove();
       trackChangeSub = null;
     }
+    if (settingsUnsub) {
+      settingsUnsub();
+      settingsUnsub = null;
+    }
     // Bump the epoch so any in-flight `fadeOutAndSkip` aborts at its next
     // checkpoint. Without this, toggling crossfade OFF mid-fade would let
     // the loop run to completion — fading to silence, calling
@@ -251,6 +277,8 @@ export const CrossfadeManager = {
     }
     lastFadeAtTrackIndex = null;
     isFading = false;
+    cachedCrossfadeEnabled = false;
+    cachedCrossfadeMs = 0;
     logger.info('[CrossfadeManager] disposed');
   },
 
