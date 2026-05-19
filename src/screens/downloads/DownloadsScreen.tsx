@@ -47,6 +47,7 @@ import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
 
 import { useDownloadStore } from '@/stores/downloadStore';
+import { useShallow } from 'zustand/react/shallow';
 import { DownloadManager, MAX_LIBRARY_SIZE } from '@/features/download/DownloadManager';
 import {
   buildDownloadCandidates,
@@ -841,11 +842,19 @@ export function DownloadsScreen() {
   ).length;
   const completedCount = queue.filter((i) => i.status === 'done').length;
 
-  // Build a lookup so plan cards can mirror real queue progress.
-  const queueByYtId = useMemo(
-    () => new Map(queue.map((i) => [i.youtubeId, i])),
-    [queue],
+  // Plan cards used to mirror real queue progress via a queueByYtId Map
+  // rebuilt every progress tick. That Map drove a `downloadStatus` /
+  // `downloadProgress` prop into every SongDiscoveryCard, forcing the
+  // entire plan grid to re-render at ~4Hz during a download. The cards
+  // now self-subscribe to their own row in the download store instead,
+  // so we only need a lightweight Set of "which videoIds are already in
+  // the queue" for the plan-footer counts + dedup. Shallow selector means
+  // this Set is stable across progress ticks — it only changes when the
+  // queue membership changes (add/remove).
+  const queuedYtIdsArr = useDownloadStore(
+    useShallow((s) => s.queue.map((i) => i.youtubeId)),
   );
+  const queuedYtIds = useMemo(() => new Set(queuedYtIdsArr), [queuedYtIdsArr]);
 
   const planTotalBytes = suggestions.reduce(
     (sum, s) => sum + s.estimatedBytes,
@@ -979,7 +988,7 @@ export function DownloadsScreen() {
     // The manager dedupes against the queue and library, respects the
     // 1500-song cap, and starts the worker pool — all in a single
     // transaction. UI stays responsive even for 1200-song approvals.
-    const toEnqueue = suggestions.filter((s) => !queueByYtId.has(s.videoId));
+    const toEnqueue = suggestions.filter((s) => !queuedYtIds.has(s.videoId));
     if (toEnqueue.length === 0) {
       setSuggestions([]);
       setFlow('decision');
@@ -1023,7 +1032,7 @@ export function DownloadsScreen() {
     setSuggestions([]);
     setFlow('decision');
     void refreshStorage();
-  }, [suggestions, queueByYtId, refreshStorage]);
+  }, [suggestions, queuedYtIds, refreshStorage]);
 
   // ── Plan: cancel ───────────────────────────────────────────────────────────
 
@@ -1033,22 +1042,10 @@ export function DownloadsScreen() {
     setFlow('decision');
   }, []);
 
-  // ── Per-card status (mirrors live queue if already enqueued) ──────────────
-
-  function getCardStatus(
-    videoId: string,
-  ): { status: 'idle' | 'downloading' | 'done'; progress: number } {
-    const q = queueByYtId.get(videoId);
-    if (q) {
-      return {
-        status: q.status === 'done' ? 'done' : 'downloading',
-        progress: q.progress,
-      };
-    }
-    return { status: 'idle', progress: 0 };
-  }
-
   // ── Render ─────────────────────────────────────────────────────────────────
+  // (getCardStatus is gone — each SongDiscoveryCard self-subscribes to its
+  // own row in the download queue, so the parent doesn't need to compute
+  // per-card status on every render.)
 
   return (
     <SafeAreaView style={styles.root} edges={['top']}>
@@ -1085,36 +1082,31 @@ export function DownloadsScreen() {
             />
 
             <AnimatePresence>
-              {suggestions.map((s) => {
-                const { status, progress } = getCardStatus(s.videoId);
-                return (
-                  <SongDiscoveryCard
-                    key={s.videoId}
-                    result={{
-                      id: s.videoId,
-                      title: s.title,
-                      author: s.artist,
-                      duration_ms: s.duration_ms,
-                      thumbnail: s.thumbnail,
-                      view_count: '',
-                    }}
-                    onDownload={handlePlanDownloadOne}
-                    onSkip={() => handlePlanSkip(s.videoId)}
-                    downloadStatus={status}
-                    downloadProgress={progress}
-                    rationale={s.rationale}
-                    estimatedSizeReadable={s.estimatedSizeReadable}
-                  />
-                );
-              })}
+              {suggestions.map((s) => (
+                <SongDiscoveryCard
+                  key={s.videoId}
+                  result={{
+                    id: s.videoId,
+                    title: s.title,
+                    author: s.artist,
+                    duration_ms: s.duration_ms,
+                    thumbnail: s.thumbnail,
+                    view_count: '',
+                  }}
+                  onDownload={handlePlanDownloadOne}
+                  onSkip={handlePlanSkip}
+                  rationale={s.rationale}
+                  estimatedSizeReadable={s.estimatedSizeReadable}
+                />
+              ))}
             </AnimatePresence>
 
             <PlanFooter
               remaining={suggestions.filter(
-                (s) => !queueByYtId.has(s.videoId),
+                (s) => !queuedYtIds.has(s.videoId),
               ).length}
               totalBytes={suggestions
-                .filter((s) => !queueByYtId.has(s.videoId))
+                .filter((s) => !queuedYtIds.has(s.videoId))
                 .reduce((sum, s) => sum + s.estimatedBytes, 0)}
               onApprove={handlePlanApprove}
               onCancel={handlePlanCancel}

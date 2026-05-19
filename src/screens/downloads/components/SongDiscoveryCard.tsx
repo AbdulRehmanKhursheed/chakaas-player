@@ -1,4 +1,4 @@
-import React, { useCallback } from 'react';
+import React, { useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -6,7 +6,7 @@ import {
   StyleSheet,
   Platform,
 } from 'react-native';
-import FastImage from 'react-native-fast-image';
+import FastImage, { type Source as FastImageSource } from 'react-native-fast-image';
 import Animated, {
   useAnimatedStyle,
   useSharedValue,
@@ -15,15 +15,20 @@ import Animated, {
 import { MotiView } from 'moti';
 import { Ionicons } from '@expo/vector-icons';
 import type { YouTubeSearchResult } from '@/types/track';
+import { useDownloadStore } from '@/stores/downloadStore';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface SongDiscoveryCardProps {
   result: YouTubeSearchResult;
   onDownload: (id: string, title: string, author: string, thumbnail: string, durationMs: number) => void;
-  onSkip: () => void;
-  downloadStatus?: 'idle' | 'downloading' | 'done';
-  downloadProgress?: number; // 0–100
+  /**
+   * Skip handler — receives the videoId so the parent can hand in a
+   * referentially-stable callback (useCallback) instead of allocating
+   * a per-row arrow on every render. The card calls onSkip(result.id)
+   * internally.
+   */
+  onSkip: (videoId: string) => void;
   /**
    * Optional one-liner explaining why this song was suggested
    * (e.g. "Because you've been playing Arijit Singh"). When provided, a small
@@ -174,15 +179,33 @@ const btnStyles = StyleSheet.create({
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export function SongDiscoveryCard({
+function SongDiscoveryCardImpl({
   result,
   onDownload,
   onSkip,
-  downloadStatus = 'idle',
-  downloadProgress = 0,
   rationale,
   estimatedSizeReadable,
 }: SongDiscoveryCardProps) {
+  // Self-subscribe to this card's own download status (if any). When the
+  // parent renders 12 cards, each card only re-renders when its OWN row
+  // in the download queue changes — progress on card A no longer
+  // re-renders cards B-L. Previously the parent recomputed a
+  // `queueByYtId` Map 4×/sec and passed `downloadStatus`/`downloadProgress`
+  // props in, which forced every card to re-render every tick during a
+  // download, which on heavy scroll was enough to crash the JS↔native
+  // bridge.
+  const videoId = result.id;
+  const queueRow = useDownloadStore(
+    useCallback((s) => s.queue.find((q) => q.youtubeId === videoId), [videoId]),
+  );
+  const downloadStatus: 'idle' | 'downloading' | 'done' =
+    queueRow?.status === 'done'
+      ? 'done'
+      : queueRow
+        ? 'downloading'
+        : 'idle';
+  const downloadProgress = queueRow?.progress ?? 0;
+
   const isIdle        = downloadStatus === 'idle';
   const isDownloading = downloadStatus === 'downloading';
   const isDone        = downloadStatus === 'done';
@@ -191,6 +214,23 @@ export function SongDiscoveryCard({
     if (!isIdle) return;
     onDownload(result.id, result.title, result.author, result.thumbnail, result.duration_ms);
   }, [isIdle, result, onDownload]);
+
+  // Bind the videoId locally so the TouchableOpacity gets a stable
+  // function reference that doesn't change across re-renders.
+  const handleSkip = useCallback(() => {
+    onSkip(result.id);
+  }, [result.id, onSkip]);
+
+  // Memoize the FastImage source — without this, the source object is a
+  // new reference every render and FastImage re-walks its native cache.
+  const fastImageSource: FastImageSource | null = useMemo(() => {
+    if (!result.thumbnail) return null;
+    return {
+      uri: result.thumbnail,
+      priority: FastImage.priority.normal,
+      cache: FastImage.cacheControl.immutable,
+    };
+  }, [result.thumbnail]);
 
   const durationStr = formatDuration(result.duration_ms);
 
@@ -204,13 +244,9 @@ export function SongDiscoveryCard({
     >
       {/* Thumbnail */}
       <View style={styles.thumbnailWrapper}>
-        {result.thumbnail ? (
+        {fastImageSource ? (
           <FastImage
-            source={{
-              uri: result.thumbnail,
-              priority: FastImage.priority.normal,
-              cache: FastImage.cacheControl.immutable,
-            }}
+            source={fastImageSource}
             style={styles.thumbnail}
             resizeMode={FastImage.resizeMode.cover}
           />
@@ -284,7 +320,7 @@ export function SongDiscoveryCard({
           <>
             <DownloadButton onPress={handleDownload} />
             <TouchableOpacity
-              onPress={onSkip}
+              onPress={handleSkip}
               style={styles.skipButton}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               accessibilityLabel="Skip this song"
@@ -308,6 +344,20 @@ export function SongDiscoveryCard({
     </MotiView>
   );
 }
+
+// React.memo so the card skips re-renders when ONLY-other rows in the
+// download queue update. Equality compares the things the parent passes
+// in (result.id is the stable identity; the others are referentially
+// stable thanks to useCallback in the parent + the dropped status props).
+export const SongDiscoveryCard = React.memo(
+  SongDiscoveryCardImpl,
+  (prev, next) =>
+    prev.result.id === next.result.id &&
+    prev.onDownload === next.onDownload &&
+    prev.onSkip === next.onSkip &&
+    prev.rationale === next.rationale &&
+    prev.estimatedSizeReadable === next.estimatedSizeReadable,
+);
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
