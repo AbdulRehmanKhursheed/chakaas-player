@@ -318,6 +318,19 @@ const NOTIFICATION_MIN_GAP_MS = 250;
 const _lastNotificationStatus = new Map<string, DownloadStatus>();
 
 /**
+ * Serialization mutex for notifee.displayNotification calls.
+ * With MAX_CONCURRENT=3 workers each emitting progress every 300ms, two
+ * pushProgress calls can pass the wall-clock throttle in the same JS tick
+ * (the throttle is read-then-set, not atomic) and end up firing two
+ * concurrent native displayNotification calls against the same FG service
+ * notification ID. On some OEM Androids that races notifee's internal
+ * state and crashes the JS thread — matching the user's repro of
+ * "scroll while downloading → crash". The mutex serialises native calls
+ * without blocking the workers' own pipelines.
+ */
+let _notificationFlight: Promise<void> = Promise.resolve();
+
+/**
  * Centralized helper for pushing a progress update to both the in-app store
  * and the foreground-service notification. Applies the wall-clock throttle
  * (≥250 ms between notifee calls) and the 5%-delta guard. Always allows
@@ -347,11 +360,15 @@ async function pushProgress(
   _lastNotificationStatus.set(id, status);
   _lastNotificationWallMs = wallNow;
 
-  try {
-    await updateDownloadProgress(title, artist, pct, queueLength);
-  } catch (err) {
-    logger.warn('[DownloadManager] Failed to update progress notification:', err);
-  }
+  // Chain onto the in-flight native call so we never have two
+  // displayNotification calls concurrently touching the same FG service.
+  // The worker doesn't wait on the chain (this is fire-and-forget) — its
+  // store update already happened above; the notification is decorative.
+  _notificationFlight = _notificationFlight
+    .then(() => updateDownloadProgress(title, artist, pct, queueLength))
+    .catch((err) => {
+      logger.warn('[DownloadManager] Failed to update progress notification:', err);
+    });
 }
 
 // ── notifee background event (module-top-level) ────────────────────────────

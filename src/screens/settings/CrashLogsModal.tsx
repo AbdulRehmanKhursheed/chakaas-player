@@ -20,8 +20,7 @@ import {
   StyleSheet,
   Platform,
   Alert,
-  // Clipboard ships separately in modern RN; we import lazily below so missing
-  // module never breaks the modal render.
+  Share,
 } from 'react-native';
 import { crashSink } from '@/utils/crashSink';
 
@@ -44,35 +43,20 @@ export function CrashLogsModal({ visible, onClose }: Props): React.ReactElement 
   const entryCount = useMemo(() => crashSink.getEntries().length, [visible, bumpKey]);
 
   const handleCopy = async (): Promise<void> => {
+    // RN's built-in Share API is part of core (no native dep). The user
+    // can pick any app to send the dump to — chat, email, gist, etc.
+    // We renamed the button text but kept the handler name for clarity.
     try {
-      // Lazy require so apps without @react-native-clipboard/clipboard
-      // installed still render the modal (they just see the Copy button no-op).
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const ClipboardMod = require('@react-native-clipboard/clipboard');
-      const Clipboard = ClipboardMod?.default ?? ClipboardMod;
-      if (Clipboard?.setString) {
-        Clipboard.setString(dump);
-        Alert.alert('Copied', `${entryCount} log entries copied to clipboard.`);
-        return;
-      }
-    } catch {
-      /* fall through to RN-builtin */
+      await Share.share({
+        message: dump,
+        title: `Chakaas crash logs (${entryCount} entries)`,
+      });
+    } catch (err) {
+      Alert.alert(
+        'Share unavailable',
+        'Long-press the log text and choose Copy from the system menu.',
+      );
     }
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const RN = require('react-native');
-      if (RN.Clipboard?.setString) {
-        RN.Clipboard.setString(dump);
-        Alert.alert('Copied', `${entryCount} log entries copied to clipboard.`);
-        return;
-      }
-    } catch {
-      /* ignore */
-    }
-    Alert.alert(
-      'Clipboard unavailable',
-      'Long-press the log text and choose Copy from the system menu.',
-    );
   };
 
   const handleClear = (): void => {
@@ -112,7 +96,7 @@ export function CrashLogsModal({ visible, onClose }: Props): React.ReactElement 
             <Text style={styles.btnSecondaryText}>Clear</Text>
           </Pressable>
           <Pressable style={[styles.btn, styles.btnPrimary]} onPress={handleCopy}>
-            <Text style={styles.btnPrimaryText}>Copy</Text>
+            <Text style={styles.btnPrimaryText}>Share</Text>
           </Pressable>
           <Pressable style={[styles.btn, styles.btnGhost]} onPress={onClose}>
             <Text style={styles.btnGhostText}>Close</Text>
