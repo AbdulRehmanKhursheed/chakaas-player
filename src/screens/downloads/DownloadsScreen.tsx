@@ -1181,10 +1181,12 @@ export function DownloadsScreen() {
                 exiting={FadeOutUp.duration(200)}
                 layout={Layout.springify().damping(18)}
               >
-                <DownloadQueueItem
-                  item={item}
-                  onCancel={() => handleCancel(item.id)}
-                />
+                {/* Pass only the stable id + stable onCancel. The child
+                    subscribes to its own slice of the store, so progress
+                    ticks on ONE row don't re-render OTHER rows — that was
+                    the root of the "scroll while downloading → crash" on
+                    the native bridge. */}
+                <DownloadQueueItem id={item.id} onCancel={handleCancel} />
               </Animated.View>
             ))}
           </AnimatePresence>

@@ -1,21 +1,23 @@
-import React, { useCallback } from 'react';
+import React, { useCallback, useMemo } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Platform } from 'react-native';
-import FastImage from 'react-native-fast-image';
+import FastImage, { type Source as FastImageSource } from 'react-native-fast-image';
 import Animated, {
   useAnimatedStyle,
   useSharedValue,
   withTiming,
   Easing,
 } from 'react-native-reanimated';
-import { MotiView } from 'moti';
 import { Ionicons } from '@expo/vector-icons';
-import type { DownloadItem } from '@/stores/downloadStore';
+import { useDownloadStore, type DownloadItem } from '@/stores/downloadStore';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface DownloadQueueItemProps {
-  item: DownloadItem;
-  onCancel: () => void;
+  /** Stable id — the component subscribes to its own slice of the store. */
+  id: string;
+  /** Stable cancel callback. Receives the id back so the parent doesn't have
+   *  to allocate a per-row arrow. */
+  onCancel: (id: string) => void;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -38,7 +40,13 @@ const STATUS_LABELS: Record<DownloadItem['status'], string> = {
   error:       'Failed',
 };
 
-// ─── Animated progress bar ────────────────────────────────────────────────────
+// ─── Progress bar (Reanimated, UI-thread only) ───────────────────────────────
+// Previously this used Moti's animate + an inner looping shimmer worklet.
+// The looping shimmer fired ~60 times/sec PER active item — combined with
+// progress-tick re-renders that re-mounted the worklet, the UI thread got
+// jammed during user scroll and the native bridge crashed. We replace it
+// with a single Reanimated SharedValue that runs withTiming on the UI
+// thread without any JS-side re-render churn.
 
 interface ProgressBarProps {
   progress: number; // 0–100
@@ -47,34 +55,24 @@ interface ProgressBarProps {
 
 function AnimatedProgressBar({ progress, status }: ProgressBarProps) {
   const color = STATUS_COLORS[status];
-  const isActive = status !== 'done' && status !== 'error' && status !== 'queued';
+  const widthShared = useSharedValue(0);
+
+  // Drive the shared value on the UI thread. `progress` changing triggers
+  // a tiny effect — no full re-render of the parent.
+  React.useEffect(() => {
+    widthShared.value = withTiming(Math.max(0, Math.min(100, progress)), {
+      duration: 280,
+      easing: Easing.out(Easing.ease),
+    });
+  }, [progress, widthShared]);
+
+  const fillStyle = useAnimatedStyle(() => ({
+    width: `${widthShared.value}%` as `${number}%`,
+  }));
 
   return (
     <View style={barStyles.track}>
-      <MotiView
-        animate={{ width: `${Math.max(0, Math.min(100, progress))}%` as any }}
-        transition={{
-          type: 'timing',
-          duration: 350,
-          easing: Easing.out(Easing.ease),
-        }}
-        style={[barStyles.fill, { backgroundColor: color }]}
-      >
-        {/* Shimmer overlay for active states */}
-        {isActive && (
-          <MotiView
-            from={{ opacity: 0.3, translateX: -60 }}
-            animate={{ opacity: 0.7, translateX: 200 }}
-            transition={{
-              loop: true,
-              type: 'timing',
-              duration: 1200,
-              repeatReverse: false,
-            }}
-            style={barStyles.shimmer}
-          />
-        )}
-      </MotiView>
+      <Animated.View style={[barStyles.fill, { backgroundColor: color }, fillStyle]} />
     </View>
   );
 }
@@ -89,16 +87,6 @@ const barStyles = StyleSheet.create({
   },
   fill: {
     height: 3,
-    borderRadius: 2,
-    overflow: 'hidden',
-  },
-  shimmer: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    width: 60,
-    height: 3,
-    backgroundColor: 'rgba(255,255,255,0.45)',
     borderRadius: 2,
   },
 });
@@ -115,13 +103,34 @@ function ThumbnailPlaceholder() {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export function DownloadQueueItem({ item, onCancel }: DownloadQueueItemProps) {
-  const isDone  = item.status === 'done';
-  const isError = item.status === 'error';
+function DownloadQueueItemImpl({ id, onCancel }: DownloadQueueItemProps) {
+  // Per-row store subscription. When ANOTHER item in the queue updates,
+  // Zustand+Immer keeps this item's reference stable so we don't re-render.
+  // When THIS item updates, the reference changes and only we re-render.
+  // This is the fix for "every progress tick re-renders every queue row".
+  const item = useDownloadStore(
+    useCallback((s) => s.queue.find((q) => q.id === id), [id]),
+  );
+
+  // Memoize the FastImage source so we don't recreate the object every
+  // render — FastImage diffs by reference, and a fresh object every tick
+  // forces redundant native cache lookups.
+  const fastImageSource: FastImageSource | null = useMemo(() => {
+    if (!item?.thumbnail) return null;
+    return {
+      uri: item.thumbnail,
+      priority: FastImage.priority.normal,
+      cache: FastImage.cacheControl.immutable,
+    };
+  }, [item?.thumbnail]);
 
   const cancelScale = useSharedValue(1);
 
-  const handleCancelPressIn  = useCallback(() => {
+  const handleCancel = useCallback(() => {
+    onCancel(id);
+  }, [id, onCancel]);
+
+  const handleCancelPressIn = useCallback(() => {
     cancelScale.value = withTiming(0.82, { duration: 80 });
   }, [cancelScale]);
 
@@ -133,8 +142,15 @@ export function DownloadQueueItem({ item, onCancel }: DownloadQueueItemProps) {
     transform: [{ scale: cancelScale.value }],
   }));
 
+  // If the row was just removed, render nothing — the parent's
+  // AnimatePresence will animate it out via the prior render.
+  if (!item) return null;
+
+  const isDone  = item.status === 'done';
+  const isError = item.status === 'error';
+
   // Build status label string
-  let statusLabel = STATUS_LABELS[item.status];
+  let statusLabel: string = STATUS_LABELS[item.status];
   if (item.status === 'downloading' && item.progress > 0) {
     statusLabel = `Downloading ${Math.round(item.progress)}%`;
   } else if (item.status === 'done') {
@@ -146,21 +162,11 @@ export function DownloadQueueItem({ item, onCancel }: DownloadQueueItemProps) {
   const statusColor = STATUS_COLORS[item.status];
 
   return (
-    <MotiView
-      from={{ opacity: 0, translateY: 8 }}
-      animate={{ opacity: 1, translateY: 0 }}
-      exit={{ opacity: 0, translateY: -8 }}
-      transition={{ type: 'timing', duration: 260 }}
-      style={styles.container}
-    >
+    <View style={styles.container}>
       {/* Thumbnail */}
-      {item.thumbnail ? (
+      {fastImageSource ? (
         <FastImage
-          source={{
-            uri: item.thumbnail,
-            priority: FastImage.priority.normal,
-            cache: FastImage.cacheControl.immutable,
-          }}
+          source={fastImageSource}
           style={styles.thumbnail}
           resizeMode={FastImage.resizeMode.cover}
         />
@@ -199,7 +205,7 @@ export function DownloadQueueItem({ item, onCancel }: DownloadQueueItemProps) {
       ) : (
         <Animated.View style={cancelAnimStyle}>
           <TouchableOpacity
-            onPress={onCancel}
+            onPress={handleCancel}
             onPressIn={handleCancelPressIn}
             onPressOut={handleCancelPressOut}
             style={styles.cancelButton}
@@ -211,9 +217,17 @@ export function DownloadQueueItem({ item, onCancel }: DownloadQueueItemProps) {
           </TouchableOpacity>
         </Animated.View>
       )}
-    </MotiView>
+    </View>
   );
 }
+
+// Memo guard: re-render only if our subscription returns a different
+// reference (i.e. THIS item changed) — the parent's queue.map will pass
+// stable id + stable onCancel, so prop diff is trivial.
+export const DownloadQueueItem = React.memo(
+  DownloadQueueItemImpl,
+  (prev, next) => prev.id === next.id && prev.onCancel === next.onCancel,
+);
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
