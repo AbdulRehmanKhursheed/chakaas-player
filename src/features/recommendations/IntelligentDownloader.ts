@@ -83,19 +83,64 @@ export async function buildDownloadCandidates(
   return suggestions;
 }
 
+// ── Replacement-suggestion pool cache ─────────────────────────────────────
+//
+// The Downloads-screen plan lets the user tap "Skip" repeatedly to swap any
+// suggestion they don't like. Previously every tap fired a full
+// `getDiscoverFeed(50)` round-trip — 8 parallel Saavn searches per skip.
+// 10 skips = 80 API calls.
+//
+// We now fetch a 50-item pool ONCE, hand out one fresh item per skip, and
+// only refetch when the pool is exhausted (or 30 minutes pass — `pool_v1`
+// is short-lived; the user's taste profile may have shifted by then).
+let _replacementPool: DiscoverItem[] = [];
+let _replacementPoolFetchedAt = 0;
+const REPLACEMENT_POOL_TTL_MS = 30 * 60 * 1000;
+
 /**
  * Returns one replacement suggestion that isn't already in `existingIds`.
  * Used by the "Skip" affordance on the plan-review cards.
+ *
+ * Caches the suggestion pool across calls so repeated skips don't fire a
+ * fresh Saavn fan-out every tap.
  */
 export async function getReplacementSuggestion(
   existingIds: string[],
 ): Promise<DownloadSuggestion | null> {
   const exclude = new Set(existingIds);
-  const items = await getDiscoverFeed(50);
-  const fresh = items.find((item) => !exclude.has(item.id));
+  const now = Date.now();
+  const poolExpired = now - _replacementPoolFetchedAt > REPLACEMENT_POOL_TTL_MS;
+
+  // First try to satisfy from the cached pool.
+  let fresh = !poolExpired
+    ? _replacementPool.find((item) => !exclude.has(item.id))
+    : undefined;
+
+  if (!fresh) {
+    // Pool empty / exhausted / expired — refill once.
+    _replacementPool = await getDiscoverFeed(50);
+    _replacementPoolFetchedAt = now;
+    fresh = _replacementPool.find((item) => !exclude.has(item.id));
+  }
+
   if (!fresh) {
     logger.warn('[IntelligentDownloader] No replacement found — pool exhausted.');
     return null;
   }
+
+  // Remove the handed-out item from the pool so the next skip gets a
+  // genuinely different track without re-comparing against `existingIds`.
+  _replacementPool = _replacementPool.filter((item) => item.id !== fresh!.id);
+
   return toSuggestion(fresh);
+}
+
+/**
+ * Wipes the cached replacement pool — call from places that materially change
+ * the user's taste profile (e.g. a session-wide refresh, large skip storm).
+ * Exposed for future use; not currently invoked.
+ */
+export function clearReplacementPool(): void {
+  _replacementPool = [];
+  _replacementPoolFetchedAt = 0;
 }

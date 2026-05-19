@@ -66,6 +66,27 @@
 
 import { AppRegistry, Text, View, ScrollView } from 'react-native';
 import React from 'react';
+// ─────────────────────────────────────────────────────────────────────────────
+// Notifee foreground-service registration — MUST run at module top-level
+// before any displayNotification({ android: { asForegroundService: true } })
+// fires, otherwise Android refuses to display the notification and the
+// download pipeline crashes. The task returns a Promise that never resolves,
+// keeping the service alive until DownloadManager calls stopForegroundService.
+// ─────────────────────────────────────────────────────────────────────────────
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const notifee = require('@notifee/react-native').default;
+  notifee.registerForegroundService(() => {
+    return new Promise(() => {
+      /* Keep service alive — DownloadManager stops it explicitly via
+         stopForegroundService(). Resolving here would tear it down too early. */
+    });
+  });
+} catch (e) {
+  // Non-fatal — downloads will fall back to normal notifications.
+  // eslint-disable-next-line no-console
+  console.warn('[Chakaas] notifee registerForegroundService failed:', e);
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Global error capture: any uncaught error / module-import crash gets stored
