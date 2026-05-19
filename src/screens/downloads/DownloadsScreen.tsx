@@ -929,24 +929,41 @@ export function DownloadsScreen() {
     ) => {
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       void (async () => {
-        // Look up the original suggestion so we can thread Saavn metadata
-        // (encrypted URL, 320kbps flag, album) through to DownloadManager —
-        // without it the pipeline would try to fetch a Saavn id off YouTube.
-        const suggestion = suggestions.find((s) => s.videoId === videoId);
-        const result = await DownloadManager.enqueue({
-          youtubeId: videoId,
-          title,
-          artist,
-          thumbnail,
-          durationMs,
-          quality: '320k',
-          provider: suggestion?.provider ?? 'saavn',
-          album: suggestion?.saavnAlbum,
-          saavnEncryptedUrl: suggestion?.saavnEncryptedUrl,
-          saavnHas320kbps: suggestion?.saavnHas320kbps,
-        });
-        if (!result.success) {
-          Alert.alert('Cannot start download', result.reason ?? 'Please try again.');
+        try {
+          // Look up the original suggestion so we can thread Saavn metadata
+          // (encrypted URL, 320kbps flag, album) through to DownloadManager —
+          // without it the pipeline would try to fetch a Saavn id off YouTube.
+          const suggestion = suggestions.find((s) => s.videoId === videoId);
+          // If we couldn't locate the suggestion in the live array (rare —
+          // could happen if a Skip storm raced this tap), bail with a clear
+          // message instead of pretending we have Saavn metadata we don't.
+          if (!suggestion) {
+            Alert.alert('Cannot start download', 'That suggestion is no longer available. Try again.');
+            return;
+          }
+          const result = await DownloadManager.enqueue({
+            youtubeId: videoId,
+            title,
+            artist,
+            thumbnail,
+            durationMs,
+            quality: '320k',
+            provider: suggestion.provider ?? 'saavn',
+            album: suggestion.saavnAlbum,
+            saavnEncryptedUrl: suggestion.saavnEncryptedUrl,
+            saavnHas320kbps: suggestion.saavnHas320kbps,
+          });
+          if (!result.success) {
+            Alert.alert('Cannot start download', result.reason ?? 'Please try again.');
+          }
+        } catch (err) {
+          // Catch-all so a thrown DB / native error never escapes the touch
+          // handler and crashes the app. Surface a friendly toast instead.
+          console.warn('[DownloadsScreen] enqueue (single) threw', err);
+          Alert.alert(
+            'Download queue issue',
+            'Could not start that download. Please try again.',
+          );
         }
       })();
     },

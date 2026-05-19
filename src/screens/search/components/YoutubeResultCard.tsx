@@ -4,6 +4,7 @@ import {
   Text,
   StyleSheet,
   Pressable,
+  ActivityIndicator,
 } from 'react-native';
 import FastImage from 'react-native-fast-image';
 import Animated, {
@@ -19,6 +20,14 @@ import type { YouTubeSearchResult } from '@/types/track';
 interface YoutubeResultCardProps {
   result: YouTubeSearchResult;
   onDownload: (id: string, title: string, artist: string, thumbnail: string) => void;
+  /**
+   * Tapping the play button triggers a transient stream (no download). When
+   * omitted, the play button is hidden — keeps the component back-compatible
+   * for callers that only want download UX.
+   */
+  onStream?: (result: YouTubeSearchResult) => void;
+  /** Show a spinner on the play button while the stream URL is resolving. */
+  isStreamLoading?: boolean;
   downloadProgress?: number; // 0-100, undefined = not downloading
 }
 
@@ -77,6 +86,8 @@ const progressStyles = StyleSheet.create({
 export function YoutubeResultCard({
   result,
   onDownload,
+  onStream,
+  isStreamLoading = false,
   downloadProgress,
 }: YoutubeResultCardProps) {
   const isDownloading =
@@ -84,6 +95,7 @@ export function YoutubeResultCard({
   const isDone = downloadProgress === 100;
 
   const scaleAnim = useSharedValue(1);
+  const playScaleAnim = useSharedValue(1);
 
   const handleDownloadPress = useCallback(() => {
     if (isDownloading || isDone) return;
@@ -91,8 +103,17 @@ export function YoutubeResultCard({
     onDownload(result.id, trackTitle || result.title, artist || result.author, result.thumbnail);
   }, [result, onDownload, isDownloading, isDone]);
 
+  const handleStreamPress = useCallback(() => {
+    if (isStreamLoading || !onStream) return;
+    onStream(result);
+  }, [result, onStream, isStreamLoading]);
+
   const animatedButtonStyle = useAnimatedStyle(() => ({
     transform: [{ scale: scaleAnim.value }],
+  }));
+
+  const animatedPlayStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: playScaleAnim.value }],
   }));
 
   const handlePressIn = useCallback(() => {
@@ -102,6 +123,14 @@ export function YoutubeResultCard({
   const handlePressOut = useCallback(() => {
     scaleAnim.value = withTiming(1, { duration: 120 });
   }, [scaleAnim]);
+
+  const handlePlayPressIn = useCallback(() => {
+    playScaleAnim.value = withTiming(0.88, { duration: 80 });
+  }, [playScaleAnim]);
+
+  const handlePlayPressOut = useCallback(() => {
+    playScaleAnim.value = withTiming(1, { duration: 120 });
+  }, [playScaleAnim]);
 
   return (
     <View style={styles.container}>
@@ -149,26 +178,48 @@ export function YoutubeResultCard({
         )}
       </View>
 
-      {/* Download button */}
-      <Pressable
-        onPress={handleDownloadPress}
-        onPressIn={handlePressIn}
-        onPressOut={handlePressOut}
-        disabled={isDownloading || isDone}
-        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-      >
-        <Animated.View style={[styles.downloadButton, animatedButtonStyle]}>
-          {isDone ? (
-            <Ionicons name="checkmark" size={18} color="#FFFFFF" />
-          ) : isDownloading ? (
-            <Text style={[styles.downloadIcon, styles.downloadingIcon]}>
-              {Math.round(downloadProgress!)}%
-            </Text>
-          ) : (
-            <Ionicons name="arrow-down" size={18} color="#FFFFFF" />
-          )}
-        </Animated.View>
-      </Pressable>
+      {/* Action buttons */}
+      <View style={styles.actions}>
+        {/* Stream/play button — transient playback, no download */}
+        {onStream && !isDone && (
+          <Pressable
+            onPress={handleStreamPress}
+            onPressIn={handlePlayPressIn}
+            onPressOut={handlePlayPressOut}
+            disabled={isStreamLoading}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Animated.View style={[styles.playButton, animatedPlayStyle]}>
+              {isStreamLoading ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <Ionicons name="play" size={16} color="#FFFFFF" style={styles.playIcon} />
+              )}
+            </Animated.View>
+          </Pressable>
+        )}
+
+        {/* Download button */}
+        <Pressable
+          onPress={handleDownloadPress}
+          onPressIn={handlePressIn}
+          onPressOut={handlePressOut}
+          disabled={isDownloading || isDone}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        >
+          <Animated.View style={[styles.downloadButton, animatedButtonStyle]}>
+            {isDone ? (
+              <Ionicons name="checkmark" size={18} color="#FFFFFF" />
+            ) : isDownloading ? (
+              <Text style={[styles.downloadIcon, styles.downloadingIcon]}>
+                {Math.round(downloadProgress!)}%
+              </Text>
+            ) : (
+              <Ionicons name="arrow-down" size={18} color="#FFFFFF" />
+            )}
+          </Animated.View>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -235,6 +286,25 @@ const styles = StyleSheet.create({
     color: '#FA233B',
     fontWeight: '500',
     marginTop: 4,
+  },
+  actions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexShrink: 0,
+  },
+  playButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#1D1D1F',
+    justifyContent: 'center',
+    alignItems: 'center',
+    flexShrink: 0,
+  },
+  playIcon: {
+    // Optical centering — the Ionicons play glyph has empty space on its left.
+    marginLeft: 2,
   },
   downloadButton: {
     width: 36,

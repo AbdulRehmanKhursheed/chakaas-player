@@ -92,7 +92,16 @@ export async function searchInternetArchive(
     `&fl%5B%5D=identifier&fl%5B%5D=title&fl%5B%5D=creator` +
     `&rows=${limit}&page=1&output=json`;
 
-  const data = await httpGetJson<unknown>(url, { timeoutMs: 7000 });
+  let data: unknown;
+  try {
+    data = await httpGetJson<unknown>(url, { timeoutMs: 7000 });
+  } catch (err) {
+    if (err instanceof HttpError) {
+      throw new Error(`[InternetArchive] search HTTP ${err.status}`);
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`[InternetArchive] search failed: ${message}`);
+  }
   const response = isRecord(data) ? (data.response as unknown) : null;
   const docs = asArray(isRecord(response) ? (response as Record<string, unknown>).docs : []);
 

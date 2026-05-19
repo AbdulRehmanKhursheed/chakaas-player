@@ -307,7 +307,7 @@ const sectionHeaderStyles = StyleSheet.create({
     paddingTop: 10,
     paddingBottom: 4,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#1E1E1E',
+    borderBottomColor: 'rgba(60,60,67,0.14)',
   },
   letter: {
     fontSize: 13,
@@ -455,11 +455,15 @@ const songRowStyles = StyleSheet.create({
     // showing "Queue" / "Like" labels overlapping every track.
     backgroundColor: '#F5F5F7',
   },
+  // OPAQUE active/selected states. Previously these used rgba() with low
+  // alpha which is semi-transparent — the Swipeable's action pills behind
+  // the row showed through wherever the active/selected tint was applied.
+  // Pre-blended hex values keep the same visual tint but stay opaque.
   containerActive: {
-    backgroundColor: 'rgba(250,35,59,0.06)',
+    backgroundColor: '#F5E8EC', // #F5F5F7 blended with 6% #FA233B
   },
   containerSelected: {
-    backgroundColor: 'rgba(250,35,59,0.08)',
+    backgroundColor: '#F5E4E8', // #F5F5F7 blended with 8% #FA233B
   },
   checkboxWrap: {
     width: 26,
@@ -703,34 +707,38 @@ interface GenreGroup {
   genre: string;
   trackCount: number;
   artworks: string[];
-  tracks: Track[];
+  // NOTE: deliberately does NOT carry the per-genre track array. Holding the
+  // raw `Track[]` here for every genre balloons memory on big libraries
+  // (1500 tracks × N genres) and defeats `React.memo` on `<GenreCard>` —
+  // a new array identity per render forced every tile to re-paint. Tracks
+  // are now resolved at press time by filtering `safeTracks` on the fly.
 }
 
 function buildGenreGroups(tracks: Track[]): GenreGroup[] {
-  const map = new Map<string, { tracks: Track[] }>();
+  const map = new Map<string, { count: number; artworks: string[]; seen: Set<string> }>();
   for (const t of tracks) {
     const key = t.genre?.trim() || 'Unknown';
-    const existing = map.get(key);
-    if (existing) {
-      existing.tracks.push(t);
-    } else {
-      map.set(key, { tracks: [t] });
+    let bucket = map.get(key);
+    if (!bucket) {
+      bucket = { count: 0, artworks: [], seen: new Set<string>() };
+      map.set(key, bucket);
+    }
+    bucket.count += 1;
+    if (
+      t.artworkPath &&
+      bucket.artworks.length < 4 &&
+      !bucket.seen.has(t.artworkPath)
+    ) {
+      bucket.seen.add(t.artworkPath);
+      bucket.artworks.push(t.artworkPath);
     }
   }
   return [...map.entries()]
-    .map(([genre, { tracks: gTracks }]) => {
-      // Collect up to 4 unique artworks
-      const seen = new Set<string>();
-      const artworks: string[] = [];
-      for (const t of gTracks) {
-        if (t.artworkPath && !seen.has(t.artworkPath)) {
-          seen.add(t.artworkPath);
-          artworks.push(t.artworkPath);
-          if (artworks.length === 4) break;
-        }
-      }
-      return { genre, trackCount: gTracks.length, artworks, tracks: gTracks };
-    })
+    .map(([genre, { count, artworks }]) => ({
+      genre,
+      trackCount: count,
+      artworks,
+    }))
     .sort((a, b) => {
       if (a.genre === 'Unknown') return 1;
       if (b.genre === 'Unknown') return -1;
@@ -1131,13 +1139,19 @@ export function LibraryScreen() {
   );
 
   const handleGenrePress = useCallback(
-    (_genre: string, genreTracks: Track[]) => {
-      // Play all tracks from this genre
+    (genre: string) => {
+      // Resolve the tracks for this genre lazily — keeping the per-genre
+      // arrays off the `GenreGroup` shape avoids holding a copy of the
+      // library in memory just to render tiles.
+      const key = genre;
+      const genreTracks = safeTracks.filter(
+        (t) => (t.genre?.trim() || 'Unknown') === key,
+      );
       if (genreTracks.length === 0) return;
       void playTrack(modelToTrack(genreTracks[0]), modelsToTracks(genreTracks));
       navigation.navigate('NowPlaying');
     },
-    [playTrack, navigation],
+    [safeTracks, playTrack, navigation],
   );
 
   const handleNewPlaylist = useCallback(() => {
@@ -1199,6 +1213,11 @@ export function LibraryScreen() {
 
   // ── Render helpers ──
 
+  // `selectedIds` is intentionally NOT in this callback's deps — passing
+  // the `Set` would re-issue the row factory on every toggle, defeating
+  // `SongRow.React.memo`. We pass it through to FlashList via `extraData`
+  // instead, so only the toggled rows re-render (their `isSelected` prop
+  // flips while their callback identities stay stable).
   const renderSongsItem = useCallback(
     ({ item }: { item: SongsListItem }) => {
       if (item.type === 'header') {
@@ -1218,6 +1237,7 @@ export function LibraryScreen() {
         />
       );
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [
       handleTrackPress,
       handleLongPress,
@@ -1226,7 +1246,6 @@ export function LibraryScreen() {
       activeTrackId,
       isPlaying,
       selectMode,
-      selectedIds,
     ],
   );
 
@@ -1236,7 +1255,7 @@ export function LibraryScreen() {
         artist={item.name}
         trackCount={item.count}
         artworkPath={item.artworkPath}
-        onPress={() => handleArtistPress(item.name)}
+        onPress={handleArtistPress}
       />
     ),
     [handleArtistPress],
@@ -1248,7 +1267,7 @@ export function LibraryScreen() {
         genre={item.genre}
         trackCount={item.trackCount}
         artworks={item.artworks}
-        onPress={() => handleGenrePress(item.genre, item.tracks)}
+        onPress={handleGenrePress}
       />
     ),
     [handleGenrePress],
@@ -1415,6 +1434,13 @@ export function LibraryScreen() {
                 keyExtractor={(item) =>
                   item.type === 'header' ? `hdr-${item.letter}` : item.track.id
                 }
+                // `extraData` is the FlashList-blessed way to signal "the
+                // dataset is unchanged but a per-row prop derivation may
+                // differ". When the selection Set mutates, the list visits
+                // each visible row's memo gate and only those whose
+                // `isSelected` flipped re-render — far cheaper than
+                // rebuilding `renderItem` on every toggle.
+                extraData={selectedIds}
                 estimatedItemSize={70}
                 getItemType={(item) => (item.type === 'header' ? 'header' : 'track')}
                 ListEmptyComponent={emptyComponent}
@@ -1482,7 +1508,12 @@ export function LibraryScreen() {
           <FlashList
             data={playlistPairs}
             renderItem={renderPlaylistPair}
-            keyExtractor={(_, i) => String(i)}
+            // Index-based keys collided on delete: removing playlist #2 from
+            // a 5-item list made every following pair shuffle its rendered
+            // contents under the same key, so FlashList recycled artwork +
+            // titles incorrectly. A composite key off the pair's actual
+            // playlist IDs stays stable across inserts and deletes.
+            keyExtractor={(item) => item.map((pl) => pl.id).join('_')}
             estimatedItemSize={PLAYLIST_CARD_SIZE + 60}
             ListEmptyComponent={playlistsEmptyComponent}
             contentContainerStyle={{

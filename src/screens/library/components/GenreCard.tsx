@@ -15,7 +15,12 @@ interface GenreCardProps {
   genre: string;
   trackCount: number;
   artworks: string[]; // Up to 4 artwork URIs for the 2×2 collage
-  onPress: () => void;
+  /**
+   * Receives the genre string so the parent can keep a single referentially-
+   * stable handler across every card. Avoids the inline-arrow pitfall that
+   * defeats `React.memo` on this component.
+   */
+  onPress: (genre: string) => void;
 }
 
 // ─── Placeholder color helper ─────────────────────────────────────────────────
@@ -140,8 +145,8 @@ const collageStyles = StyleSheet.create({
 
 // ─── Genre Card ───────────────────────────────────────────────────────────────
 
-export function GenreCard({ genre, trackCount, artworks, onPress }: GenreCardProps) {
-  const handlePress = useCallback(() => onPress(), [onPress]);
+function GenreCardImpl({ genre, trackCount, artworks, onPress }: GenreCardProps) {
+  const handlePress = useCallback(() => onPress(genre), [genre, onPress]);
   const placeholderColor = getGenreColor(genre);
 
   return (
@@ -174,6 +179,23 @@ export function GenreCard({ genre, trackCount, artworks, onPress }: GenreCardPro
     </TouchableOpacity>
   );
 }
+
+/**
+ * Memoised so a Library scroll doesn't re-render every genre tile when only
+ * an unrelated piece of state changes upstream. Equality is shallow over the
+ * displayed props plus the `onPress` identity, which the parent keeps stable
+ * via `useCallback` (the row passes the genre string at press time).
+ */
+export const GenreCard = React.memo(GenreCardImpl, (prev, next) => {
+  if (prev.genre !== next.genre) return false;
+  if (prev.trackCount !== next.trackCount) return false;
+  if (prev.onPress !== next.onPress) return false;
+  if (prev.artworks.length !== next.artworks.length) return false;
+  for (let i = 0; i < prev.artworks.length; i++) {
+    if (prev.artworks[i] !== next.artworks[i]) return false;
+  }
+  return true;
+});
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 

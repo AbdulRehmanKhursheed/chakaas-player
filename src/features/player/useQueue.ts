@@ -218,6 +218,59 @@ export function usePlayerQueue() {
     return idx ?? null;
   }, []);
 
+  // ── Transient streaming play ───────────────────────────────────────────
+
+  /**
+   * Plays a remote (HTTP/HTTPS) stream URL without persisting the track to
+   * the library or DB. Used by Search when the user taps the "play" button
+   * on an online Saavn/YT result — they want to listen, not download.
+   *
+   * The track is added with a synthetic id like `stream:<saavnId>` so it
+   * never collides with real DB UUIDs (queue ops, like, play-history
+   * recording all see this is a transient and can ignore it).
+   *
+   * The queue is reset first so streaming behaves like `playTrack` for a
+   * library row: replaces what's playing, jumps straight to it.
+   */
+  const streamTrack = useCallback(
+    async (params: {
+      id: string;
+      title: string;
+      artist: string;
+      album?: string;
+      artwork?: string;
+      url: string;
+      durationMs?: number;
+      requestHeaders?: Record<string, string>;
+    }) => {
+      try {
+        const rntpTrack: RNTPTrack = {
+          id: `stream:${params.id}`,
+          url: params.url,
+          title: params.title,
+          artist: params.artist,
+          album: params.album,
+          artwork: params.artwork,
+          duration:
+            params.durationMs && params.durationMs > 0
+              ? params.durationMs / 1000
+              : undefined,
+          // RNTP forwards these to the native player so signed CDN URLs
+          // (Saavn) load with the right Referer/User-Agent.
+          headers: params.requestHeaders,
+        };
+        await TrackPlayer.reset();
+        await TrackPlayer.add(rntpTrack);
+        await TrackPlayer.play();
+        bumpQueueVersion();
+      } catch (err) {
+        showPlaybackError(err);
+        throw err;
+      }
+    },
+    [],
+  );
+
   return {
     queue,
     addTrack,
@@ -227,5 +280,6 @@ export function usePlayerQueue() {
     moveInQueue,
     clearQueue,
     getActiveIndex,
+    streamTrack,
   };
 }

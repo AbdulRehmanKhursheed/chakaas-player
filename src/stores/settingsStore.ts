@@ -11,6 +11,15 @@ export type DownloadQuality = '128k' | '192k' | '256k' | '320k';
 
 export interface Settings {
   downloadQuality: DownloadQuality;
+  /**
+   * NOTE (stability hardening, May 2026): `downloadOnWifiOnly` is currently
+   * informational — the DownloadManager does NOT yet enforce a wifi check
+   * before kicking off the worker pool. Enforcement requires a NetInfo /
+   * expo-network native module which isn't part of the current dev-client
+   * build; adding it here would require a fresh APK rebuild that the user
+   * can't do mid-session. Tracked for the next build; until then this flag
+   * is a no-op the UI still surfaces.
+   */
   downloadOnWifiOnly: boolean;
   dailyPicksEnabled: boolean;
   dailyPicksTime: string; // "HH:MM", e.g. "03:00"

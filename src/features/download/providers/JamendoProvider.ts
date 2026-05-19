@@ -12,7 +12,6 @@
  * Returns tracks with `audiodownload` field — a direct mp3 URL.
  */
 import { HttpError, httpGetJson } from '@/utils/http';
-import { logger } from '@/utils/logger';
 import type { YouTubeSearchResult } from '@/types/track';
 import type { AudioStreamInfo } from './types';
 
@@ -118,9 +117,10 @@ export async function searchJamendo(
     return out;
   } catch (err) {
     if (err instanceof HttpError) {
-      logger.warn(`[Jamendo] search HTTP ${err.status}`);
+      throw new Error(`[Jamendo] search HTTP ${err.status}`);
     }
-    throw err;
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`[Jamendo] search failed: ${message}`);
   }
 }
 
@@ -139,13 +139,22 @@ export async function getJamendoStreamUrl(trackId: string): Promise<AudioStreamI
       `${API_BASE}/tracks/?client_id=${CLIENT_ID}` +
       `&format=jsonpretty&id=${encodeURIComponent(trackId)}` +
       `&audiodownload_allowed=true`;
-    const data = await httpGetJson<unknown>(url, { timeoutMs: 7000 });
+    let data: unknown;
+    try {
+      data = await httpGetJson<unknown>(url, { timeoutMs: 7000 });
+    } catch (err) {
+      if (err instanceof HttpError) {
+        throw new Error(`[Jamendo] track lookup HTTP ${err.status}`);
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`[Jamendo] track lookup failed: ${message}`);
+    }
     const results = asArray(isRecord(data) ? data.results : []);
     if (results.length === 0) {
-      throw new Error(`Jamendo: no track found for id ${trackId}`);
+      throw new Error(`[Jamendo] no track found for id ${trackId}`);
     }
     const mapped = mapJamendoTrack(results[0]);
-    if (!mapped) throw new Error(`Jamendo: track ${trackId} did not map`);
+    if (!mapped) throw new Error(`[Jamendo] track ${trackId} did not map`);
     entry = _trackUrlCache.get(trackId) ?? {
       url: mapped.jamendoDirectUrl,
       durationMs: mapped.duration_ms,

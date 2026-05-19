@@ -74,8 +74,20 @@ export async function buildDownloadCandidates(
 ): Promise<DownloadSuggestion[]> {
   if (count <= 0) return [];
   // Pull a generous over-sample so we have headroom for the dedupe / library
-  // filter inside the engine.
-  const items = await getDiscoverFeed(Math.max(count * 2, 25));
+  // filter inside the engine. If the engine itself throws (network outage,
+  // DB read failure), let it propagate — the caller wraps this in a flow
+  // state that surfaces a user-facing error card.
+  let items;
+  try {
+    items = await getDiscoverFeed(Math.max(count * 2, 25));
+  } catch (err) {
+    logger.warn('[IntelligentDownloader] getDiscoverFeed threw:', err);
+    throw err instanceof Error ? err : new Error(String(err));
+  }
+  if (!Array.isArray(items)) {
+    logger.warn('[IntelligentDownloader] getDiscoverFeed returned non-array');
+    return [];
+  }
   const suggestions = items.slice(0, count).map(toSuggestion);
   logger.info(
     `[IntelligentDownloader] Plan: ${suggestions.length} candidates (requested ${count}).`,
@@ -117,10 +129,17 @@ export async function getReplacementSuggestion(
     : undefined;
 
   if (!fresh) {
-    // Pool empty / exhausted / expired — refill once.
-    _replacementPool = await getDiscoverFeed(50);
-    _replacementPoolFetchedAt = now;
-    fresh = _replacementPool.find((item) => !exclude.has(item.id));
+    // Pool empty / exhausted / expired — refill once. Catch defensively so
+    // a transient network failure here doesn't bubble up to the Skip handler
+    // and crash the touch handler.
+    try {
+      _replacementPool = await getDiscoverFeed(50);
+      _replacementPoolFetchedAt = now;
+      fresh = _replacementPool.find((item) => !exclude.has(item.id));
+    } catch (err) {
+      logger.warn('[IntelligentDownloader] replacement pool refill failed:', err);
+      return null;
+    }
   }
 
   if (!fresh) {

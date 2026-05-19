@@ -24,6 +24,7 @@ import { navigationTheme } from './navigation/theme';
 import { ErrorBoundary } from './ErrorBoundary';
 import { GlobalSheets } from './GlobalSheets';
 import { logger } from '@/utils/logger';
+import { crashSink } from '@/utils/crashSink';
 
 // ---------------------------------------------------------------------------
 // QueryClient – singleton created outside the component tree so it is never
@@ -146,16 +147,56 @@ export default function App() {
     const ours: GlobalErrorHandler = (error, isFatal) => {
       // eslint-disable-next-line no-console
       console.error(`[Chakaas] Global error (fatal=${String(isFatal)}):`, error);
+      // Persist before the JS context potentially dies.
+      try {
+        crashSink.captureError(error, isFatal ? 'global.fatal' : 'global');
+        crashSink.flush();
+      } catch {
+        /* never let the sink kill the global handler */
+      }
       // Let the existing handler run so Metro/Sentry still sees it.
       prev?.(error, isFatal);
     };
     ErrorUtils.setGlobalHandler(ours);
+
+    // Promise rejection handler — RN exposes process.on for the Node-like
+    // global; HermesInternal also surfaces enablePromiseRejectionTracker. We
+    // try both, defensively.
+    type RejectionListener = (reason: unknown, _promise?: Promise<unknown>) => void;
+    const onUnhandledRejection: RejectionListener = (reason) => {
+      try {
+        crashSink.captureError(reason, 'unhandledRejection');
+        crashSink.flush();
+      } catch {
+        /* swallow */
+      }
+    };
+    let detachRejection: (() => void) | null = null;
+    try {
+      const proc = (global as unknown as { process?: { on?: Function; off?: Function; removeListener?: Function } }).process;
+      if (proc && typeof proc.on === 'function') {
+        proc.on('unhandledRejection', onUnhandledRejection);
+        detachRejection = () => {
+          try {
+            if (typeof proc.off === 'function') proc.off!('unhandledRejection', onUnhandledRejection);
+            else if (typeof proc.removeListener === 'function')
+              proc.removeListener!('unhandledRejection', onUnhandledRejection);
+          } catch {
+            /* ignore */
+          }
+        };
+      }
+    } catch {
+      /* no process global — skip */
+    }
+
     return () => {
       // Only restore if WE are still the active handler. Avoids clobbering
       // a downstream lib that installed its own handler after us.
       if (ErrorUtils.getGlobalHandler() === ours && prev) {
         ErrorUtils.setGlobalHandler(prev);
       }
+      detachRejection?.();
     };
   }, []);
 

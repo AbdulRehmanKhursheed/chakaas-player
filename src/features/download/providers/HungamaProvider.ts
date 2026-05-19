@@ -10,7 +10,6 @@
  *   GET https://www.hungama.com/api/search/all/<query>
  */
 import { HttpError, httpGetJson } from '@/utils/http';
-import { logger } from '@/utils/logger';
 import type { YouTubeSearchResult } from '@/types/track';
 
 const SEARCH_BASE = 'https://www.hungama.com/api/search/all';
@@ -134,8 +133,9 @@ export async function searchHungama(
     return out;
   } catch (err) {
     if (err instanceof HttpError) {
-      logger.warn(`[Hungama] search HTTP ${err.status}`);
+      throw new Error(`[Hungama] search HTTP ${err.status}`);
     }
-    throw err;
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`[Hungama] search failed: ${message}`);
   }
 }

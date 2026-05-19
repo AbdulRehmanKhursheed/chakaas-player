@@ -14,7 +14,11 @@ interface ArtistRowProps {
   artist: string;
   trackCount: number;
   artworkPath: string | null;
-  onPress: () => void;
+  /**
+   * Receives the artist name so the parent can keep one referentially-stable
+   * handler — re-issuing a fresh inline arrow per row defeats `React.memo`.
+   */
+  onPress: (artist: string) => void;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -47,13 +51,13 @@ function getInitial(name: string): string {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export function ArtistRow({
+function ArtistRowImpl({
   artist,
   trackCount,
   artworkPath,
   onPress,
 }: ArtistRowProps) {
-  const handlePress = useCallback(() => onPress(), [onPress]);
+  const handlePress = useCallback(() => onPress(artist), [artist, onPress]);
 
   const placeholderColor = getPlaceholderColor(artist);
   const initial = getInitial(artist);
@@ -100,6 +104,20 @@ export function ArtistRow({
     </TouchableOpacity>
   );
 }
+
+/**
+ * Memoised: the artist-list scroll re-rendered every visible row whenever
+ * `safeTracks` ticked elsewhere. Equality compares displayed props plus the
+ * referentially-stable `onPress` from the parent (kept stable via useCallback;
+ * the row passes the artist name back at press time).
+ */
+export const ArtistRow = React.memo(ArtistRowImpl, (prev, next) => {
+  if (prev.artist !== next.artist) return false;
+  if (prev.trackCount !== next.trackCount) return false;
+  if (prev.artworkPath !== next.artworkPath) return false;
+  if (prev.onPress !== next.onPress) return false;
+  return true;
+});
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 

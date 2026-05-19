@@ -315,7 +315,7 @@ const albumSectionStyles = StyleSheet.create({
     paddingTop: 16,
     paddingBottom: 6,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#1E1E1E',
+    borderBottomColor: 'rgba(60,60,67,0.14)',
   },
   text: {
     fontSize: 12,

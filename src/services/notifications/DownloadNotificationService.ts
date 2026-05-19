@@ -122,40 +122,54 @@ export async function ensureNotificationChannel(): Promise<void> {
  * @param title  Human-readable title of the first track being downloaded.
  */
 export async function startDownloadForegroundService(title: string): Promise<void> {
-  await ensureNotificationChannel();
+  // Swallow all native errors here — the foreground service is a "best-effort"
+  // optimisation for keeping the JS thread alive in the background. If
+  // notifee refuses for any reason (missing permission, OEM weirdness,
+  // service-not-registered), we still want the download itself to proceed.
+  // Throwing here would propagate up and crash the user's "Download" tap.
+  try {
+    await ensureNotificationChannel();
+  } catch (err) {
+    logger.warn('[DownloadNotificationService] ensureNotificationChannel failed:', err);
+    return;
+  }
 
-  await notifee.displayNotification({
-    id: FOREGROUND_NOTIFICATION_ID,
-    title: 'Chakaas — Downloading',
-    body: `Starting: ${title}`,
-    android: {
-      channelId: CHANNEL_ID,
-      // Binding this notification to a foreground service keeps the process
-      // alive and must be set every time the notification is displayed/updated.
-      asForegroundService: true,
-      // `ongoing: true` prevents the user from swiping the notification away.
-      ongoing: true,
-      // Suppress the alert sound on subsequent updates (progress changes).
-      onlyAlertOnce: true,
-      importance: AndroidImportance.LOW,
-      smallIcon: 'ic_launcher',
-      category: AndroidCategory.SERVICE,
-      visibility: AndroidVisibility.PUBLIC,
-      progress: {
-        max: 100,
-        current: 0,
-        indeterminate: false,
-      },
-      actions: [
-        {
-          title: 'Cancel All',
-          pressAction: { id: 'cancel-all' },
+  try {
+    await notifee.displayNotification({
+      id: FOREGROUND_NOTIFICATION_ID,
+      title: 'Chakaas — Downloading',
+      body: `Starting: ${title}`,
+      android: {
+        channelId: CHANNEL_ID,
+        // Binding this notification to a foreground service keeps the process
+        // alive and must be set every time the notification is displayed/updated.
+        asForegroundService: true,
+        // `ongoing: true` prevents the user from swiping the notification away.
+        ongoing: true,
+        // Suppress the alert sound on subsequent updates (progress changes).
+        onlyAlertOnce: true,
+        importance: AndroidImportance.LOW,
+        smallIcon: 'ic_launcher',
+        category: AndroidCategory.SERVICE,
+        visibility: AndroidVisibility.PUBLIC,
+        progress: {
+          max: 100,
+          current: 0,
+          indeterminate: false,
         },
-      ],
-    },
-  });
-
-  logger.info(`[DownloadNotificationService] Foreground service started for "${title}".`);
+        actions: [
+          {
+            title: 'Cancel All',
+            pressAction: { id: 'cancel-all' },
+          },
+        ],
+      },
+    });
+    logger.info(`[DownloadNotificationService] Foreground service started for "${title}".`);
+  } catch (err) {
+    logger.warn('[DownloadNotificationService] startDownloadForegroundService failed:', err);
+    // Intentional swallow — see comment above.
+  }
 }
 
 /**
@@ -227,21 +241,30 @@ export async function updateDownloadProgress(
 export async function stopDownloadForegroundService(
   completedCount: number,
 ): Promise<void> {
-  // Tear down the foreground service. This also removes the persistent
-  // notification bound to it.
-  await notifee.stopForegroundService();
+  // Same swallow-and-log policy as start: a failure to stop the FG service
+  // is annoying (notification might linger) but must never propagate up to
+  // the worker pool's .finally() and crash the app.
+  try {
+    await notifee.stopForegroundService();
+  } catch (err) {
+    logger.warn('[DownloadNotificationService] stopForegroundService failed:', err);
+  }
 
   if (completedCount > 0) {
-    await ensureNotificationChannel();
-    await notifee.displayNotification({
-      title: 'Downloads Complete',
-      body: `${completedCount} song${completedCount !== 1 ? 's' : ''} added to your library`,
-      android: {
-        channelId: CHANNEL_ID,
-        importance: AndroidImportance.DEFAULT,
-        smallIcon: 'ic_launcher',
-      },
-    });
+    try {
+      await ensureNotificationChannel();
+      await notifee.displayNotification({
+        title: 'Downloads Complete',
+        body: `${completedCount} song${completedCount !== 1 ? 's' : ''} added to your library`,
+        android: {
+          channelId: CHANNEL_ID,
+          importance: AndroidImportance.DEFAULT,
+          smallIcon: 'ic_launcher',
+        },
+      });
+    } catch (err) {
+      logger.warn('[DownloadNotificationService] Complete notification failed:', err);
+    }
   }
 
   logger.info(

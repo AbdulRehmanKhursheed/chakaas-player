@@ -35,6 +35,7 @@ import { useDebounce } from '@/hooks/useDebounce';
 import { usePlayerQueue } from '@/features/player/useQueue';
 import { useDownloadStore } from '@/stores/downloadStore';
 import { DownloadManager } from '@/features/download/DownloadManager';
+import { resolveAudioStream } from '@/features/download/MultiSourceResolver';
 import { searchMusic } from '@/features/download/searchMusic';
 import { getScreenBottomInset } from '@/utils/layout';
 import { settingsStorage } from '@/stores/settingsStore';
@@ -133,20 +134,12 @@ function YouTubeSkeleton() {
   );
 }
 
+// The actual skeleton rows are rendered by `TrackRowSkeleton` (light-theme
+// shimmer). All we need locally is the spacing wrapper — the old dark-theme
+// `row/thumb/lineN/button` rules were unused leftovers and just confused
+// anyone reading the file.
 const skeletonStyles = StyleSheet.create({
   container: { paddingHorizontal: 20, gap: 16, paddingTop: 4 },
-  row: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  thumb: {
-    width: 100,
-    height: 70,
-    borderRadius: 8,
-    backgroundColor: '#1C1C1C',
-  },
-  meta: { flex: 1, gap: 6 },
-  line1: { height: 12, width: '80%', borderRadius: 6, backgroundColor: '#1C1C1C' },
-  line2: { height: 10, width: '55%', borderRadius: 5, backgroundColor: '#EFEFF4' },
-  line3: { height: 9, width: '35%', borderRadius: 5, backgroundColor: '#161616' },
-  button: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#1C1C1C' },
 });
 
 // ─── Local track row ──────────────────────────────────────────────────────────
@@ -342,10 +335,13 @@ const genreGridStyles = StyleSheet.create({
   },
   card: {
     height: 72,
-    backgroundColor: '#161616',
+    // Light-theme card: white surface, subtle border, dark label. The
+    // previous '#161616' background with '#CCCCCC' text was dark-theme
+    // leftover and looked broken on the app's light F5F5F7 background.
+    backgroundColor: '#FFFFFF',
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#D2D2D7',
+    borderColor: 'rgba(60,60,67,0.10)',
     justifyContent: 'center',
     alignItems: 'center',
     gap: 6,
@@ -353,16 +349,16 @@ const genreGridStyles = StyleSheet.create({
       ios: {
         shadowColor: '#000',
         shadowOffset: { width: 0, height: 3 },
-        shadowOpacity: 0.4,
+        shadowOpacity: 0.06,
         shadowRadius: 6,
       },
-      android: { elevation: 3 },
+      android: { elevation: 2 },
     }),
   },
   label: {
     fontSize: 13,
     fontWeight: '600',
-    color: '#CCCCCC',
+    color: '#1D1D1F',
   },
 });
 
@@ -434,8 +430,11 @@ const recentStyles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingVertical: 13,
-    borderBottomWidth: 1,
-    borderBottomColor: '#FFFFFF',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    // Was '#FFFFFF' — invisible on the F5F5F7 background. Use a hairline
+    // divider tinted with the standard iOS list separator so consecutive
+    // recents read as distinct rows.
+    borderBottomColor: 'rgba(60,60,67,0.15)',
   },
   rowMain: {
     flex: 1,
@@ -457,16 +456,27 @@ interface YtResultRowProps {
   result: YouTubeSearchResult;
   isInLibrary: boolean;
   downloadProgress: number | undefined;
+  isStreamLoading: boolean;
   onDownload: (id: string, title: string, artist: string, thumbnail: string) => void;
+  onStream: (result: YouTubeSearchResult) => void;
 }
 
-function YtResultRow({ result, isInLibrary, downloadProgress, onDownload }: YtResultRowProps) {
+function YtResultRow({
+  result,
+  isInLibrary,
+  downloadProgress,
+  isStreamLoading,
+  onDownload,
+  onStream,
+}: YtResultRowProps) {
   // If already in library we display a status badge instead of a download button.
   // We do this by passing a fake 100 progress to YoutubeResultCard when isInLibrary
   return (
     <YoutubeResultCard
       result={result}
       onDownload={onDownload}
+      onStream={onStream}
+      isStreamLoading={isStreamLoading}
       downloadProgress={isInLibrary ? 100 : downloadProgress}
     />
   );
@@ -497,7 +507,7 @@ type SearchSection = LocalSection | YouTubeSection;
 export function SearchScreen() {
   const navigation = useNavigation<RootStackNavigationProp>();
   const insets = useSafeAreaInsets();
-  const { playTrack, addTrack } = usePlayerQueue();
+  const { playTrack, addTrack, streamTrack } = usePlayerQueue();
   const activeRntpTrack = useActiveTrack();
   const downloadQueue = useDownloadStore((s) => s.queue);
 
@@ -512,6 +522,11 @@ export function SearchScreen() {
   const inputRef = useRef<TextInput>(null);
 
   const [recentSearches, setRecentSearches] = useState<string[]>(() => loadRecentSearches());
+
+  // Per-result spinner state for the "stream now" button. Holds the result
+  // id whose URL is currently being resolved. Resolver round-trips can take
+  // 1-3s — without this the play button looks unresponsive after tap.
+  const [streamingResultId, setStreamingResultId] = useState<string | null>(null);
 
   // Animated search bar width (expands when focused)
   const cancelOpacity = useSharedValue(0);
@@ -588,26 +603,44 @@ export function SearchScreen() {
     return map;
   }, [downloadQueue]);
 
-  // Library lookup: build a set of "title|||artist" for fast matching.
-  // Normalize both sides so parenthetical variations like
-  // "Tum Hi Ho (From Aashiqui 2)" still match "Tum Hi Ho".
+  // Library lookup: build a set of "title|||artist" for fast matching plus
+  // a parallel set of provider ids (saavn / youtube) so a Saavn result
+  // matches the library row even when the artist string drifted (Saavn
+  // sometimes returns "Arijit Singh, Shilpa Rao" while the downloaded copy
+  // has just "Arijit Singh", which breaks a pure title|||artist match).
   const libraryFingerprints = useMemo(() => {
-    const set = new Set<string>();
+    const titles = new Set<string>();
+    const saavnIds = new Set<string>();
+    const youtubeIds = new Set<string>();
     for (const t of safeTracks) {
-      set.add(`${normalizeForMatch(t.title)}|||${normalizeForMatch(t.artist)}`);
+      titles.add(`${normalizeForMatch(t.title)}|||${normalizeForMatch(t.artist)}`);
+      if (t.saavnId) saavnIds.add(t.saavnId);
+      if (t.youtubeId) youtubeIds.add(t.youtubeId);
     }
-    return set;
+    return { titles, saavnIds, youtubeIds };
   }, [safeTracks]);
 
   const isInLibrary = useCallback(
     (result: YouTubeSearchResult): boolean => {
+      // Cheap id check first — if we have a previously-downloaded copy of
+      // the same Saavn/YT id, that's a definitive match regardless of how
+      // the title/artist may have drifted.
+      if (result.provider === 'saavn' && libraryFingerprints.saavnIds.has(result.id)) {
+        return true;
+      }
+      if (
+        (result.provider === 'youtube' || !result.provider) &&
+        libraryFingerprints.youtubeIds.has(result.id)
+      ) {
+        return true;
+      }
       const fullKey = `${normalizeForMatch(result.title)}|||${normalizeForMatch(result.author)}`;
-      if (libraryFingerprints.has(fullKey)) return true;
+      if (libraryFingerprints.titles.has(fullKey)) return true;
       const dashIdx = result.title.indexOf(' - ');
       if (dashIdx > 0) {
         const artist = result.title.substring(0, dashIdx).trim();
         const title = result.title.substring(dashIdx + 3).trim();
-        return libraryFingerprints.has(
+        return libraryFingerprints.titles.has(
           `${normalizeForMatch(title)}|||${normalizeForMatch(artist)}`,
         );
       }
@@ -654,8 +687,23 @@ export function SearchScreen() {
   }, []);
 
   const handleClearAllRecent = useCallback(() => {
-    settingsStorage.set(RECENT_SEARCHES_KEY, '[]');
-    setRecentSearches([]);
+    // Confirm before wiping — the old no-prompt flow was an easy mis-tap and
+    // there's no undo. Cancel keeps the existing list intact.
+    Alert.alert(
+      'Clear all recent searches?',
+      'This will remove every recent search. You can’t undo this.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear All',
+          style: 'destructive',
+          onPress: () => {
+            settingsStorage.set(RECENT_SEARCHES_KEY, '[]');
+            setRecentSearches([]);
+          },
+        },
+      ],
+    );
   }, []);
 
   const handleLocalTrackPress = useCallback(
@@ -683,6 +731,54 @@ export function SearchScreen() {
       setRecentSearches(loadRecentSearches());
     }
   }, [query]);
+
+  /**
+   * Resolve a stream URL via the multi-source resolver and hand it to RNTP
+   * as a transient (non-persisted) track. No download, no DB row — the
+   * track lives only in the RNTP queue for as long as it's playing.
+   */
+  const handleStreamRequest = useCallback(
+    (target: YouTubeSearchResult) => {
+      if (streamingResultId) return; // prevent double-tap stampede
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      setStreamingResultId(target.id);
+      void (async () => {
+        try {
+          const provider = target.provider ?? 'youtube';
+          const album =
+            provider === 'saavn'
+              ? target.saavnAlbum ?? 'JioSaavn'
+              : 'YouTube';
+          const stream = await resolveAudioStream({
+            query: `${target.title} ${target.author}`,
+            hints: {
+              youtubeId: provider === 'youtube' ? target.id : undefined,
+              saavnId: provider === 'saavn' ? target.id : undefined,
+              saavnEncryptedUrl: target.saavnEncryptedUrl,
+              saavnHas320kbps: target.saavnHas320kbps,
+            },
+          });
+          await streamTrack({
+            id: target.id,
+            title: target.title,
+            artist: target.author,
+            album,
+            artwork: target.thumbnail,
+            url: stream.url,
+            durationMs: stream.durationMs ?? target.duration_ms,
+            requestHeaders: stream.requestHeaders,
+          });
+          navigation.navigate('NowPlaying');
+        } catch (err) {
+          console.warn('[SearchScreen] stream failed', err);
+          Alert.alert('Could not stream this song', 'Try a different result, or download it instead.');
+        } finally {
+          setStreamingResultId(null);
+        }
+      })();
+    },
+    [streamingResultId, streamTrack, navigation],
+  );
 
   const handleDownloadRequest = useCallback(
     (id: string, _title: string, _artist: string, _thumbnail: string) => {
@@ -786,11 +882,21 @@ export function SearchScreen() {
           result={ytItem}
           isInLibrary={isInLibrary(ytItem)}
           downloadProgress={progressMap.get(ytItem.id)}
+          isStreamLoading={streamingResultId === ytItem.id}
           onDownload={handleDownloadRequest}
+          onStream={handleStreamRequest}
         />
       );
     },
-    [handleLocalTrackPress, handleSwipeQueue, isInLibrary, progressMap, handleDownloadRequest],
+    [
+      handleLocalTrackPress,
+      handleSwipeQueue,
+      isInLibrary,
+      progressMap,
+      streamingResultId,
+      handleDownloadRequest,
+      handleStreamRequest,
+    ],
   );
 
   const keyExtractor = useCallback(

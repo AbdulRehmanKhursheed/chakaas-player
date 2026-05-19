@@ -92,6 +92,19 @@ try {
 // Global error capture: any uncaught error / module-import crash gets stored
 // here so we can render it on screen instead of showing a black screen.
 // ─────────────────────────────────────────────────────────────────────────────
+// Lazily resolve crashSink — it's a TS module compiled by Metro, and we want
+// boot to keep going even if its own require somehow fails.
+function captureBootError(tag, e) {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { crashSink } = require('./src/utils/crashSink');
+    crashSink.captureError(e, tag);
+    crashSink.flush();
+  } catch (_ignored) {
+    /* sink unavailable — bootError fallback below still renders the screen */
+  }
+}
+
 let bootError = null;
 try {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -100,6 +113,7 @@ try {
   RNTrackPlayer.registerPlaybackService(() => PlaybackService);
 } catch (e) {
   bootError = e;
+  captureBootError('boot.trackPlayer', e);
 }
 
 let App;
@@ -107,6 +121,7 @@ try {
   App = require('./src/app/App').default;
 } catch (e) {
   if (!bootError) bootError = e;
+  captureBootError('boot.app', e);
 }
 
 const ErrorScreen = ({ err }) =>
@@ -123,7 +138,7 @@ const ErrorScreen = ({ err }) =>
     ),
     React.createElement(
       Text,
-      { style: { color: '#999', fontSize: 13, marginTop: 8, marginBottom: 16 } },
+      { style: { color: '#6E6E73', fontSize: 13, marginTop: 8, marginBottom: 16 } },
       'Send this screen to the dev.',
     ),
     React.createElement(
@@ -135,7 +150,7 @@ const ErrorScreen = ({ err }) =>
       Text,
       {
         style: {
-          color: '#E0E0E0',
+          color: '#3A3A3C',
           fontSize: 12,
           fontFamily: 'monospace',
           marginTop: 4,
@@ -163,7 +178,7 @@ const ErrorScreen = ({ err }) =>
             Text,
             {
               style: {
-                color: '#E0E0E0',
+                color: '#3A3A3C',
                 fontSize: 11,
                 fontFamily: 'monospace',
                 marginTop: 4,

@@ -374,6 +374,28 @@ notifee.onBackgroundEvent(async ({ type, detail }) => {
   }
 });
 
+// ── Module-level unhandled-rejection guard ─────────────────────────────────
+// React Native (Hermes) surfaces unhandled promise rejections as a yellow-box
+// warning by default — but a rejection that escapes a `void` call inside a
+// touch handler can still crash the app on some Android builds. Install a
+// last-ditch handler via the global ErrorUtils API so an unhandled rejection
+// from anywhere in the download pipeline is logged instead of fatal.
+try {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const g: any = globalThis as any;
+  if (g?.HermesInternal?.enablePromiseRejectionTracker) {
+    g.HermesInternal.enablePromiseRejectionTracker({
+      allRejections: true,
+      onUnhandled: (id: number, rejection: unknown) => {
+        const msg = rejection instanceof Error ? rejection.message : String(rejection);
+        logger.warn(`[DownloadManager] Unhandled promise rejection (id=${id}): ${msg}`);
+      },
+    });
+  }
+} catch (err) {
+  logger.warn('[DownloadManager] Could not install rejection tracker:', err);
+}
+
 // ── Foreground listener ref-counting ───────────────────────────────────────
 
 /**
@@ -526,7 +548,18 @@ class DownloadManagerClass {
         quality: params.quality ?? readDownloadQuality(),
       });
 
-      void this._ensureProcessorRunning();
+      // Kick off the worker pool. Defensive — _ensureProcessorRunning is
+      // already async/awaited internally, but a synchronous throw before the
+      // first `await` would otherwise bubble up to the caller as a rejected
+      // promise the UI's `void` doesn't observe. Catch + log so the user's
+      // tap can never crash the app even if the pool start path explodes.
+      try {
+        void this._ensureProcessorRunning().catch((err) =>
+          logger.warn('[DownloadManager] _ensureProcessorRunning rejected:', err),
+        );
+      } catch (err) {
+        logger.warn('[DownloadManager] _ensureProcessorRunning threw synchronously:', err);
+      }
       return { success: true, id };
     });
   }
@@ -600,7 +633,13 @@ class DownloadManagerClass {
 
       if (toAdd.length > 0) {
         store.addManyToQueue(toAdd);
-        void this._ensureProcessorRunning();
+        try {
+          void this._ensureProcessorRunning().catch((err) =>
+            logger.warn('[DownloadManager] _ensureProcessorRunning (batch) rejected:', err),
+          );
+        } catch (err) {
+          logger.warn('[DownloadManager] _ensureProcessorRunning (batch) threw:', err);
+        }
       }
 
       const reason =
@@ -721,33 +760,58 @@ class DownloadManagerClass {
    * Starts the worker pool if it isn't already running. Spawns up to
    * MAX_CONCURRENT workers — each pulls one queued item at a time until the
    * queue is drained.
+   *
+   * Cancel-race handling
+   * ────────────────────
+   * Resetting `_cancelAll` is conditional now, not unconditional:
+   *  - Fresh pool (not running, not cancelled)  → reset both flags, start workers
+   *  - Running, not cancelled                   → drain loop already handles new items, no-op
+   *  - Running, mid-cancel                      → do NOTHING — let the cancel drain finish.
+   *                                               The .finally() block below auto-restarts the
+   *                                               pool for any items still queued after settle.
+   * Without this, an enqueue immediately after cancelAll() would resurrect the cancelled
+   * session: `_sessionCancelled` would stay true and the .finally() block would auto-prune
+   * the user's freshly queued items.
    */
   private async _ensureProcessorRunning(): Promise<void> {
-    // Always reset the queue-drain flag FIRST. If the previous pool was
-    // cancelled (`_cancelAll = true`) but had not yet exited its drain loop,
-    // the new enqueue would otherwise stall: workers would see `_cancelAll`
-    // still set and bail immediately. Clearing it here unblocks the next run.
-    _cancelAll = false;
-
     if (_isProcessorRunning) {
-      // Pool is mid-flight (or mid-drain). Resetting `_cancelAll` above is
-      // enough to let an in-progress drain loop pick up the newly queued
-      // items on its next iteration.
+      if (_sessionCancelled || _cancelAll) {
+        // Mid-cancel — do not stomp on the cancel state. The .finally()
+        // below will re-invoke _ensureProcessorRunning() after settle if
+        // there are still queued items to pick up.
+        return;
+      }
+      // Pool running normally; drain loop will see the new queue entries
+      // on its next iteration. Safe no-op.
       return;
     }
+
+    // Fresh pool — safe to reset both flags now.
+    _cancelAll = false;
     _isProcessorRunning = true;
     _sessionCancelled = false;
     _completedThisSession = 0;
     _lastNotificationWallMs = 0;
     _lastNotificationProgress.clear();
     _lastNotificationStatus.clear();
-    resetErrorNotificationState();
-    clearSaavnUrlCache();
+    try {
+      resetErrorNotificationState();
+    } catch (err) {
+      logger.warn('[DownloadManager] resetErrorNotificationState failed:', err);
+    }
+    try {
+      clearSaavnUrlCache();
+    } catch (err) {
+      logger.warn('[DownloadManager] clearSaavnUrlCache failed:', err);
+    }
 
     const firstTitle = useDownloadStore.getState().queue.find((i) => i.status === 'queued')?.title;
     try {
       await startDownloadForegroundService(firstTitle ?? 'Downloading…');
     } catch (err) {
+      // Never let foreground-service failure propagate up — downloads can
+      // still complete without it; the OS just won't keep the JS thread
+      // alive when the screen is off. Better than crashing on the tap.
       logger.warn('[DownloadManager] Could not start foreground service:', err);
     }
 
@@ -785,6 +849,30 @@ class DownloadManagerClass {
           } catch (err) {
             logger.warn('[DownloadManager] Failed to auto-prune queue after cancel:', err);
           }
+        }
+
+        // If items were enqueued mid-cancel (or the user re-enqueued
+        // immediately after the .finally fires), kick off a fresh pool so
+        // they don't sit orphaned in the 'queued' state forever. Guarded so
+        // we don't recurse — `_isProcessorRunning` was just set to false.
+        try {
+          const stillQueued = useDownloadStore
+            .getState()
+            .queue.some((i) => i.status === 'queued');
+          if (stillQueued) {
+            // Schedule on a microtask so the current .finally fully unwinds
+            // before the new pool starts (prevents re-entrancy on
+            // `_isProcessorRunning`).
+            Promise.resolve().then(() => {
+              try {
+                void this._ensureProcessorRunning();
+              } catch (err) {
+                logger.warn('[DownloadManager] Restart-after-drain failed:', err);
+              }
+            });
+          }
+        } catch (err) {
+          logger.warn('[DownloadManager] Post-drain restart check failed:', err);
         }
       });
   }
@@ -906,16 +994,28 @@ class DownloadManagerClass {
       // The hints branch routes the fastest path: a Saavn-provider item
       // arrives with `saavnEncryptedUrl` so we never search needlessly.
       const resolverQuery = `${params.title} ${params.artist}`.trim();
-      let stream: AudioStreamInfo = await resolveAudioStream({
-        query: resolverQuery,
-        preferredQuality: params.quality,
-        hints: {
-          youtubeId: params.provider === 'youtube' ? params.youtubeId : undefined,
-          saavnId: params.provider === 'saavn' ? params.youtubeId : undefined,
-          saavnEncryptedUrl: params.saavnEncryptedUrl,
-          saavnHas320kbps: params.saavnHas320kbps,
-        },
-      });
+      let stream: AudioStreamInfo;
+      try {
+        stream = await resolveAudioStream({
+          query: resolverQuery,
+          preferredQuality: params.quality,
+          hints: {
+            youtubeId: params.provider === 'youtube' ? params.youtubeId : undefined,
+            saavnId: params.provider === 'saavn' ? params.youtubeId : undefined,
+            saavnEncryptedUrl: params.saavnEncryptedUrl,
+            saavnHas320kbps: params.saavnHas320kbps,
+          },
+        });
+      } catch (err) {
+        // Normalize any non-Error rejections (some providers throw strings
+        // via the JSON-parse path). Without this, an unhandled non-Error
+        // can crash on bridges that assume `err.message` exists.
+        const message = err instanceof Error ? err.message : String(err);
+        throw new Error(`[Resolver] ${message}`);
+      }
+      if (!stream || typeof stream !== 'object') {
+        throw new Error('[Resolver] returned a non-object stream — provider chain misbehaved.');
+      }
 
       // Preserve the search-time duration when the provider couldn't report it.
       if (stream.durationMs <= 0 && params.durationMs > 0) {

@@ -70,14 +70,40 @@ function decodeEntities(input: string): string {
 // ── Network helper ───────────────────────────────────────────────────────────
 
 async function fetchJson<T = any>(url: string): Promise<T> {
-  const response = await RNBlobUtil.fetch('GET', url, COMMON_HEADERS);
+  let response: Awaited<ReturnType<typeof RNBlobUtil.fetch>>;
+  try {
+    response = await RNBlobUtil.fetch('GET', url, COMMON_HEADERS);
+  } catch (err) {
+    // RNBlobUtil can throw at the native bridge for unresolvable DNS,
+    // ECONNREFUSED, or invalid URLs. Re-tag with provider prefix so the
+    // resolver chain logs are traceable.
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`[Saavn] network error: ${message}`);
+  }
   const status = response.info().status;
   if (status < 200 || status >= 300) {
-    throw new Error(`Saavn request returned HTTP ${status}`);
+    throw new Error(`[Saavn] request returned HTTP ${status}`);
   }
   const raw = response.text();
-  const text = typeof raw === 'string' ? raw : await (raw as Promise<string>);
-  return JSON.parse(text) as T;
+  let text: string;
+  try {
+    text = typeof raw === 'string' ? raw : await (raw as Promise<string>);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`[Saavn] could not read response body: ${message}`);
+  }
+  if (!text || text.length === 0) {
+    throw new Error('[Saavn] empty response body');
+  }
+  try {
+    return JSON.parse(text) as T;
+  } catch (err) {
+    // JioSaavn occasionally returns an HTML error page (Akamai block / WAF
+    // challenge). Surface a clean message instead of letting JSON.parse
+    // throw bare into the resolver — its catch path normalises this.
+    const preview = text.slice(0, 80).replace(/\s+/g, ' ');
+    throw new Error(`[Saavn] non-JSON response (first 80 chars: "${preview}"): ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 // ── Search ───────────────────────────────────────────────────────────────────
@@ -147,7 +173,13 @@ export async function searchSaavn(
   const url = `${JIOSAAVN_BASE}?${params.toString()}`;
   const data = await fetchJson<{ results?: SaavnSongRaw[] }>(url);
 
-  const songs = (data.results ?? []).filter((r) => r.type === 'song');
+  // Defensive — the response shape from JioSaavn's unofficial endpoint has
+  // changed in the past. Treat any non-object/missing `results` as "no hits"
+  // rather than letting `.filter` throw on null.
+  const rawResults = data && typeof data === 'object' && Array.isArray((data as any).results)
+    ? (data.results as SaavnSongRaw[])
+    : [];
+  const songs = rawResults.filter((r) => r && r.type === 'song');
   const seen = new Set<string>();
   const results: YouTubeSearchResult[] = [];
 
@@ -290,10 +322,19 @@ export async function getSaavnStreamUrl(
   const url = `${JIOSAAVN_BASE}?${params.toString()}`;
   const data = await fetchJson<AuthTokenResponse>(url);
 
-  if (!data.auth_url || data.status !== 'success') {
+  // Defensive — JioSaavn's unofficial API has changed shape before. Guard
+  // against `data` being null / not an object / missing the expected fields
+  // so we throw a clean, traceable error instead of dereferencing undefined.
+  if (!data || typeof data !== 'object') {
+    throw new Error('[Saavn] auth-token request returned non-object body');
+  }
+  if (!data.auth_url || typeof data.auth_url !== 'string') {
     throw new Error(
-      `Saavn auth-token request failed (status: ${data.status ?? 'unknown'})`,
+      `[Saavn] auth-token request missing auth_url (status: ${data.status ?? 'unknown'})`,
     );
+  }
+  if (data.status && data.status !== 'success') {
+    throw new Error(`[Saavn] auth-token request failed (status: ${data.status})`);
   }
 
   const numericBitrate = Number.parseInt(bitrate, 10) * 1000;
