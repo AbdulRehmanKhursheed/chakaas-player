@@ -450,6 +450,10 @@ const songRowStyles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 10,
     gap: 12,
+    // Solid background — otherwise the Swipeable's action pills render
+    // behind the (transparent) row and bleed through visually at rest,
+    // showing "Queue" / "Like" labels overlapping every track.
+    backgroundColor: '#F5F5F7',
   },
   containerActive: {
     backgroundColor: 'rgba(250,35,59,0.06)',

@@ -201,6 +201,9 @@ const localRowStyles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 9,
     gap: 12,
+    // Opaque background prevents the underlying swipe-action pills from
+    // bleeding through visually at rest.
+    backgroundColor: '#F5F5F7',
   },
   artworkWrapper: {
     position: 'relative',
