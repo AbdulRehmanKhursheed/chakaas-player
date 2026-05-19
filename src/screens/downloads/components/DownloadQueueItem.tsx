@@ -5,7 +5,6 @@ import Animated, {
   useAnimatedStyle,
   useSharedValue,
   withTiming,
-  Easing,
 } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 import { useDownloadStore, type DownloadItem } from '@/stores/downloadStore';
@@ -40,13 +39,17 @@ const STATUS_LABELS: Record<DownloadItem['status'], string> = {
   error:       'Failed',
 };
 
-// ─── Progress bar (Reanimated, UI-thread only) ───────────────────────────────
-// Previously this used Moti's animate + an inner looping shimmer worklet.
-// The looping shimmer fired ~60 times/sec PER active item — combined with
-// progress-tick re-renders that re-mounted the worklet, the UI thread got
-// jammed during user scroll and the native bridge crashed. We replace it
-// with a single Reanimated SharedValue that runs withTiming on the UI
-// thread without any JS-side re-render churn.
+// ─── Progress bar (plain View, no worklet) ───────────────────────────────────
+// Earlier iterations of this component used Moti's animate prop AND a looping
+// shimmer worklet — that pair was the source of the native bridge crash on
+// scroll-while-downloading. The intermediate fix used Reanimated's
+// useAnimatedStyle with `width: ${n}%` returned from a worklet, but
+// Reanimated 3 has known instability with percent-unit width values
+// returned from worklets on Android (can crash at module load on the
+// JS bridge). We landed on the simplest stable thing: a plain View whose
+// width is driven by React renders. The parent is wrapped in React.memo
+// so this only re-renders for the ONE active row each progress tick,
+// which is cheap.
 
 interface ProgressBarProps {
   progress: number; // 0–100
@@ -55,24 +58,12 @@ interface ProgressBarProps {
 
 function AnimatedProgressBar({ progress, status }: ProgressBarProps) {
   const color = STATUS_COLORS[status];
-  const widthShared = useSharedValue(0);
-
-  // Drive the shared value on the UI thread. `progress` changing triggers
-  // a tiny effect — no full re-render of the parent.
-  React.useEffect(() => {
-    widthShared.value = withTiming(Math.max(0, Math.min(100, progress)), {
-      duration: 280,
-      easing: Easing.out(Easing.ease),
-    });
-  }, [progress, widthShared]);
-
-  const fillStyle = useAnimatedStyle(() => ({
-    width: `${widthShared.value}%` as `${number}%`,
-  }));
-
+  const clamped = Math.max(0, Math.min(100, progress));
   return (
     <View style={barStyles.track}>
-      <Animated.View style={[barStyles.fill, { backgroundColor: color }, fillStyle]} />
+      <View
+        style={[barStyles.fill, { backgroundColor: color, width: `${clamped}%` }]}
+      />
     </View>
   );
 }
