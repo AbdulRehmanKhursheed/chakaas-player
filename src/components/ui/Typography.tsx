@@ -24,7 +24,7 @@ export function Title({
   const { colors, typography } = useTheme();
   return (
     <Text
-      style={[typography.h1, { color: color ?? colors.text }, style]}
+      style={[typography.h1, { color: color ?? colors.textPrimary }, style]}
       numberOfLines={numberOfLines}
       {...rest}
     >
@@ -45,7 +45,7 @@ export function Subtitle({
   const { colors, typography } = useTheme();
   return (
     <Text
-      style={[typography.h3, { color: color ?? colors.text }, style]}
+      style={[typography.h3, { color: color ?? colors.textPrimary }, style]}
       numberOfLines={numberOfLines}
       {...rest}
     >
@@ -66,7 +66,7 @@ export function Body({
   const { colors, typography } = useTheme();
   return (
     <Text
-      style={[typography.body, { color: color ?? colors.text }, style]}
+      style={[typography.body, { color: color ?? colors.textPrimary }, style]}
       numberOfLines={numberOfLines}
       {...rest}
     >
@@ -165,7 +165,7 @@ export function Display({
   const { colors, typography } = useTheme();
   return (
     <Text
-      style={[typography.display, { color: color ?? colors.text }, style]}
+      style={[typography.display, { color: color ?? colors.textPrimary }, style]}
       numberOfLines={numberOfLines}
       {...rest}
     >

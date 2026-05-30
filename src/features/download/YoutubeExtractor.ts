@@ -161,6 +161,7 @@ function rendererToSearchResult(renderer: any): YouTubeSearchResult | null {
     duration_ms: parseDurationToMs(textFromRuns(renderer.lengthText)),
     thumbnail: thumbnail.startsWith('//') ? `https:${thumbnail}` : thumbnail,
     view_count: textFromRuns(renderer.viewCountText) || 'YouTube',
+    provider: 'youtube',
   };
 }
 
@@ -526,6 +527,7 @@ export async function searchYouTube(
         duration_ms: (v.duration?.seconds ?? 0) * 1000,
         thumbnail: thumbnails[0]?.url ?? v.best_thumbnail?.url ?? '',
         view_count: v.view_count?.text ?? v.short_view_count?.text ?? '0 views',
+        provider: 'youtube',
       };
     });
   } catch (err) {

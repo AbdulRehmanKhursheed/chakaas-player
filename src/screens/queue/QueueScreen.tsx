@@ -17,10 +17,12 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import type { RootStackNavigationProp } from '@/types/navigation';
 import { EqualizerBars } from '@/components/EqualizerBars';
+import { useTheme } from '@/theme';
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function QueueScreen() {
+  const { colors } = useTheme();
   const navigation = useNavigation<RootStackNavigationProp<'Queue'>>();
   const activeTrack = useActiveTrack();
   const playbackState = usePlaybackState();
@@ -79,18 +81,18 @@ export function QueueScreen() {
   }, [upcomingQueue.length, activeTrack, clearQueue]);
 
   return (
-    <SafeAreaView style={styles.root} edges={['top', 'bottom']}>
+    <SafeAreaView style={[styles.root, { backgroundColor: colors.bg }]} edges={['top', 'bottom']}>
       {/* ── Header ─────────────────────────────────────────────────────── */}
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Next Up</Text>
+        <Text style={[styles.headerTitle, { color: colors.textPrimary }]}>Next Up</Text>
         <TouchableOpacity
           onPress={handleClose}
-          style={styles.closeButton}
+          style={[styles.closeButton, { backgroundColor: colors.bgRaised }]}
           hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
           accessibilityLabel="Close queue"
           accessibilityRole="button"
         >
-          <Ionicons name="close" size={17} color="#3A3A3C" />
+          <Ionicons name="close" size={17} color={colors.textSecondary} />
         </TouchableOpacity>
       </View>
 
@@ -99,19 +101,24 @@ export function QueueScreen() {
       {/* ── Now Playing ────────────────────────────────────────────────── */}
       {activeTrack && (
         <View style={styles.nowPlayingSection}>
-          <Text style={styles.sectionLabel}>NOW PLAYING</Text>
-          <View style={styles.nowPlayingCard}>
+          <Text style={[styles.sectionLabel, { color: colors.accent }]}>NOW PLAYING</Text>
+          <View
+            style={[
+              styles.nowPlayingCard,
+              { backgroundColor: colors.bgElevated, borderColor: colors.borderAccent, shadowColor: colors.accent },
+            ]}
+          >
             <TrackArtwork
               uri={activeTrack.artwork ?? null}
               blurhash={null}
               size={52}
-              borderRadius={8}
+              borderRadius={12}
             />
             <View style={styles.nowPlayingInfo}>
-              <Text style={styles.nowPlayingTitle} numberOfLines={1}>
+              <Text style={[styles.nowPlayingTitle, { color: colors.textPrimary }]} numberOfLines={1}>
                 {activeTrack.title ?? 'Unknown Title'}
               </Text>
-              <Text style={styles.nowPlayingArtist} numberOfLines={1}>
+              <Text style={[styles.nowPlayingArtist, { color: colors.textSecondary }]} numberOfLines={1}>
                 {activeTrack.artist ?? 'Unknown Artist'}
               </Text>
             </View>
@@ -122,7 +129,6 @@ export function QueueScreen() {
                 barWidth={3}
                 gap={3}
                 height={18}
-                color="#FA233B"
               />
             </View>
           </View>
@@ -130,13 +136,13 @@ export function QueueScreen() {
       )}
 
       {/* ── Divider ────────────────────────────────────────────────────── */}
-      <View style={styles.divider} />
+      <View style={[styles.divider, { backgroundColor: colors.border }]} />
 
       {/* ── Queue Section ──────────────────────────────────────────────── */}
       <View style={styles.queueHeader}>
-        <Text style={styles.sectionLabel}>QUEUE</Text>
+        <Text style={[styles.sectionLabel, { color: colors.accent }]}>QUEUE</Text>
         <View style={styles.queueHeaderRight}>
-          <Text style={styles.trackCount}>
+          <Text style={[styles.trackCount, { color: colors.textSecondary }]}>
             {upcomingQueue.length} {upcomingQueue.length === 1 ? 'track' : 'tracks'}
           </Text>
           {upcomingQueue.length > 0 ? (
@@ -146,7 +152,7 @@ export function QueueScreen() {
               accessibilityLabel="Clear upcoming tracks"
               accessibilityRole="button"
             >
-              <Text style={styles.clearAll}>Clear</Text>
+              <Text style={[styles.clearAll, { color: colors.danger }]}>Clear</Text>
             </TouchableOpacity>
           ) : null}
         </View>
@@ -154,11 +160,11 @@ export function QueueScreen() {
 
       {upcomingQueue.length === 0 ? (
         <View style={styles.emptyState}>
-          <View style={styles.emptyIconCircle}>
-            <Ionicons name="musical-notes-outline" size={32} color="#FA233B" />
+          <View style={[styles.emptyIconCircle, { backgroundColor: colors.accentMuted, borderColor: colors.borderAccent }]}>
+            <Ionicons name="musical-notes-outline" size={32} color={colors.accent} />
           </View>
-          <Text style={styles.emptyTitle}>No upcoming tracks</Text>
-          <Text style={styles.emptySubtitle}>
+          <Text style={[styles.emptyTitle, { color: colors.textPrimary }]}>No upcoming tracks</Text>
+          <Text style={[styles.emptySubtitle, { color: colors.textSecondary }]}>
             Songs you queue or auto-play next will appear here.
           </Text>
         </View>
@@ -174,7 +180,6 @@ export function QueueScreen() {
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: '#F5F5F7',
   },
 
   // Header
@@ -189,7 +194,6 @@ const styles = StyleSheet.create({
   headerTitle: {
     fontSize: 18,
     fontWeight: '700',
-    color: '#1D1D1F',
     letterSpacing: -0.3,
   },
   closeButton: {
@@ -198,7 +202,6 @@ const styles = StyleSheet.create({
     width: 32,
     height: 32,
     borderRadius: 16,
-    backgroundColor: '#D2D2D7',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -211,27 +214,24 @@ const styles = StyleSheet.create({
   sectionLabel: {
     fontSize: 10,
     fontWeight: '700',
-    color: '#FA233B',
     letterSpacing: 2,
     marginBottom: 12,
   },
   nowPlayingCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
+    borderRadius: 16,
     padding: 12,
-    borderWidth: 1,
-    borderColor: '#D2D2D7',
+    borderWidth: StyleSheet.hairlineWidth,
     gap: 12,
+    // Soft cyan HUD elevation — no heavy black drop shadow.
     ...Platform.select({
       ios: {
-        shadowColor: '#FA233B',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.08,
-        shadowRadius: 8,
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.18,
+        shadowRadius: 14,
       },
-      android: { elevation: 4 },
+      android: { elevation: 6 },
     }),
   },
   nowPlayingInfo: {
@@ -242,13 +242,11 @@ const styles = StyleSheet.create({
   nowPlayingTitle: {
     fontSize: 15,
     fontWeight: '600',
-    color: '#1D1D1F',
     letterSpacing: -0.2,
   },
   nowPlayingArtist: {
     fontSize: 13,
     fontWeight: '400',
-    color: '#6E6E73',
   },
   // Live animated EQ bars driven by Reanimated worklets.
   playingIndicator: {
@@ -259,8 +257,7 @@ const styles = StyleSheet.create({
 
   // Divider
   divider: {
-    height: 1,
-    backgroundColor: '#F2F2F7',
+    height: StyleSheet.hairlineWidth,
     marginHorizontal: 20,
     marginBottom: 16,
   },
@@ -281,12 +278,10 @@ const styles = StyleSheet.create({
   trackCount: {
     fontSize: 12,
     fontWeight: '500',
-    color: '#6E6E73',
   },
   clearAll: {
     fontSize: 13,
     fontWeight: '600',
-    color: '#FA233B',
     letterSpacing: -0.1,
   },
 
@@ -303,7 +298,7 @@ const styles = StyleSheet.create({
     width: 72,
     height: 72,
     borderRadius: 36,
-    backgroundColor: '#FFEBEE',
+    borderWidth: StyleSheet.hairlineWidth,
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 4,
@@ -311,13 +306,11 @@ const styles = StyleSheet.create({
   emptyTitle: {
     fontSize: 17,
     fontWeight: '700',
-    color: '#1D1D1F',
     letterSpacing: -0.2,
   },
   emptySubtitle: {
     fontSize: 13,
     fontWeight: '400',
-    color: '#8E8E93',
     textAlign: 'center',
     maxWidth: 260,
     lineHeight: 18,

@@ -16,11 +16,13 @@ import Animated, {
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
 import type { Track } from '@/types/track';
+import { useTheme } from '@/theme';
 import { TrackArtwork } from './TrackArtwork';
 
 // ─── Playing Indicator ───────────────────────────────────────────────────────
 
 function PlayingIndicator() {
+  const { colors } = useTheme();
   const bar1 = useSharedValue(0.4);
   const bar2 = useSharedValue(0.7);
   const bar3 = useSharedValue(0.5);
@@ -54,9 +56,9 @@ function PlayingIndicator() {
 
   return (
     <View style={indicatorStyles.container}>
-      <Animated.View style={[indicatorStyles.bar, bar1Style]} />
-      <Animated.View style={[indicatorStyles.bar, bar2Style]} />
-      <Animated.View style={[indicatorStyles.bar, bar3Style]} />
+      <Animated.View style={[indicatorStyles.bar, { backgroundColor: colors.accent }, bar1Style]} />
+      <Animated.View style={[indicatorStyles.bar, { backgroundColor: colors.accent }, bar2Style]} />
+      <Animated.View style={[indicatorStyles.bar, { backgroundColor: colors.accent }, bar3Style]} />
     </View>
   );
 }
@@ -73,7 +75,6 @@ const indicatorStyles = StyleSheet.create({
     width: 3,
     height: 14,
     borderRadius: 1.5,
-    backgroundColor: '#FA233B',
     transformOrigin: 'bottom',
   },
 });
@@ -107,6 +108,7 @@ function TrackRowImpl({
   onLongPress,
   showArtwork = true,
 }: TrackRowProps) {
+  const { colors } = useTheme();
   const scale = useSharedValue(1);
   const bgOpacity = useSharedValue(0);
 
@@ -137,15 +139,22 @@ function TrackRowImpl({
   }));
 
   const overlayStyle = useAnimatedStyle(() => ({
-    opacity: bgOpacity.value * 0.06,
+    opacity: bgOpacity.value,
   }));
 
   const artworkUri = track.artwork_path;
 
   return (
     <Animated.View style={[styles.container, rowStyle]}>
-      {/* Ripple/highlight overlay */}
-      <Animated.View style={[StyleSheet.absoluteFill, styles.pressOverlay, overlayStyle]} />
+      {/* Pressed-state highlight — raised surface tile on the dark canvas. */}
+      <Animated.View
+        style={[
+          StyleSheet.absoluteFill,
+          styles.pressOverlay,
+          { backgroundColor: colors.bgRaised },
+          overlayStyle,
+        ]}
+      />
 
       <Pressable
         style={styles.pressable}
@@ -165,7 +174,7 @@ function TrackRowImpl({
               uri={artworkUri}
               blurhash={null}
               size={56}
-              borderRadius={8}
+              borderRadius={12}
             />
             {/* Currently-playing overlay on artwork */}
             {isPlaying && (
@@ -182,17 +191,17 @@ function TrackRowImpl({
             <Text
               style={[
                 styles.title,
-                isPlaying && styles.titlePlaying,
+                { color: isPlaying ? colors.accent : colors.textPrimary },
               ]}
               numberOfLines={1}
             >
               {track.title}
             </Text>
             {track.liked && (
-              <Ionicons name="heart" size={13} color="#FA233B" />
+              <Ionicons name="heart" size={13} color={colors.accent} />
             )}
           </View>
-          <Text style={styles.meta} numberOfLines={1}>
+          <Text style={[styles.meta, { color: colors.textSecondary }]} numberOfLines={1}>
             {track.artist}
             {track.album ? ` · ${track.album}` : ''}
           </Text>
@@ -200,7 +209,7 @@ function TrackRowImpl({
 
         {/* Right side */}
         <View style={styles.right}>
-          <Text style={styles.duration}>
+          <Text style={[styles.duration, { color: colors.textTertiary }]}>
             {formatDuration(track.duration_ms)}
           </Text>
           <TouchableOpacity
@@ -210,7 +219,7 @@ function TrackRowImpl({
             accessibilityRole="button"
             accessibilityLabel="More options"
           >
-            <Ionicons name="ellipsis-vertical" size={17} color="#8E8E93" />
+            <Ionicons name="ellipsis-vertical" size={17} color={colors.textSecondary} />
           </TouchableOpacity>
         </View>
       </Pressable>
@@ -232,8 +241,7 @@ const styles = StyleSheet.create({
     position: 'relative',
   },
   pressOverlay: {
-    backgroundColor: '#1D1D1F',
-    borderRadius: 8,
+    borderRadius: 12,
     zIndex: 0,
   },
   pressable: {
@@ -249,8 +257,8 @@ const styles = StyleSheet.create({
   },
   artworkPlayingOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.55)',
-    borderRadius: 8,
+    backgroundColor: 'rgba(3,5,8,0.62)',
+    borderRadius: 12,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -267,17 +275,12 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#1D1D1F',
     flex: 1,
     letterSpacing: -0.1,
-  },
-  titlePlaying: {
-    color: '#FA233B',
   },
   meta: {
     fontSize: 12,
     fontWeight: '400',
-    color: '#6E6E73',
   },
   right: {
     alignItems: 'flex-end',
@@ -287,7 +290,6 @@ const styles = StyleSheet.create({
   duration: {
     fontSize: 11,
     fontWeight: '400',
-    color: '#8E8E93',
     fontVariant: ['tabular-nums'],
   },
   menuButton: {

@@ -109,6 +109,30 @@ export async function deleteFile(path: string): Promise<void> {
   }
 }
 
+/**
+ * Deletes every entry in the temporary scratch directory.
+ *
+ * The download pipeline streams multi-MB raw files into `getTempDir()` and
+ * removes them in its `finally` block. When a NATIVE crash kills the JS process
+ * mid-download that cleanup never runs, so the temp files are stranded. This
+ * helper is meant to be called once on a cold start (see `bootRecovery`) to
+ * sweep anything a previous crashed session left behind.
+ *
+ * Every individual delete is guarded so one un-deletable entry can't abort the
+ * whole sweep; the function never throws.
+ */
+export async function purgeTempDir(): Promise<void> {
+  try {
+    const tempDir = await getTempDir();
+    const entries = await RNBlobUtil.fs.ls(tempDir);
+    for (const name of entries) {
+      await deleteFile(`${tempDir}${name}`).catch(() => {});
+    }
+  } catch {
+    /* temp dir missing or unreadable — nothing to purge. */
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Storage statistics
 // ---------------------------------------------------------------------------

@@ -28,7 +28,10 @@ import { useQuery } from '@tanstack/react-query';
 import Fuse from 'fuse.js';
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
+import { BlurView } from 'expo-blur';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useTheme, type Theme } from '@/theme';
 import { useActiveTrack } from 'react-native-track-player';
 import { useSafeTracks } from '@/hooks/useSafeTracks';
 import { useDebounce } from '@/hooks/useDebounce';
@@ -151,6 +154,7 @@ interface LocalTrackRowProps {
 }
 
 function LocalTrackRow({ track, onPress, onSwipeQueue }: LocalTrackRowProps) {
+  const { colors } = useTheme();
   const handlePress = useCallback(() => onPress(track), [track, onPress]);
   const handleSwipeQueue = useCallback(() => onSwipeQueue(track), [track, onSwipeQueue]);
 
@@ -159,29 +163,34 @@ function LocalTrackRow({ track, onPress, onSwipeQueue }: LocalTrackRowProps) {
       <TouchableOpacity
         activeOpacity={0.78}
         onPress={handlePress}
-        style={localRowStyles.container}
+        style={[localRowStyles.container, { backgroundColor: colors.bg }]}
       >
         <View style={localRowStyles.artworkWrapper}>
-          <TrackArtwork uri={track.artworkPath} blurhash={null} size={50} borderRadius={8} />
-          <View style={localRowStyles.downloadedBadge}>
-            <Ionicons name="checkmark" size={10} color="#FFFFFF" />
+          <TrackArtwork uri={track.artworkPath} blurhash={null} size={50} borderRadius={12} />
+          <View
+            style={[
+              localRowStyles.downloadedBadge,
+              { backgroundColor: colors.accent, borderColor: colors.bg },
+            ]}
+          >
+            <Ionicons name="checkmark" size={10} color="#07090D" />
           </View>
         </View>
 
         <View style={localRowStyles.meta}>
           <View style={localRowStyles.titleRow}>
-            <Text style={localRowStyles.title} numberOfLines={1}>
+            <Text style={[localRowStyles.title, { color: colors.textPrimary }]} numberOfLines={1}>
               {track.title}
             </Text>
           </View>
-          <Text style={localRowStyles.artist} numberOfLines={1}>
+          <Text style={[localRowStyles.artist, { color: colors.textSecondary }]} numberOfLines={1}>
             {track.artist}
             {track.durationMs > 0 ? ` · ${formatDuration(track.durationMs)}` : ''}
           </Text>
         </View>
 
-        {/* Green local dot indicator */}
-        <View style={localRowStyles.localDot} />
+        {/* Cyan local indicator dot */}
+        <View style={[localRowStyles.localDot, { backgroundColor: colors.accent }]} />
       </TouchableOpacity>
     </SwipeableTrackRow>
   );
@@ -196,7 +205,6 @@ const localRowStyles = StyleSheet.create({
     gap: 12,
     // Opaque background prevents the underlying swipe-action pills from
     // bleeding through visually at rest.
-    backgroundColor: '#F5F5F7',
   },
   artworkWrapper: {
     position: 'relative',
@@ -206,14 +214,12 @@ const localRowStyles = StyleSheet.create({
     position: 'absolute',
     bottom: -3,
     left: -3,
-    backgroundColor: '#34C759',
     borderRadius: 8,
     width: 16,
     height: 16,
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 1.5,
-    borderColor: '#F5F5F7',
   },
   meta: { flex: 1 },
   titleRow: {
@@ -225,18 +231,15 @@ const localRowStyles = StyleSheet.create({
     flex: 1,
     fontSize: 14,
     fontWeight: '600',
-    color: '#1D1D1F',
   },
   artist: {
     fontSize: 12,
-    color: '#6E6E73',
     marginTop: 2,
   },
   localDot: {
     width: 6,
     height: 6,
     borderRadius: 3,
-    backgroundColor: '#1DB954',
     flexShrink: 0,
   },
 });
@@ -250,14 +253,30 @@ interface SectionHeaderProps {
 }
 
 function SearchSectionHeader({ title, badge, badgeColor }: SectionHeaderProps) {
+  const { colors } = useTheme();
   return (
-    <View style={sectionHeaderStyles.container}>
-      <Text style={sectionHeaderStyles.title}>{title}</Text>
-      <View style={[sectionHeaderStyles.badge, { backgroundColor: badgeColor }]}>
-        <Text style={sectionHeaderStyles.badgeText}>{badge}</Text>
+    <View style={[sectionHeaderStyles.container, { backgroundColor: colors.bg }]}>
+      <Text style={[sectionHeaderStyles.title, { color: colors.textPrimary }]}>{title}</Text>
+      <View
+        style={[
+          sectionHeaderStyles.badge,
+          { backgroundColor: tintColor(badgeColor), borderColor: badgeColor },
+        ]}
+      >
+        <Text style={[sectionHeaderStyles.badgeText, { color: badgeColor }]}>{badge}</Text>
       </View>
     </View>
   );
+}
+
+// Translucent fill for the HUD badge pill so the section badge reads as a
+// glowing hairline-outlined tag rather than a solid block.
+function tintColor(hex: string): string {
+  // Accept the cyan accent / gold tokens the badges use and return a soft
+  // 16%-alpha tint of the same hue.
+  if (hex === '#19E3FF' || hex === '#0AB4D6') return 'rgba(25,227,255,0.16)';
+  if (hex === '#F5B642' || hex === '#C8860A') return 'rgba(245,182,66,0.16)';
+  return 'rgba(25,227,255,0.16)';
 }
 
 const sectionHeaderStyles = StyleSheet.create({
@@ -267,24 +286,22 @@ const sectionHeaderStyles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: 18,
     paddingBottom: 10,
-    backgroundColor: '#F5F5F7',
     gap: 8,
   },
   title: {
     fontSize: 14,
     fontWeight: '700',
-    color: '#1D1D1F',
   },
   badge: {
-    paddingHorizontal: 7,
+    paddingHorizontal: 8,
     paddingVertical: 3,
-    borderRadius: 6,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
   },
   badgeText: {
     fontSize: 9,
     fontWeight: '800',
-    color: '#1D1D1F',
-    letterSpacing: 0.5,
+    letterSpacing: 0.6,
   },
 });
 
@@ -295,21 +312,27 @@ interface GenreGridProps {
 }
 
 function GenreGrid({ onSelect }: GenreGridProps) {
+  const { colors } = useTheme();
   const ITEM_WIDTH = (SCREEN_WIDTH - 52) / 2;
 
   return (
     <View style={genreGridStyles.container}>
-      <Text style={genreGridStyles.heading}>Explore Genres</Text>
+      <Text style={[genreGridStyles.heading, { color: colors.textPrimary }]}>Explore Genres</Text>
       <View style={genreGridStyles.grid}>
         {BOLLYWOOD_GENRES.map((g) => (
           <TouchableOpacity
             key={g.label}
             onPress={() => onSelect(g.query)}
-            style={[genreGridStyles.card, { width: ITEM_WIDTH }]}
+            style={[
+              genreGridStyles.card,
+              { width: ITEM_WIDTH, backgroundColor: colors.bgElevated, borderColor: colors.borderAccent },
+            ]}
             activeOpacity={0.8}
           >
-            <Ionicons name={g.icon} size={22} color="#FA233B" />
-            <Text style={genreGridStyles.label}>{g.label}</Text>
+            <View style={[genreGridStyles.iconWrap, { backgroundColor: colors.accentMuted }]}>
+              <Ionicons name={g.icon} size={20} color={colors.accent} />
+            </View>
+            <Text style={[genreGridStyles.label, { color: colors.textPrimary }]}>{g.label}</Text>
           </TouchableOpacity>
         ))}
       </View>
@@ -325,8 +348,8 @@ const genreGridStyles = StyleSheet.create({
   heading: {
     fontSize: 18,
     fontWeight: '700',
-    color: '#1D1D1F',
     marginBottom: 14,
+    letterSpacing: -0.3,
   },
   grid: {
     flexDirection: 'row',
@@ -334,31 +357,26 @@ const genreGridStyles = StyleSheet.create({
     gap: 12,
   },
   card: {
-    height: 72,
-    // Light-theme card: white surface, subtle border, dark label. The
-    // previous '#161616' background with '#CCCCCC' text was dark-theme
-    // leftover and looked broken on the app's light F5F5F7 background.
-    backgroundColor: '#FFFFFF',
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(60,60,67,0.10)',
-    justifyContent: 'center',
+    height: 78,
+    // Dark elevated tile with a cyan HUD hairline. Soft elevation only.
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 3 },
-        shadowOpacity: 0.06,
-        shadowRadius: 6,
-      },
-      android: { elevation: 2 },
-    }),
+    paddingHorizontal: 14,
+    gap: 12,
+  },
+  iconWrap: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   label: {
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: '600',
-    color: '#1D1D1F',
+    flexShrink: 1,
   },
 });
 
@@ -372,25 +390,26 @@ interface RecentSearchesProps {
 }
 
 function RecentSearches({ searches, onSelect, onRemove, onClearAll }: RecentSearchesProps) {
+  const { colors } = useTheme();
   if (searches.length === 0) return null;
 
   return (
     <View style={recentStyles.container}>
       <View style={recentStyles.header}>
-        <Text style={recentStyles.heading}>Recent Searches</Text>
+        <Text style={[recentStyles.heading, { color: colors.textPrimary }]}>Recent Searches</Text>
         <TouchableOpacity onPress={onClearAll}>
-          <Text style={recentStyles.clearAll}>Clear All</Text>
+          <Text style={[recentStyles.clearAll, { color: colors.accent }]}>Clear All</Text>
         </TouchableOpacity>
       </View>
       {searches.map((s) => (
-        <View key={s} style={recentStyles.row}>
+        <View key={s} style={[recentStyles.row, { borderBottomColor: colors.border }]}>
           <TouchableOpacity
             style={recentStyles.rowMain}
             onPress={() => onSelect(s)}
             activeOpacity={0.75}
           >
-            <Ionicons name="time-outline" size={17} color="#8E8E93" />
-            <Text style={recentStyles.text} numberOfLines={1}>
+            <Ionicons name="time-outline" size={17} color={colors.textTertiary} />
+            <Text style={[recentStyles.text, { color: colors.textSecondary }]} numberOfLines={1}>
               {s}
             </Text>
           </TouchableOpacity>
@@ -398,7 +417,7 @@ function RecentSearches({ searches, onSelect, onRemove, onClearAll }: RecentSear
             onPress={() => onRemove(s)}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           >
-            <Ionicons name="close" size={14} color="#8E8E93" />
+            <Ionicons name="close" size={14} color={colors.textTertiary} />
           </TouchableOpacity>
         </View>
       ))}
@@ -419,22 +438,19 @@ const recentStyles = StyleSheet.create({
   heading: {
     fontSize: 18,
     fontWeight: '700',
-    color: '#1D1D1F',
+    letterSpacing: -0.3,
   },
   clearAll: {
     fontSize: 13,
-    color: '#FA233B',
-    fontWeight: '500',
+    fontWeight: '600',
   },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingVertical: 13,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    // Was '#FFFFFF' — invisible on the F5F5F7 background. Use a hairline
-    // divider tinted with the standard iOS list separator so consecutive
-    // recents read as distinct rows.
-    borderBottomColor: 'rgba(60,60,67,0.15)',
+    // Cyan-neutral hairline divider so consecutive recents read as distinct
+    // rows on the dark canvas.
   },
   rowMain: {
     flex: 1,
@@ -445,7 +461,6 @@ const recentStyles = StyleSheet.create({
   text: {
     fontSize: 15,
     fontWeight: '400',
-    color: '#3A3A3C',
     flex: 1,
   },
 });
@@ -487,7 +502,8 @@ function YtResultRow({
 type LocalSection = {
   title: 'In Your Library';
   badge: 'LOCAL';
-  badgeColor: '#1DB954';
+  // Hex string resolved from the active theme (cyan accent for LOCAL).
+  badgeColor: string;
   data: Track[];
   sectionType: 'local';
 };
@@ -495,7 +511,8 @@ type LocalSection = {
 type YouTubeSection = {
   title: 'Online';
   badge: 'STREAMING';
-  badgeColor: '#FA233B';
+  // Hex string resolved from the active theme (gold for STREAMING).
+  badgeColor: string;
   data: YouTubeSearchResult[];
   sectionType: 'youtube';
 };
@@ -507,6 +524,8 @@ type SearchSection = LocalSection | YouTubeSection;
 export function SearchScreen() {
   const navigation = useNavigation<RootStackNavigationProp>();
   const insets = useSafeAreaInsets();
+  const { colors, isDark } = useTheme();
+  const styles = useMemo(() => createStyles(colors), [colors]);
   const { playTrack, addTrack, streamTrack } = usePlayerQueue();
   const activeRntpTrack = useActiveTrack();
   const downloadQueue = useDownloadStore((s) => s.queue);
@@ -531,11 +550,16 @@ export function SearchScreen() {
   // Animated search bar width (expands when focused)
   const cancelOpacity = useSharedValue(0);
 
+  // Visual-only: drive the cyan HUD focus ring on the glass search field.
+  const [isSearchFocused, setIsSearchFocused] = useState(false);
+
   const handleSearchFocus = useCallback(() => {
+    setIsSearchFocused(true);
     cancelOpacity.value = withTiming(1, { duration: 180 });
   }, []);
 
   const handleSearchBlur = useCallback(() => {
+    setIsSearchFocused(false);
     if (query.length === 0) {
       cancelOpacity.value = withTiming(0, { duration: 180 });
     }
@@ -828,7 +852,7 @@ export function SearchScreen() {
       result.push({
         title: 'In Your Library',
         badge: 'LOCAL',
-        badgeColor: '#1DB954',
+        badgeColor: colors.accent,
         data: localResults,
         sectionType: 'local',
       });
@@ -842,13 +866,13 @@ export function SearchScreen() {
       result.push({
         title: 'Online',
         badge: 'STREAMING',
-        badgeColor: '#FA233B',
+        badgeColor: colors.gold,
         data: ytData,
         sectionType: 'youtube',
       });
     }
     return result;
-  }, [isSearching, localResults, ytResults]);
+  }, [isSearching, localResults, ytResults, colors]);
 
   // ── Render items ──
 
@@ -909,12 +933,34 @@ export function SearchScreen() {
 
   return (
     <View style={styles.root}>
-      <StatusBar barStyle="dark-content" backgroundColor="#F5F5F7" />
+      <StatusBar
+        barStyle={isDark ? 'light-content' : 'dark-content'}
+        backgroundColor={colors.bg}
+      />
 
-      {/* ── Search header ── */}
+      {/* ── Search header (dark glass) ── */}
       <View style={[styles.searchHeader, { paddingTop: insets.top + 12 }]}>
-        <View style={styles.searchBar}>
-          <Ionicons name="search" size={18} color="#8E8E93" />
+        <BlurView
+          intensity={40}
+          tint={isDark ? 'dark' : 'light'}
+          style={StyleSheet.absoluteFill}
+          pointerEvents="none"
+        />
+        <View
+          style={[
+            styles.searchBar,
+            isSearchFocused && {
+              borderColor: colors.accent,
+              shadowColor: colors.accent,
+              shadowOpacity: 0.4,
+            },
+          ]}
+        >
+          <Ionicons
+            name="search"
+            size={18}
+            color={isSearchFocused ? colors.accent : colors.textTertiary}
+          />
           <TextInput
             ref={inputRef}
             style={styles.searchInput}
@@ -924,7 +970,7 @@ export function SearchScreen() {
             onFocus={handleSearchFocus}
             onBlur={handleSearchBlur}
             placeholder="Songs, artists, YouTube…"
-            placeholderTextColor="#8E8E93"
+            placeholderTextColor={colors.textTertiary}
             returnKeyType="search"
             autoCorrect={false}
             autoCapitalize="none"
@@ -934,7 +980,7 @@ export function SearchScreen() {
               onPress={handleClearQuery}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
-              <Ionicons name="close-circle" size={18} color="#8E8E93" />
+              <Ionicons name="close-circle" size={18} color={colors.textTertiary} />
             </TouchableOpacity>
           )}
         </View>
@@ -990,7 +1036,7 @@ export function SearchScreen() {
                       <SearchSectionHeader
                         title="Online"
                         badge="STREAMING"
-                        badgeColor="#FA233B"
+                        badgeColor={colors.gold}
                       />
                       <YouTubeSkeleton />
                     </>
@@ -998,8 +1044,8 @@ export function SearchScreen() {
                 </View>
               ) : ytError ? (
                 <View style={styles.searchMessage}>
-                  <View style={styles.searchMessageIcon}>
-                    <Ionicons name="wifi" size={24} color="#FA233B" />
+                  <View style={[styles.searchMessageIcon, { backgroundColor: colors.goldMuted }]}>
+                    <Ionicons name="wifi" size={24} color={colors.danger} />
                   </View>
                   <Text style={styles.searchMessageTitle}>Search is having trouble</Text>
                   <Text style={styles.searchMessageText}>
@@ -1010,13 +1056,19 @@ export function SearchScreen() {
                     style={styles.searchRetryButton}
                     activeOpacity={0.82}
                   >
+                    <LinearGradient
+                      colors={colors.brandGradient}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={StyleSheet.absoluteFill}
+                    />
                     <Text style={styles.searchRetryText}>Retry Search</Text>
                   </TouchableOpacity>
                 </View>
               ) : isSearching && localResults.length === 0 && (ytResults ?? []).length === 0 ? (
                 <View style={styles.searchMessage}>
                   <View style={styles.searchMessageIcon}>
-                    <Ionicons name="search" size={24} color="#FA233B" />
+                    <Ionicons name="search" size={24} color={colors.accent} />
                   </View>
                   <Text style={styles.searchMessageTitle}>No songs found</Text>
                   <Text style={styles.searchMessageText}>
@@ -1035,110 +1087,111 @@ export function SearchScreen() {
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
-const styles = StyleSheet.create({
-  root: {
-    flex: 1,
-    backgroundColor: '#F5F5F7',
-  },
-  searchHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingBottom: 16,
-    gap: 10,
-    backgroundColor: '#F5F5F7',
-  },
-  searchBar: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 18,
-    paddingHorizontal: 16,
-    height: 50,
-    gap: 8,
-    borderWidth: 1,
-    borderColor: 'rgba(60,60,67,0.10)',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 6 },
-        shadowOpacity: 0.06,
-        shadowRadius: 14,
-      },
-      android: { elevation: 2 },
-    }),
-  },
-  searchInput: {
-    flex: 1,
-    fontSize: 16,
-    color: '#1D1D1F',
-    fontWeight: '400',
-  },
-  cancelWrapper: {
-    overflow: 'hidden',
-    justifyContent: 'center',
-    alignItems: 'flex-end',
-    width: 60,
-  },
-  cancelText: {
-    fontSize: 15,
-    fontWeight: '500',
-    color: '#FA233B',
-  },
-  content: {
-    flex: 1,
-  },
-  listContent: {
-    paddingBottom: 100,
-  },
-  emptyState: {
-    paddingTop: 8,
-  },
-  searchMessage: {
-    marginHorizontal: 20,
-    marginTop: 18,
-    padding: 18,
-    borderRadius: 18,
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: 'rgba(60,60,67,0.10)',
-    alignItems: 'center',
-  },
-  searchMessageIcon: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(250,35,59,0.10)',
-    marginBottom: 12,
-  },
-  searchMessageTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#1D1D1F',
-    letterSpacing: -0.2,
-  },
-  searchMessageText: {
-    marginTop: 6,
-    fontSize: 13,
-    fontWeight: '500',
-    color: '#8E8E93',
-    textAlign: 'center',
-  },
-  searchRetryButton: {
-    marginTop: 14,
-    minHeight: 38,
-    paddingHorizontal: 16,
-    borderRadius: 19,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#FA233B',
-  },
-  searchRetryText: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: '#FFFFFF',
-  },
-});
+const createStyles = (colors: Theme['colors']) =>
+  StyleSheet.create({
+    root: {
+      flex: 1,
+      backgroundColor: colors.bg,
+    },
+    searchHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: 20,
+      paddingBottom: 16,
+      gap: 10,
+      // Transparent so the BlurView absolute fill behind it shows through;
+      // a cyan HUD hairline sits at the bottom edge.
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: colors.borderAccent,
+    },
+    searchBar: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: colors.bgRaised,
+      borderRadius: 16,
+      paddingHorizontal: 16,
+      height: 50,
+      gap: 8,
+      borderWidth: 1,
+      borderColor: colors.border,
+      // Cyan focus glow toggled inline via shadowOpacity on focus.
+      shadowColor: colors.accent,
+      shadowOffset: { width: 0, height: 0 },
+      shadowOpacity: 0,
+      shadowRadius: 10,
+    },
+    searchInput: {
+      flex: 1,
+      fontSize: 16,
+      color: colors.textPrimary,
+      fontWeight: '500',
+      paddingVertical: 0,
+    },
+    cancelWrapper: {
+      overflow: 'hidden',
+      justifyContent: 'center',
+      alignItems: 'flex-end',
+      width: 60,
+    },
+    cancelText: {
+      fontSize: 15,
+      fontWeight: '600',
+      color: colors.accent,
+    },
+    content: {
+      flex: 1,
+    },
+    listContent: {
+      paddingBottom: 100,
+    },
+    emptyState: {
+      paddingTop: 8,
+    },
+    searchMessage: {
+      marginHorizontal: 20,
+      marginTop: 18,
+      padding: 18,
+      borderRadius: 20,
+      backgroundColor: colors.bgElevated,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.borderAccent,
+      alignItems: 'center',
+    },
+    searchMessageIcon: {
+      width: 52,
+      height: 52,
+      borderRadius: 26,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: colors.accentMuted,
+      marginBottom: 12,
+    },
+    searchMessageTitle: {
+      fontSize: 16,
+      fontWeight: '700',
+      color: colors.textPrimary,
+      letterSpacing: -0.2,
+    },
+    searchMessageText: {
+      marginTop: 6,
+      fontSize: 13,
+      fontWeight: '500',
+      color: colors.textSecondary,
+      textAlign: 'center',
+    },
+    searchRetryButton: {
+      marginTop: 14,
+      minHeight: 40,
+      paddingHorizontal: 18,
+      borderRadius: 999,
+      alignItems: 'center',
+      justifyContent: 'center',
+      overflow: 'hidden',
+    },
+    searchRetryText: {
+      fontSize: 13,
+      fontWeight: '800',
+      color: '#07090D',
+    },
+  });

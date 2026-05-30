@@ -146,6 +146,49 @@ function upgradeImageQuality(url: string | undefined): string {
 }
 
 /**
+ * Maps a raw JioSaavn song object into the shared `YouTubeSearchResult` shape.
+ * Returns `null` for rows we can't use (no id, no title, or — crucially — no
+ * `encrypted_media_url`, which the CDN won't serve). Shared by `searchSaavn`
+ * and `getSaavnFreshTracks` so every Saavn row is built identically.
+ */
+function saavnRawToResult(raw: SaavnSongRaw): YouTubeSearchResult | null {
+  const id = raw?.id;
+  if (!id) return null;
+
+  const title = decodeEntities(raw.title ?? raw.song ?? '').trim();
+  if (!title) return null;
+
+  // Skip songs the CDN won't serve — no point queuing them.
+  if (!raw.more_info?.encrypted_media_url) return null;
+
+  const artist = pickArtist(raw);
+  const durationSec = Number.parseInt(raw.more_info?.duration ?? '0', 10);
+  const durationMs =
+    Number.isFinite(durationSec) && durationSec > 0 ? durationSec * 1000 : 0;
+
+  const has320 =
+    raw.more_info?.['320kbps'] === true || raw.more_info?.['320kbps'] === 'true';
+
+  const album = decodeEntities(raw.more_info?.album ?? '');
+
+  return {
+    id,
+    title,
+    author: artist,
+    duration_ms: durationMs,
+    thumbnail: upgradeImageQuality(raw.image),
+    // `view_count` is YouTube-only free-form metadata; the album lives in the
+    // dedicated `saavnAlbum` field so the card can show "views for YouTube,
+    // album for Saavn" deliberately instead of overloading one field.
+    view_count: '',
+    provider: 'saavn',
+    saavnEncryptedUrl: raw.more_info?.encrypted_media_url ?? '',
+    saavnHas320kbps: has320,
+    saavnAlbum: album,
+  };
+}
+
+/**
  * Searches JioSaavn for a query. Returns up to `limit` song results in the
  * shared `YouTubeSearchResult` shape (now provider-agnostic).
  *
@@ -184,44 +227,135 @@ export async function searchSaavn(
   const results: YouTubeSearchResult[] = [];
 
   for (const raw of songs) {
-    const id = raw.id;
-    if (!id || seen.has(id)) continue;
-    seen.add(id);
-
-    const title = decodeEntities(raw.title ?? raw.song ?? '').trim();
-    if (!title) continue;
-
-    // Skip songs the CDN won't serve — no point queuing them.
-    if (!raw.more_info?.encrypted_media_url) continue;
-
-    const artist = pickArtist(raw);
-    const durationSec = Number.parseInt(raw.more_info?.duration ?? '0', 10);
-    const durationMs =
-      Number.isFinite(durationSec) && durationSec > 0 ? durationSec * 1000 : 0;
-
-    const has320 =
-      raw.more_info?.['320kbps'] === true ||
-      raw.more_info?.['320kbps'] === 'true';
-
-    const album = decodeEntities(raw.more_info?.album ?? '');
-
-    results.push({
-      id,
-      title,
-      author: artist,
-      duration_ms: durationMs,
-      thumbnail: upgradeImageQuality(raw.image),
-      view_count: album,
-      provider: 'saavn',
-      saavnEncryptedUrl: raw.more_info?.encrypted_media_url ?? '',
-      saavnHas320kbps: has320,
-      saavnAlbum: album,
-    });
-
+    if (seen.has(raw.id)) continue;
+    const mapped = saavnRawToResult(raw);
+    if (!mapped) continue;
+    seen.add(mapped.id);
+    results.push(mapped);
     if (results.length >= limit) break;
   }
 
   return results;
+}
+
+// ── Fresh / trending tracks ───────────────────────────────────────────────────
+
+/**
+ * Recursively walks an arbitrary JioSaavn JSON payload and collects every
+ * embedded song-shaped object (`type === 'song'` with an
+ * `encrypted_media_url`). The trending / launch-data endpoints nest songs at
+ * varying depths and key names across API versions, so a structural sweep is
+ * far more robust than hard-coding a path that breaks on the next shape change.
+ */
+function collectSaavnSongs(node: unknown, out: SaavnSongRaw[], seen: Set<string>): void {
+  if (!node || out.length >= 100) return;
+
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      collectSaavnSongs(item, out, seen);
+      if (out.length >= 100) return;
+    }
+    return;
+  }
+
+  if (typeof node !== 'object') return;
+
+  const record = node as Record<string, unknown>;
+  if (
+    record.type === 'song' &&
+    typeof record.id === 'string' &&
+    record.more_info &&
+    typeof (record.more_info as any).encrypted_media_url === 'string' &&
+    !seen.has(record.id)
+  ) {
+    seen.add(record.id);
+    out.push(record as unknown as SaavnSongRaw);
+  }
+
+  for (const value of Object.values(record)) {
+    if (value && typeof value === 'object') {
+      collectSaavnSongs(value, out, seen);
+      if (out.length >= 100) return;
+    }
+  }
+}
+
+/** Rotating set of popular Bollywood-leaning seed queries for the year-token fallback. */
+const FRESH_FALLBACK_QUERIES = [
+  'latest bollywood hits',
+  'new hindi songs',
+  'top punjabi songs',
+  'trending bollywood',
+  'new bollywood romantic',
+];
+
+/**
+ * Returns FRESH / new-release / trending Bollywood-leaning tracks (NOT a
+ * deterministic keyword search). Used by the recommendations engine.
+ *
+ * Strategy:
+ *   1. Hit JioSaavn's own trending endpoint (`content.getTrending`, the same
+ *      call the web player's home feed uses) and sweep songs out of the
+ *      nested payload.
+ *   2. If that yields nothing usable (endpoint shape change, WAF block, or
+ *      trending entities lacking `encrypted_media_url`), fall back to
+ *      year-token queries — a rotating set of popular seeds with the current
+ *      year appended — so the result is still time-fresh-ish.
+ *
+ * Defensive by contract: NEVER throws. Returns `[]` on total failure. Rows use
+ * the same `YouTubeSearchResult` shape as the rest of the pipeline, with
+ * `provider: 'saavn'`.
+ */
+export async function getSaavnFreshTracks(
+  opts: { limit?: number; page?: number } = {},
+): Promise<YouTubeSearchResult[]> {
+  const limit = Math.max(1, opts.limit ?? 20);
+  const page = Math.max(1, opts.page ?? 1);
+
+  // ── 1. Trending endpoint ──────────────────────────────────────────────────
+  try {
+    const params = new URLSearchParams({
+      __call: 'content.getTrending',
+      _format: 'json',
+      _marker: '0',
+      api_version: '4',
+      ctx: 'web6dot0',
+      entity_type: 'song',
+      entity_language: 'hindi',
+    });
+    const data = await fetchJson<unknown>(`${JIOSAAVN_BASE}?${params.toString()}`);
+
+    const rawSongs: SaavnSongRaw[] = [];
+    collectSaavnSongs(data, rawSongs, new Set<string>());
+
+    const results: YouTubeSearchResult[] = [];
+    const seen = new Set<string>();
+    for (const raw of rawSongs) {
+      if (seen.has(raw.id)) continue;
+      const mapped = saavnRawToResult(raw);
+      if (!mapped) continue;
+      seen.add(mapped.id);
+      results.push(mapped);
+      if (results.length >= limit) break;
+    }
+
+    if (results.length > 0) return results;
+    logger.warn('[SaavnProvider] getSaavnFreshTracks: trending returned no usable songs, falling back to year-token queries');
+  } catch (err) {
+    logger.warn('[SaavnProvider] getSaavnFreshTracks: trending endpoint failed, falling back:', err);
+  }
+
+  // ── 2. Year-token fallback ─────────────────────────────────────────────────
+  try {
+    const year = new Date().getFullYear();
+    // Rotate the seed by page so successive pages don't return the same list.
+    const seed = FRESH_FALLBACK_QUERIES[(page - 1) % FRESH_FALLBACK_QUERIES.length];
+    const rows = await searchSaavn(`${seed} ${year}`, limit);
+    return rows.slice(0, limit);
+  } catch (err) {
+    logger.warn('[SaavnProvider] getSaavnFreshTracks: year-token fallback failed:', err);
+    return [];
+  }
 }
 
 // ── Stream URL resolution ────────────────────────────────────────────────────

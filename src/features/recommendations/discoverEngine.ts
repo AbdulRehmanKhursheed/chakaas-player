@@ -2,32 +2,47 @@
  * discoverEngine — surface ranked Saavn suggestions tailored to the user.
  *
  * Pipeline:
- *   1. Compose a candidate set from two sources:
+ *   1. Compose a candidate set from three sources:
  *        a) `getTopArtists(20)` — learned + seeded artist preferences. We
  *           rotate a subset of 6 artists per refresh based on `rotationSeed`
- *           so the same top-N doesn't dominate every tap.
+ *           so the same top-N doesn't dominate every tap. If the store is
+ *           empty (brand-new install before the soft seed lands) we fall back
+ *           to `USER_TASTE_SEED.artists` so the feed never collapses to pure
+ *           mood queries.
  *        b) `USER_TASTE_SEED.moodQueries` — ~30 curated text queries; we
  *           rotate 8 per refresh.
+ *        c) `getSaavnFreshTracks()` — JioSaavn trending / new-release rows.
+ *           These get a recency boost (see `RECENCY_BIAS_YEARS`) so genuinely
+ *           fresh songs surface even for a cold-start user, and so successive
+ *           refreshes (paged via the seed) bring in new material rather than
+ *           reshuffling the same static keyword pool.
  *   2. For each query we fetch `PER_QUERY_FETCH` results and offset into the
- *      list by `rotationSeed % 8`, tapping deeper into Saavn's ranking on
- *      successive refreshes.
+ *      list by `rotationSeed % PER_QUERY_FETCH`, tapping deeper into Saavn's
+ *      ranking on successive refreshes.
  *   3. Filter out:
  *        - anything already in the local library (saavn id + title/artist fp)
  *        - anything in the persistent skip memory (`skipMemory.ts`)
- *   4. Score each candidate as
- *           (artist affinity score) + (saavn_play_count_log_normalised)
- *      and sort descending.
+ *   4. Score each candidate by its source weight + artist affinity and sort
+ *      descending. (Saavn search rows carry no play_count, so there is no
+ *      popularity term — we lean on Saavn's own ranking instead.)
  *   5. When `rotationSeed > 0`, sample from the top `limit * 4` using a
  *      seeded PRNG so the same nonce produces the same list (good for
  *      tab-switching / cache hits) but a new nonce yields a fresh sample.
+ *   6. If the post-filter pool is too small (heavy de-dupe / skip memory),
+ *      widen: relax the low-quality filter and broaden the queries before
+ *      giving up, so refresh rarely returns empty.
  */
-import { searchSaavn } from '@/features/download/providers/SaavnProvider';
+import { searchSaavn, getSaavnFreshTracks } from '@/features/download/providers/SaavnProvider';
 import { Q } from '@nozbe/watermelondb';
 import { tracksCollection } from '@/db';
 import { logger } from '@/utils/logger';
 import type { YouTubeSearchResult } from '@/types/track';
 import { USER_TASTE_SEED } from './seed';
-import { getTopArtists, getArtistScore } from './artistAffinity';
+import {
+  getTopArtists,
+  getArtistScore,
+  seedTasteOnFirstLaunch,
+} from './artistAffinity';
 import {
   getAllSkippedKeys,
   normalizeFingerprint,
@@ -44,7 +59,15 @@ const ARTIST_POOL = 20;     // top-N from artistAffinity we draw rotation from
 const ARTIST_PICK = 6;      // how many of those we actually query per refresh
 const MOOD_PICK = 8;        // how many mood queries per refresh
 const PER_QUERY_FETCH = 16; // Saavn page size per query
+const FRESH_FETCH = 24;     // how many trending/new rows to pull per refresh
+/**
+ * Recency horizon, in years. Fresh-source rows are treated as released "now",
+ * so their recency factor is 1.0; the constant defines how a release ages out
+ * of the boost. Search rows carry no release date, so they get the floor.
+ */
 const RECENCY_BIAS_YEARS = 5;
+/** Max additive boost a maximally-recent (fresh-source) candidate receives. */
+const RECENCY_MAX_BOOST = 1.5;
 
 // ── Rotation helpers ───────────────────────────────────────────────────────
 
@@ -107,14 +130,22 @@ async function getLibraryFingerprints(): Promise<{
   return { saavnIds, titleArtist };
 }
 
-// ── Popularity normalisation ───────────────────────────────────────────────
+// ── Recency boost ────────────────────────────────────────────────────────────
 
-function popularityScore(playCountStr: string | undefined): number {
-  if (!playCountStr) return 0;
-  const n = Number.parseInt(playCountStr, 10);
-  if (!Number.isFinite(n) || n <= 0) return 0;
-  // Log-normalise: 1k plays → ~0.4, 1M → 1.0, 100M → 1.6.
-  return Math.log10(n) / 6;
+/**
+ * Maps a release age (years before today) to an additive ranking boost in
+ * `[0, RECENCY_MAX_BOOST]`. Age 0 → full boost; linearly fading to 0 once the
+ * release is `RECENCY_BIAS_YEARS` old. Used to weight the fresh-content source
+ * so trending / new-release rows out-rank stale keyword matches.
+ *
+ * Saavn rows don't carry a release date, so the fresh source passes `ageYears
+ * = 0` (it is fresh by construction) while the artist / mood sources don't
+ * call this at all — they rely on affinity + Saavn ranking.
+ */
+function recencyBoost(ageYears: number): number {
+  if (!Number.isFinite(ageYears) || ageYears < 0) return RECENCY_MAX_BOOST;
+  if (ageYears >= RECENCY_BIAS_YEARS) return 0;
+  return RECENCY_MAX_BOOST * (1 - ageYears / RECENCY_BIAS_YEARS);
 }
 
 // ── Main ───────────────────────────────────────────────────────────────────
@@ -149,6 +180,15 @@ export async function getDiscoverFeed(
         ? Date.now() & 0x7fffffff
         : rotationSeed;
 
+  // Make sure the stated taste seed has been written to the affinity store at
+  // least once, so a brand-new install has artist signal before any real
+  // plays. Idempotent + MMKV-flag-guarded — a no-op after the first launch.
+  try {
+    seedTasteOnFirstLaunch();
+  } catch (err) {
+    logger.warn('[Discover] seedTasteOnFirstLaunch failed:', err);
+  }
+
   const fingerprints = await getLibraryFingerprints();
   const skippedKeys = getAllSkippedKeys();
   const seen = new Set<string>();
@@ -170,17 +210,32 @@ export async function getDiscoverFeed(
     return false;
   };
 
-  // Pull a wider pool, then rotate. PER_QUERY_FETCH is large so we also have
-  // a deeper slice to offset into. The previous double-mod (`% PER_QUERY_FETCH
-  // … % 8`) was equivalent to a single `% 8` because `PER_QUERY_FETCH > 8`,
-  // so collapse it to one operation for clarity.
-  const resultOffset = Math.abs(seed) % 8;
+  // Offset into each result list so successive refreshes peek deeper into
+  // Saavn's ranking instead of always grabbing the same top items. Stepping
+  // by the full page size (`% PER_QUERY_FETCH`) — the old `% 8` only ever
+  // rotated the first half of the page, so the back half was unreachable and
+  // refreshes recycled the same songs.
+  const resultOffset = Math.abs(seed) % PER_QUERY_FETCH;
+  // Page the fresh / trending source so each refresh asks Saavn for a
+  // different slice of new releases.
+  const freshPage = (Math.abs(seed) % 5) + 1;
 
   // ── Source A: top artists (rotated subset of top-N) ───────────────────
   // Fire all artist + mood searches in parallel. Serial would multiply
   // network latency by ~14 (6 artists + 8 mood queries); on a 200ms RTT
   // that's ~2.8s vs. ~250ms parallel.
-  const allArtists = getTopArtists(ARTIST_POOL);
+  //
+  // Cold-start fallback: if the affinity store is empty (brand-new install,
+  // soft seed somehow not yet applied) the top-N is [], which used to leave
+  // the feed leaning entirely on generic mood queries. Fall back to the
+  // stated taste seed so Source A always contributes real artist signal.
+  let allArtists = getTopArtists(ARTIST_POOL);
+  if (allArtists.length === 0) {
+    allArtists = Object.entries(USER_TASTE_SEED.artists).map(([artist, score]) => ({
+      artist,
+      score,
+    }));
+  }
   const chosenArtists = pickRotating(allArtists, ARTIST_PICK, seed);
   const artistSettled = await Promise.allSettled(
     chosenArtists.map(({ artist }) => searchSaavn(artist, PER_QUERY_FETCH)),
@@ -193,17 +248,16 @@ export async function getDiscoverFeed(
       logger.warn(`[Discover] Saavn search failed for artist "${artist}":`, settled.reason);
       return;
     }
-    // Offset into the result list so successive refreshes peek deeper into
-    // Saavn's ranking instead of always grabbing the same top items.
     const rotated = settled.value.slice(resultOffset).concat(settled.value.slice(0, resultOffset));
     for (const r of rotated) {
       if (shouldReject(r)) continue;
       seen.add(r.id);
 
-      const popularity = popularityScore(undefined); // search results don't carry play_count; rely on Saavn ranking
+      // Search rows carry no play_count, so there's no popularity term — we
+      // rely on Saavn's own ranking plus the artist's affinity score.
       collected.push({
         ...r,
-        score: artistScore + popularity,
+        score: artistScore,
         reason: `Because you like ${artist}`,
       });
     }
@@ -237,6 +291,58 @@ export async function getDiscoverFeed(
     }
   });
 
+  // ── Source C: fresh / trending Saavn rows (recency-weighted) ──────────
+  // Genuinely new material so refresh surfaces songs the static keyword pool
+  // never would. These are fresh by construction (trending / new-release), so
+  // they get the full recency boost on top of any artist affinity the row
+  // inherits. `getSaavnFreshTracks` never throws (returns [] on failure).
+  try {
+    const freshRows = await getSaavnFreshTracks({ limit: FRESH_FETCH, page: freshPage });
+    const freshBoost = recencyBoost(0); // fresh source → released "now"
+    for (const r of freshRows) {
+      if (shouldReject(r)) continue;
+      seen.add(r.id);
+      const artistBonus = getArtistScore(r.author) * 0.5;
+      collected.push({
+        ...r,
+        score: 1.0 + freshBoost + artistBonus,
+        reason: 'Fresh & trending now',
+      });
+    }
+  } catch (err) {
+    // Defensive — the provider is documented as never-throwing, but a future
+    // change shouldn't be able to take the whole feed down.
+    logger.warn('[Discover] getSaavnFreshTracks failed:', err);
+  }
+
+  // ── Widening fallback ─────────────────────────────────────────────────
+  // Heavy de-dupe (large library) or skip memory can leave the pool too thin
+  // to fill `limit`. Before returning a near-empty feed, broaden: hit an extra
+  // rotated set of wide mood queries (a different rotation offset than Source
+  // B) so we pull genuinely different rows instead of giving up.
+  if (collected.length < limit) {
+    const widenQueries = pickRotating(USER_TASTE_SEED.moodQueries, MOOD_PICK, seed + 7);
+    const widenSettled = await Promise.allSettled(
+      widenQueries.map((q) => searchSaavn(q, PER_QUERY_FETCH)),
+    );
+    widenSettled.forEach((settled) => {
+      if (settled.status !== 'fulfilled') return;
+      for (const r of settled.value) {
+        if (collected.length >= limit * 3) break;
+        if (shouldReject(r)) continue; // still honour library + skip memory
+        seen.add(r.id);
+        const artistBonus = getArtistScore(r.author) * 0.5;
+        collected.push({
+          ...r,
+          // Slightly below the primary mood baseline so widened rows fill the
+          // tail rather than displacing genuine matches.
+          score: 0.75 + artistBonus,
+          reason: 'More to explore',
+        });
+      }
+    });
+  }
+
   // ── Rank and slice ────────────────────────────────────────────────────
   collected.sort((a, b) => b.score - a.score);
 
@@ -264,16 +370,12 @@ export async function getDiscoverFeed(
 
   logger.info(
     `[Discover] Returning ${out.length} ranked items (collected ${collected.length}, ` +
-      `seed=${seed}, artists=${chosenArtists.length}/${allArtists.length}, ` +
+      `seed=${seed}, freshPage=${freshPage}, ` +
+      `artists=${chosenArtists.length}/${allArtists.length}, ` +
       `moods=${moodQueries.length}/${USER_TASTE_SEED.moodQueries.length}, ` +
       `library de-dupe ${fingerprints.saavnIds.size + fingerprints.titleArtist.size} keys, ` +
       `skipMemory size ${skippedKeys.size})`,
   );
-
-  // Touch the recency bias var so unused-import lint stays quiet — we keep
-  // the constant in case the next iteration uses it for year-of-release
-  // weighting.
-  void RECENCY_BIAS_YEARS;
 
   return out;
 }

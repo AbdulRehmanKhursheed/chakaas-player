@@ -19,6 +19,8 @@ import type { LibraryStackParamList } from '@/app/navigation/LibraryStack';
 import type { RootStackNavigationProp } from '@/types/navigation';
 import type { Track } from '@/db/models/Track';
 import { modelToTrack, modelsToTracks } from '@/utils/trackMapper';
+import { useTheme } from '@/theme';
+import { LinearGradient } from 'expo-linear-gradient';
 
 // ─── Route ────────────────────────────────────────────────────────────────────
 
@@ -61,6 +63,7 @@ interface TrackRowProps {
 }
 
 function AlbumTrackRow({ track, index, onPress, onLongPress }: TrackRowProps) {
+  const { colors } = useTheme();
   const handlePress = useCallback(() => onPress(track), [track, onPress]);
   const handleLongPress = useCallback(() => onLongPress(track), [track, onLongPress]);
 
@@ -69,23 +72,25 @@ function AlbumTrackRow({ track, index, onPress, onLongPress }: TrackRowProps) {
       activeOpacity={0.75}
       onPress={handlePress}
       onLongPress={handleLongPress}
-      style={trackRowStyles.container}
+      style={[trackRowStyles.container, { borderBottomColor: colors.border }]}
     >
       {/* Track number */}
       <View style={trackRowStyles.indexContainer}>
-        <Text style={trackRowStyles.index}>{index + 1}</Text>
+        <Text style={[trackRowStyles.index, { color: colors.textTertiary }]}>{index + 1}</Text>
       </View>
 
       <View style={trackRowStyles.meta}>
-        <Text style={trackRowStyles.title} numberOfLines={1}>
+        <Text style={[trackRowStyles.title, { color: colors.textPrimary }]} numberOfLines={1}>
           {track.title}
         </Text>
-        <Text style={trackRowStyles.artist} numberOfLines={1}>
+        <Text style={[trackRowStyles.artist, { color: colors.textSecondary }]} numberOfLines={1}>
           {track.artist}
         </Text>
       </View>
 
-      <Text style={trackRowStyles.duration}>{formatDuration(track.durationMs)}</Text>
+      <Text style={[trackRowStyles.duration, { color: colors.textTertiary }]}>
+        {formatDuration(track.durationMs)}
+      </Text>
     </TouchableOpacity>
   );
 }
@@ -98,7 +103,6 @@ const trackRowStyles = StyleSheet.create({
     paddingVertical: 11,
     gap: 14,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#F2F2F7',
   },
   indexContainer: {
     width: 28,
@@ -107,24 +111,20 @@ const trackRowStyles = StyleSheet.create({
   index: {
     fontSize: 13,
     fontWeight: '500',
-    color: '#8E8E93',
   },
   meta: { flex: 1 },
   title: {
     fontSize: 15,
     fontWeight: '600',
-    color: '#1D1D1F',
     letterSpacing: -0.1,
   },
   artist: {
     fontSize: 12,
     fontWeight: '400',
-    color: '#6E6E73',
     marginTop: 2,
   },
   duration: {
     fontSize: 12,
-    color: '#8E8E93',
   },
 });
 
@@ -151,10 +151,11 @@ function AlbumHeader({
   onPlayAll,
   onShuffle,
 }: AlbumHeaderProps) {
+  const { colors } = useTheme();
   return (
     <View style={headerStyles.container}>
-      {/* Album artwork */}
-      <View style={headerStyles.artworkWrapper}>
+      {/* Album artwork — large, soft cyan glow */}
+      <View style={[headerStyles.artworkWrapper, { shadowColor: colors.accent }]}>
         {artworkPath ? (
           <FastImage
             source={{
@@ -166,24 +167,30 @@ function AlbumHeader({
             resizeMode={FastImage.resizeMode.cover}
           />
         ) : (
-          <View style={[headerStyles.artwork, headerStyles.artworkPlaceholder]}>
-            <Ionicons name="musical-notes" size={56} color="#FA233B" />
+          <View
+            style={[
+              headerStyles.artwork,
+              headerStyles.artworkPlaceholder,
+              { backgroundColor: colors.accentMuted },
+            ]}
+          >
+            <Ionicons name="musical-notes" size={56} color={colors.accent} />
           </View>
         )}
       </View>
 
       {/* Album name */}
-      <Text style={headerStyles.albumName} numberOfLines={3}>
+      <Text style={[headerStyles.albumName, { color: colors.textPrimary }]} numberOfLines={3}>
         {album}
       </Text>
 
       {/* Artist */}
-      <Text style={headerStyles.artistName} numberOfLines={1}>
+      <Text style={[headerStyles.artistName, { color: colors.accent }]} numberOfLines={1}>
         {artist}
       </Text>
 
       {/* Meta line: year · tracks · duration */}
-      <Text style={headerStyles.meta}>
+      <Text style={[headerStyles.meta, { color: colors.textSecondary }]}>
         {[
           year,
           `${trackCount} ${trackCount === 1 ? 'song' : 'songs'}`,
@@ -201,22 +208,32 @@ function AlbumHeader({
           activeOpacity={0.85}
           disabled={trackCount === 0}
         >
-          <Ionicons name="play" size={16} color="#FFFFFF" />
+          <LinearGradient
+            colors={colors.brandGradient}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={StyleSheet.absoluteFill}
+          />
+          <Ionicons name="play" size={16} color="#07090D" />
           <Text style={headerStyles.playButtonText}>Play All</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={[headerStyles.button, headerStyles.shuffleButton]}
+          style={[
+            headerStyles.button,
+            headerStyles.shuffleButton,
+            { backgroundColor: colors.accentMuted, borderColor: colors.borderAccent },
+          ]}
           onPress={onShuffle}
           activeOpacity={0.85}
           disabled={trackCount === 0}
         >
-          <Ionicons name="shuffle" size={16} color="#FA233B" />
-          <Text style={headerStyles.shuffleButtonText}>Shuffle</Text>
+          <Ionicons name="shuffle" size={16} color={colors.accent} />
+          <Text style={[headerStyles.shuffleButtonText, { color: colors.accent }]}>Shuffle</Text>
         </TouchableOpacity>
       </View>
 
-      <View style={headerStyles.separator} />
+      <View style={[headerStyles.separator, { backgroundColor: colors.border }]} />
     </View>
   );
 }
@@ -228,34 +245,32 @@ const headerStyles = StyleSheet.create({
     paddingTop: 16,
     paddingBottom: 4,
   },
+  // Soft cyan glow instead of a heavy black drop shadow.
   artworkWrapper: {
     marginBottom: 20,
-    borderRadius: 16,
+    borderRadius: 20,
     overflow: 'hidden',
     ...Platform.select({
       ios: {
-        shadowColor: '#000000',
-        shadowOffset: { width: 0, height: 16 },
-        shadowOpacity: 0.7,
-        shadowRadius: 24,
+        shadowOffset: { width: 0, height: 12 },
+        shadowOpacity: 0.3,
+        shadowRadius: 28,
       },
-      android: { elevation: 20 },
+      android: { elevation: 12 },
     }),
   },
   artwork: {
     width: ARTWORK_SIZE,
     height: ARTWORK_SIZE,
-    borderRadius: 16,
+    borderRadius: 20,
   },
   artworkPlaceholder: {
-    backgroundColor: '#FFF1F3',
     justifyContent: 'center',
     alignItems: 'center',
   },
   albumName: {
     fontSize: 22,
     fontWeight: '800',
-    color: '#1D1D1F',
     letterSpacing: -0.4,
     textAlign: 'center',
     lineHeight: 28,
@@ -263,14 +278,12 @@ const headerStyles = StyleSheet.create({
   artistName: {
     fontSize: 15,
     fontWeight: '500',
-    color: '#FA233B',
     marginTop: 6,
     textAlign: 'center',
   },
   meta: {
     fontSize: 12,
     fontWeight: '400',
-    color: '#8E8E93',
     marginTop: 8,
     textAlign: 'center',
   },
@@ -283,34 +296,29 @@ const headerStyles = StyleSheet.create({
   button: {
     flex: 1,
     height: 46,
-    borderRadius: 12,
+    borderRadius: 16,
     justifyContent: 'center',
     alignItems: 'center',
     flexDirection: 'row',
     gap: 7,
+    overflow: 'hidden',
   },
-  playButton: {
-    backgroundColor: '#FA233B',
-  },
+  playButton: {},
   playButtonText: {
     fontSize: 14,
-    fontWeight: '700',
-    color: '#FFFFFF',
+    fontWeight: '800',
+    color: '#07090D',
   },
   shuffleButton: {
-    backgroundColor: '#F2F2F7',
-    borderWidth: 1,
-    borderColor: '#D2D2D7',
+    borderWidth: StyleSheet.hairlineWidth,
   },
   shuffleButtonText: {
     fontSize: 14,
-    fontWeight: '600',
-    color: '#1D1D1F',
+    fontWeight: '700',
   },
   separator: {
     width: '100%',
-    height: 1,
-    backgroundColor: '#F2F2F7',
+    height: StyleSheet.hairlineWidth,
     marginTop: 20,
   },
 });
@@ -327,6 +335,7 @@ export function AlbumDetailScreen() {
   const navigation = useNavigation<RootStackNavigationProp>();
   const route = useRoute<AlbumDetailRoute>();
   const { album } = route.params;
+  const { colors } = useTheme();
 
   const safeTracks = useSafeTracks();
   const { playTrack, playNext } = usePlayerQueue();
@@ -478,8 +487,8 @@ export function AlbumDetailScreen() {
   );
 
   return (
-    <View style={styles.root}>
-      <StatusBar barStyle="dark-content" backgroundColor="#F5F5F7" />
+    <View style={[styles.root, { backgroundColor: colors.bg }]}>
+      <StatusBar barStyle={colors.isDark ? 'light-content' : 'dark-content'} backgroundColor={colors.bg} />
 
       {/* Nav bar */}
       <View style={styles.navBar}>
@@ -488,9 +497,9 @@ export function AlbumDetailScreen() {
           style={styles.backButton}
           hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
         >
-          <Text style={styles.backIcon}>‹</Text>
+          <Text style={[styles.backIcon, { color: colors.accent }]}>‹</Text>
         </TouchableOpacity>
-        <Text style={styles.navTitle} numberOfLines={1}>
+        <Text style={[styles.navTitle, { color: colors.textPrimary }]} numberOfLines={1}>
           Album
         </Text>
         <View style={styles.navSpacer} />
@@ -506,7 +515,9 @@ export function AlbumDetailScreen() {
         showsVerticalScrollIndicator={false}
         ListEmptyComponent={
           <View style={styles.empty}>
-            <Text style={styles.emptyText}>No songs in this album</Text>
+            <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
+              No songs in this album
+            </Text>
           </View>
         }
       />
@@ -519,7 +530,6 @@ export function AlbumDetailScreen() {
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: '#F5F5F7',
   },
   navBar: {
     flexDirection: 'row',
@@ -536,7 +546,6 @@ const styles = StyleSheet.create({
   },
   backIcon: {
     fontSize: 34,
-    color: '#FA233B',
     fontWeight: '300',
     lineHeight: 38,
   },
@@ -544,7 +553,6 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 16,
     fontWeight: '700',
-    color: '#1D1D1F',
     textAlign: 'center',
   },
   navSpacer: {
@@ -560,6 +568,5 @@ const styles = StyleSheet.create({
   emptyText: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#8E8E93',
   },
 });

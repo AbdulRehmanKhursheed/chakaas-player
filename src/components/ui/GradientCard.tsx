@@ -11,6 +11,7 @@ import Animated, {
   useSharedValue,
   withSpring,
 } from 'react-native-reanimated';
+import { useTheme } from '@/theme';
 
 // ─── Props ───────────────────────────────────────────────────────────────────
 
@@ -86,13 +87,14 @@ export function GradientCard({
 
 // ─── Preset variants ─────────────────────────────────────────────────────────
 
-/** Accent gradient — used for featured cards */
+/** Accent gradient — arc-reactor cyan→blue, used for featured/hero cards */
 export function AccentGradientCard(
   props: Omit<GradientCardProps, 'colors'>,
 ) {
+  const { colors } = useTheme();
   return (
     <GradientCard
-      colors={['#FA233B', '#FF375F', '#FF6B8A']}
+      colors={colors.brandGradient}
       start={{ x: 0, y: 0 }}
       end={{ x: 1, y: 1 }}
       {...props}
@@ -100,13 +102,29 @@ export function AccentGradientCard(
   );
 }
 
-/** Light surface gradient — for cards with a subtle depth feel */
+/** Gold gradient — Iron Man gold, for premium CTAs / cards */
+export function GoldGradientCard(
+  props: Omit<GradientCardProps, 'colors'>,
+) {
+  const { colors } = useTheme();
+  return (
+    <GradientCard
+      colors={colors.goldGradient}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 1, y: 1 }}
+      {...props}
+    />
+  );
+}
+
+/** Dark elevated surface gradient — for cards with a subtle depth feel */
 export function SurfaceGradientCard(
   props: Omit<GradientCardProps, 'colors'>,
 ) {
+  const { colors } = useTheme();
   return (
     <GradientCard
-      colors={['#F2F2F7', '#FFFFFF']}
+      colors={[colors.bgRaised, colors.bgElevated]}
       start={{ x: 0, y: 0 }}
       end={{ x: 0, y: 1 }}
       {...props}
@@ -114,7 +132,8 @@ export function SurfaceGradientCard(
   );
 }
 
-/** Bottom-fade gradient — placed over artwork to ensure text legibility */
+/** Bottom-fade gradient — placed over artwork to ensure text legibility.
+ *  Fades to the near-black app canvas so artwork blends into the dark UI. */
 export function ArtworkFadeGradient({
   style,
 }: {
@@ -123,7 +142,7 @@ export function ArtworkFadeGradient({
 }) {
   return (
     <LinearGradient
-      colors={['transparent', 'rgba(0,0,0,0.55)', 'rgba(0,0,0,0.92)']}
+      colors={['transparent', 'rgba(3,5,8,0.6)', 'rgba(3,5,8,0.95)']}
       start={{ x: 0, y: 0 }}
       end={{ x: 0, y: 1 }}
       style={[StyleSheet.absoluteFill, style]}

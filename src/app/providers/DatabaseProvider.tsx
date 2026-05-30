@@ -1,14 +1,50 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Image,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from 'react-native';
+import { MMKV } from 'react-native-mmkv';
 import { DatabaseProvider as WatermelonDBProvider } from '@nozbe/watermelondb/react';
 import { database, tracksCollection } from '@/db';
+
+// ---------------------------------------------------------------------------
+// Boot-failure counter
+// ---------------------------------------------------------------------------
+// Persisted in its OWN MMKV instance (mirrors crashSink's isolation strategy)
+// so a corrupt general store can never block the recovery flow. Lazily
+// initialised so a broken native MMKV module can't crash module load — if it's
+// unavailable we simply lose the cross-launch count and fall back to the
+// in-screen "Reset library" button (always available on the error screen).
+const BOOT_FAIL_KEY = 'db.bootFailures.v1';
+let _bootStore: MMKV | null = null;
+function getBootStore(): MMKV | null {
+  if (_bootStore) return _bootStore;
+  try {
+    _bootStore = new MMKV({ id: 'chakaas-db-boot' });
+    return _bootStore;
+  } catch {
+    return null;
+  }
+}
+function readBootFailures(): number {
+  try {
+    return getBootStore()?.getNumber(BOOT_FAIL_KEY) ?? 0;
+  } catch {
+    return 0;
+  }
+}
+function writeBootFailures(n: number): void {
+  try {
+    getBootStore()?.set(BOOT_FAIL_KEY, n);
+  } catch {
+    /* counter is best-effort — ignore. */
+  }
+}
 
 // ---------------------------------------------------------------------------
 // DatabaseProvider
@@ -36,6 +72,9 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
   const [status, setStatus] = useState<DbStatus>('loading');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [retryToken, setRetryToken] = useState(0);
+  // Surfaces the destructive "Reset library" option after repeated failures.
+  const [offerReset, setOfferReset] = useState(false);
+  const [resetting, setResetting] = useState(false);
   const cancelledRef = useRef(false);
 
   useEffect(() => {
@@ -49,12 +88,21 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
     (async () => {
       try {
         await tracksCollection.query().fetchCount();
-        if (!cancelledRef.current) setStatus('ready');
+        if (cancelledRef.current) return;
+        // Healthy boot — clear the consecutive-failure counter.
+        writeBootFailures(0);
+        setStatus('ready');
       } catch (err) {
         if (cancelledRef.current) return;
         const message = err instanceof Error ? err.message : String(err);
         // eslint-disable-next-line no-console
         console.error('[DatabaseProvider] init probe failed:', err);
+        // Increment the cross-launch counter so a permanently corrupt SQLite
+        // file (whose probe fails identically every boot) auto-surfaces the
+        // destructive reset path instead of looping on "Try again".
+        const failures = readBootFailures() + 1;
+        writeBootFailures(failures);
+        setOfferReset(failures >= 2);
         setErrorMessage(message);
         setStatus('error');
       }
@@ -65,6 +113,46 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
     };
   }, [retryToken]);
 
+  // Destructive recovery: wipe the SQLite file via WatermelonDB's
+  // unsafeResetDatabase, clear the failure counter, then re-run the probe.
+  const handleReset = () => {
+    Alert.alert(
+      'Reset library?',
+      'This permanently erases your downloaded-song database (tracks, plays, ' +
+        'and playlists) so Chakaas can rebuild it from scratch. Audio files ' +
+        'already on the device are not deleted. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Reset library',
+          style: 'destructive',
+          onPress: () => {
+            setResetting(true);
+            (async () => {
+              try {
+                await database.write(async () => {
+                  await database.unsafeResetDatabase();
+                });
+                writeBootFailures(0);
+                setOfferReset(false);
+              } catch (err) {
+                // eslint-disable-next-line no-console
+                console.error('[DatabaseProvider] unsafeResetDatabase failed:', err);
+                const message = err instanceof Error ? err.message : String(err);
+                setErrorMessage(message);
+              } finally {
+                setResetting(false);
+                // Re-run the probe regardless — a successful reset should boot
+                // clean; a failed reset re-renders the error screen.
+                setRetryToken((n) => n + 1);
+              }
+            })();
+          },
+        },
+      ],
+    );
+  };
+
   if (status === 'loading') {
     return <DatabaseSplash />;
   }
@@ -73,7 +161,10 @@ export function DatabaseProvider({ children }: { children: React.ReactNode }) {
     return (
       <DatabaseErrorScreen
         message={errorMessage}
+        offerReset={offerReset}
+        resetting={resetting}
         onRetry={() => setRetryToken((n) => n + 1)}
+        onReset={handleReset}
       />
     );
   }
@@ -110,10 +201,21 @@ function DatabaseSplash() {
 
 interface DatabaseErrorScreenProps {
   message: string | null;
+  /** When true, surface the destructive "Reset library" button. */
+  offerReset: boolean;
+  /** True while the reset is in flight (disables buttons + shows spinner). */
+  resetting: boolean;
   onRetry: () => void;
+  onReset: () => void;
 }
 
-function DatabaseErrorScreen({ message, onRetry }: DatabaseErrorScreenProps) {
+function DatabaseErrorScreen({
+  message,
+  offerReset,
+  resetting,
+  onRetry,
+  onReset,
+}: DatabaseErrorScreenProps) {
   return (
     <View style={styles.errorRoot}>
       <Image
@@ -126,13 +228,28 @@ function DatabaseErrorScreen({ message, onRetry }: DatabaseErrorScreenProps) {
         Chakaas couldn&apos;t open your music library on this device.
       </Text>
       {message ? <Text style={styles.errorDetail}>{message}</Text> : null}
-      <TouchableOpacity
-        style={styles.retryBtn}
-        onPress={onRetry}
-        activeOpacity={0.85}
-      >
-        <Text style={styles.retryText}>Try again</Text>
-      </TouchableOpacity>
+      {resetting ? (
+        <ActivityIndicator size="small" color="#FA233B" style={styles.spinner} />
+      ) : (
+        <>
+          <TouchableOpacity
+            style={styles.retryBtn}
+            onPress={onRetry}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.retryText}>Try again</Text>
+          </TouchableOpacity>
+          {offerReset ? (
+            <TouchableOpacity
+              style={styles.resetBtn}
+              onPress={onReset}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.resetText}>Reset library</Text>
+            </TouchableOpacity>
+          ) : null}
+        </>
+      )}
     </View>
   );
 }
@@ -192,6 +309,19 @@ const styles = StyleSheet.create({
   },
   retryText: {
     color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  resetBtn: {
+    marginTop: 14,
+    paddingHorizontal: 28,
+    paddingVertical: 12,
+    borderRadius: 24,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#FA233B',
+  },
+  resetText: {
+    color: '#FA233B',
     fontSize: 15,
     fontWeight: '700',
   },

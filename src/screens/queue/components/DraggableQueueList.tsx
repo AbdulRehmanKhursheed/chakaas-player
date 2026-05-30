@@ -7,6 +7,7 @@ import { usePlayerQueue } from '@/features/player/useQueue';
 import TrackPlayer, { type Track } from 'react-native-track-player';
 import { logger } from '@/utils/logger';
 import { TrackArtwork } from '@/components/track/TrackArtwork';
+import { useTheme } from '@/theme';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -50,6 +51,7 @@ function QueueItem({
   onMoveDown,
   onJump,
 }: QueueItemProps) {
+  const { colors } = useTheme();
   const handleRemove = useCallback(() => {
     onRemove(globalIndex);
   }, [globalIndex, onRemove]);
@@ -77,7 +79,7 @@ function QueueItem({
   }, [globalIndex, onJump]);
 
   return (
-    <View style={styles.itemContainer}>
+    <View style={[styles.itemContainer, { backgroundColor: colors.bgElevated, borderColor: colors.border }]}>
       {/* Reorder controls — a true draggable list isn't bundled in this
           app, but tap-to-move arrows give the user a reliable way to
           reorder the queue and persist the change through `moveInQueue`.
@@ -94,7 +96,7 @@ function QueueItem({
           <Ionicons
             name="chevron-up"
             size={18}
-            color={canMoveUp ? '#1D1D1F' : '#D2D2D7'}
+            color={canMoveUp ? colors.accent : colors.textTertiary}
           />
         </TouchableOpacity>
         <TouchableOpacity
@@ -108,7 +110,7 @@ function QueueItem({
           <Ionicons
             name="chevron-down"
             size={18}
-            color={canMoveDown ? '#1D1D1F' : '#D2D2D7'}
+            color={canMoveDown ? colors.accent : colors.textTertiary}
           />
         </TouchableOpacity>
       </View>
@@ -127,14 +129,14 @@ function QueueItem({
           uri={track.artwork ? String(track.artwork) : null}
           blurhash={null}
           size={40}
-          borderRadius={6}
+          borderRadius={10}
         />
         {/* Track info */}
         <View style={styles.trackInfo}>
-          <Text style={styles.trackTitle} numberOfLines={1}>
+          <Text style={[styles.trackTitle, { color: colors.textPrimary }]} numberOfLines={1}>
             {track.title ?? 'Unknown Title'}
           </Text>
-          <Text style={styles.trackArtist} numberOfLines={1}>
+          <Text style={[styles.trackArtist, { color: colors.textSecondary }]} numberOfLines={1}>
             {track.artist ?? 'Unknown Artist'}
           </Text>
         </View>
@@ -148,7 +150,7 @@ function QueueItem({
         accessibilityLabel={`Remove ${track.title ?? 'track'} from queue`}
         accessibilityRole="button"
       >
-        <Ionicons name="close" size={15} color="#8E8E93" />
+        <Ionicons name="close" size={15} color={colors.textSecondary} />
       </TouchableOpacity>
     </View>
   );
@@ -286,12 +288,10 @@ const styles = StyleSheet.create({
     height: ITEM_HEIGHT,
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 10,
+    borderRadius: 12,
     marginBottom: 6,
     paddingHorizontal: 4,
-    borderWidth: 1,
-    borderColor: '#F2F2F7',
+    borderWidth: StyleSheet.hairlineWidth,
     gap: 4,
   },
 
@@ -328,13 +328,11 @@ const styles = StyleSheet.create({
   trackTitle: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#1D1D1F',
     letterSpacing: -0.1,
   },
   trackArtist: {
     fontSize: 12,
     fontWeight: '400',
-    color: '#6E6E73',
   },
 
   // Remove button

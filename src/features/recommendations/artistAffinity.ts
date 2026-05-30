@@ -17,9 +17,11 @@
  *   - 30-day half-life decay via `decayAllScores()` so stale tastes fade.
  *
  * Bootstrapping:
- *   The engine learns purely from real plays — no automatic taste seeding.
- *   `seed.ts` exists only as a hint inside the file (a snapshot of what
- *   the user stated they listen to) and is never written into scores.
+ *   On first launch we apply a *soft* seed from `seed.ts`: each stated artist
+ *   is written at `SOFT_SEED_SCORE` (below real-completed-play levels) so the
+ *   Discover feed has artist signal day one. Real plays add on top and the
+ *   daily decay fades the seed out as genuine listening accumulates. The
+ *   seed is applied once, gated by `SOFT_SEEDED_FLAG_KEY`.
  */
 import { recommendationStorage, getJSON, setJSON } from '@/services/storage/mmkv';
 import { logger } from '@/utils/logger';
@@ -28,6 +30,14 @@ import { USER_TASTE_SEED } from './seed';
 const STORE_KEY = 'artist_affinity_v1';
 const SEEDED_FLAG_KEY = 'artist_affinity_seeded_v1';
 const LEGACY_SEED_CLEARED_KEY = 'legacy_seed_cleared_v1';
+/** Set once the soft taste seed has been applied (this version's bootstrap). */
+const SOFT_SEEDED_FLAG_KEY = 'artist_affinity_soft_seeded_v1';
+/**
+ * Score each seed artist is written at on first launch. Deliberately below a
+ * single completed real play (+1.0) so genuine listening quickly overtakes the
+ * seed, and the 30-day decay erodes it if the user never plays that artist.
+ */
+const SOFT_SEED_SCORE = 2.5;
 
 interface AffinityState {
   /** artistName (lowercased) → score */
@@ -75,6 +85,39 @@ export function clearLegacySeedBiasOnce(): void {
     logger.info('[ArtistAffinity] Cleared legacy seed bias — engine starts fresh.');
   }
   recommendationStorage.set(LEGACY_SEED_CLEARED_KEY, true);
+}
+
+// ── Soft taste seed (first launch) ──────────────────────────────────────────
+
+/** Lowercased keys of the stated-seed artists, for `isSeed` tagging in stats. */
+const SEED_ARTIST_KEYS = new Set(
+  Object.keys(USER_TASTE_SEED.artists).map((a) => normaliseArtist(a)),
+);
+
+/**
+ * On first launch, write the stated taste seed into the affinity store at a
+ * modest `SOFT_SEED_SCORE` (below a real completed play) so Source A in the
+ * Discover engine has artist signal immediately. Idempotent — guarded by an
+ * MMKV flag so it runs exactly once. Existing real scores are never lowered;
+ * we only fill in artists the store doesn't already have.
+ *
+ * Must run AFTER `clearLegacySeedBiasOnce()` so the legacy wipe can't erase
+ * the fresh soft seed.
+ */
+export function seedTasteOnFirstLaunch(): void {
+  if (recommendationStorage.getBoolean(SOFT_SEEDED_FLAG_KEY)) return;
+  const state = loadState();
+  let added = 0;
+  for (const artist of Object.keys(USER_TASTE_SEED.artists)) {
+    const key = normaliseArtist(artist);
+    if (state.scores[key] === undefined) {
+      state.scores[key] = SOFT_SEED_SCORE;
+      added += 1;
+    }
+  }
+  if (added > 0) saveState(state);
+  recommendationStorage.set(SOFT_SEEDED_FLAG_KEY, true);
+  logger.info(`[ArtistAffinity] Applied soft taste seed to ${added} artist(s).`);
 }
 
 // ── Updates ────────────────────────────────────────────────────────────────
@@ -174,10 +217,15 @@ export function getArtistScore(artist: string): number {
   return state.scores[normaliseArtist(artist)] ?? 0;
 }
 
-/** Reset the entire store. Exposed for a potential "Reset taste" settings action. */
+/**
+ * Reset the entire store. Clears the soft-seed flag too so the stated taste
+ * seed is re-applied on the next `seedTasteOnFirstLaunch()` call — i.e. the
+ * engine returns to its seeded baseline rather than a truly blank slate.
+ */
 export function resetAffinity(): void {
   recommendationStorage.delete(STORE_KEY);
   recommendationStorage.delete(SEEDED_FLAG_KEY);
+  recommendationStorage.delete(SOFT_SEEDED_FLAG_KEY);
 }
 
 // ── Engine stats (for the Chakaas Engine analytics screen) ──────────────────
@@ -198,9 +246,9 @@ export interface EngineStats {
 /**
  * Snapshot of the engine's current state. Pure read — does not mutate.
  *
- * `isSeed` is always false now (the seed-from-statement bootstrap was
- * removed) — the field stays in the type so the screen doesn't have to
- * branch.
+ * `isSeed` is true for artists that came from the stated taste seed (still
+ * sitting at or below the soft-seed level), so the screen can badge them as
+ * seeded rather than learned.
  */
 export function getEngineStats(topLimit = 10): EngineStats {
   const state = loadState();
@@ -216,14 +264,13 @@ export function getEngineStats(topLimit = 10): EngineStats {
     }
     if (score === 0) continue;
     totalPositiveScore += score;
-    positive.push({ artist: key, score, isSeed: false });
+    // A seed artist that hasn't been bumped past the soft-seed level by real
+    // plays is still effectively "seeded" rather than learned.
+    const isSeed = SEED_ARTIST_KEYS.has(key) && score <= SOFT_SEED_SCORE;
+    positive.push({ artist: key, score, isSeed });
   }
 
   positive.sort((a, b) => b.score - a.score);
-
-  // Reference USER_TASTE_SEED so the import isn't flagged as unused — the
-  // file is kept for documentation of what the user stated they listen to.
-  void USER_TASTE_SEED;
 
   return {
     totalArtists: positive.length,

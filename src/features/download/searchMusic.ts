@@ -23,10 +23,28 @@ import { searchJamendo } from './providers/JamendoProvider';
 import { searchYouTube } from './YoutubeExtractor';
 import { searchAllSources } from './MultiSourceResolver';
 import type { UnifiedSearchResult } from './MultiSourceResolver';
+import {
+  isLowQualityOnlineResult,
+  scoreOnlineResult,
+} from './onlineResultFilter';
 import { logger } from '@/utils/logger';
 import type { YouTubeSearchResult } from '@/types/track';
 
 const PROVIDER_TIMEOUT_MS = 4500;
+
+/**
+ * Normalises title+artist into a dedupe key. Keeps Latin (a–z, 0–9) and the
+ * Devanagari block so Hindi titles collapse correctly. Mirrors the
+ * `normalizeForDedupe` helper inside MultiSourceResolver — duplicated here
+ * (rather than exported) to keep the default search path self-contained.
+ */
+function normalizeForDedupe(title: string, artist: string): string {
+  return `${title} ${artist}`
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[^a-z0-9ऀ-ॿ]+/g, ' ')
+    .trim();
+}
 
 /** Supported source slugs for `searchMusic.sources`. */
 export type SearchSource =
@@ -91,6 +109,81 @@ const SOURCE_RUNNERS: Record<SearchSource, (q: string, n: number) => Promise<You
   jamendo: searchJamendo,
 };
 
+// Bollywood / Hindi signal keywords. A Saavn row gets a small tie-break boost
+// when the query looks Bollywood-leaning — Saavn's catalog is built for it —
+// but this is a tie-break, NOT an exclusive gate (the old behaviour).
+const BOLLYWOOD_HINT_KEYWORDS = [
+  'bollywood',
+  'hindi',
+  'punjabi',
+  'arijit',
+  'shreya',
+  'atif',
+  'jubin',
+  'badshah',
+  'diljit',
+  'honey singh',
+  'guru randhawa',
+  'neha kakkar',
+  'rahman',
+  'bhojpuri',
+  'tamil',
+  'telugu',
+];
+
+function hasBollywoodHint(query: string): boolean {
+  if (/[ऀ-ॿ]/.test(query)) return true;
+  const lower = query.toLowerCase();
+  for (const kw of BOLLYWOOD_HINT_KEYWORDS) {
+    if (lower.includes(kw)) return true;
+  }
+  return false;
+}
+
+/**
+ * Junk-filters, dedupes, scores against the query, and sorts a merged result
+ * list before slicing to `limit`.
+ *
+ *   1. Drop hard-junk rows (karaoke / nightcore / 1-hour loops the query
+ *      didn't ask for) via `isLowQualityOnlineResult`.
+ *   2. Dedup by normalised title+artist, keeping the higher-scoring copy.
+ *   3. Score each row with `scoreOnlineResult` (token-set match + duration
+ *      shape) plus a small Saavn/Bollywood tie-break boost.
+ *   4. Sort by score, then slice.
+ */
+function rankAndDedup(
+  rows: YouTubeSearchResult[],
+  query: string,
+  limit: number,
+): YouTubeSearchResult[] {
+  const bollywood = hasBollywoodHint(query);
+
+  const scoreOf = (row: YouTubeSearchResult): number => {
+    let s = scoreOnlineResult(row, query);
+    // Tie-break only: nudge Saavn rows up for Bollywood-leaning queries. Small
+    // enough that a clearly-better YouTube match still wins.
+    if (bollywood && (row.provider ?? 'youtube') === 'saavn') s += 0.05;
+    return s;
+  };
+
+  const bestByKey = new Map<string, { row: YouTubeSearchResult; score: number }>();
+  for (const row of rows) {
+    if (isLowQualityOnlineResult(row, query)) continue;
+    const key = normalizeForDedupe(row.title, row.author);
+    if (!key) continue;
+    const score = scoreOf(row);
+    const existing = bestByKey.get(key);
+    if (!existing || score > existing.score) {
+      bestByKey.set(key, { row, score });
+    }
+  }
+
+  return Array.from(bestByKey.values())
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map((entry) => entry.row);
+}
+
 export async function searchMusic(
   query: string,
   limit = 15,
@@ -133,16 +226,16 @@ export async function searchMusic(
       return [];
     }
 
-    if (saavnResults.length >= 3) {
-      return saavnResults.slice(0, limit);
-    }
+    // Always merge both providers — the old "saavn ≥ 3 wins outright" short-
+    // circuit returned an unranked Saavn-only list and starved good YouTube
+    // hits. Instead we tag, junk-filter, dedup, score against the query, and
+    // sort before slicing.
+    const tagged: YouTubeSearchResult[] = [
+      ...saavnResults.map((r) => ({ ...r, provider: r.provider ?? ('saavn' as const) })),
+      ...ytResults.map((r) => ({ ...r, provider: r.provider ?? ('youtube' as const) })),
+    ];
 
-    const taggedYt = ytResults.map((r) => ({
-      ...r,
-      provider: r.provider ?? ('youtube' as const),
-    }));
-
-    return [...saavnResults, ...taggedYt].slice(0, limit);
+    return rankAndDedup(tagged, trimmed, limit);
   }
 
   // ── Explicit-sources path. Saavn-style results first if present. ────────

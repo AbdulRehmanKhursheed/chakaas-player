@@ -21,6 +21,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { BlurView } from 'expo-blur';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useTheme } from '@/theme';
 
 interface BlurHeaderProps {
   /** Shared value tracking the host scroll view's contentOffset.y. */
@@ -31,7 +32,7 @@ interface BlurHeaderProps {
   rightAction?: React.ReactNode;
   /** Optional left slot (e.g. a back button). */
   leftAction?: React.ReactNode;
-  /** Override default tint colour for the blur. */
+  /** Override default tint colour for the blur. Defaults to the theme scheme. */
   tint?: 'light' | 'dark' | 'default';
   /** When true, the title size collapses on scroll (Apple-style large-title). */
   collapsing?: boolean;
@@ -44,10 +45,12 @@ export function BlurHeader({
   title,
   rightAction,
   leftAction,
-  tint = 'light',
+  tint,
   collapsing = true,
 }: BlurHeaderProps) {
   const insets = useSafeAreaInsets();
+  const { colors, isDark } = useTheme();
+  const resolvedTint = tint ?? (isDark ? 'dark' : 'light');
   const topPad = Math.max(insets.top, Platform.OS === 'ios' ? 44 : 24);
 
   // Background opacity ramps 0 -> 1 as the user scrolls the first ~60px.
@@ -91,10 +94,10 @@ export function BlurHeader({
     <View style={[styles.root, { paddingTop: topPad }]} pointerEvents="box-none">
       {/* Frosted-glass background — sits beneath everything else. */}
       <View style={StyleSheet.absoluteFill} pointerEvents="none">
-        <BlurView intensity={60} tint={tint} style={StyleSheet.absoluteFill} />
+        <BlurView intensity={60} tint={resolvedTint} style={StyleSheet.absoluteFill} />
         <Animated.View
           pointerEvents="none"
-          style={[styles.tintOverlay, surfaceStyle]}
+          style={[styles.tintOverlay, { backgroundColor: colors.overlay }, surfaceStyle]}
         />
       </View>
 
@@ -102,14 +105,16 @@ export function BlurHeader({
         <View style={styles.side}>{leftAction}</View>
         <Animated.Text
           numberOfLines={1}
-          style={[styles.title, titleStyle]}
+          style={[styles.title, { color: colors.textPrimary }, titleStyle]}
         >
           {title}
         </Animated.Text>
         <View style={styles.side}>{rightAction}</View>
       </View>
 
-      <Animated.View style={[styles.hairline, hairlineStyle]} />
+      <Animated.View
+        style={[styles.hairline, { backgroundColor: colors.borderAccent }, hairlineStyle]}
+      />
     </View>
   );
 }
@@ -124,9 +129,7 @@ const styles = StyleSheet.create({
   },
   tintOverlay: {
     ...StyleSheet.absoluteFillObject,
-    // Apple-style frosted tint — matches `palette.glass` but kept inline so
-    // the component is self-contained and doesn't require a theme provider.
-    backgroundColor: 'rgba(245,245,247,0.78)',
+    // Frosted tint colour is themed at runtime via `colors.overlay`.
   },
   bar: {
     flexDirection: 'row',
@@ -144,13 +147,11 @@ const styles = StyleSheet.create({
   title: {
     flex: 1,
     fontWeight: '800',
-    color: '#1D1D1F',
     letterSpacing: -0.6,
     textAlign: 'left',
     marginLeft: 4,
   },
   hairline: {
     height: StyleSheet.hairlineWidth,
-    backgroundColor: 'rgba(60,60,67,0.18)',
   },
 });

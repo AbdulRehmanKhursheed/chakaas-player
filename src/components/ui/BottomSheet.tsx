@@ -18,6 +18,8 @@ import Animated, {
   Extrapolation,
 } from 'react-native-reanimated';
 import { PanGestureHandler } from 'react-native-gesture-handler';
+import { BlurView } from 'expo-blur';
+import { useTheme } from '@/theme';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -42,7 +44,7 @@ interface BottomSheetProps {
   snapPoint?: number;
   /** Whether to show the drag handle at the top. Default true. */
   showHandle?: boolean;
-  /** Background colour of the sheet surface. */
+  /** Background colour of the sheet surface. Defaults to the themed elevated surface. */
   backgroundColor?: string;
 }
 
@@ -54,8 +56,10 @@ export function BottomSheet({
   children,
   snapPoint,
   showHandle = true,
-  backgroundColor = '#F2F2F7',
+  backgroundColor,
 }: BottomSheetProps) {
+  const { colors, isDark } = useTheme();
+  const sheetSurface = backgroundColor ?? colors.bgElevated;
   const sheetHeight = snapPoint ?? SCREEN_HEIGHT * 0.6;
 
   // translateY: 0 = fully open, sheetHeight = fully closed/off-screen
@@ -133,7 +137,7 @@ export function BottomSheet({
   return (
     <View style={styles.portal} pointerEvents={isVisible ? 'auto' : 'none'}>
       {/* Backdrop */}
-      <Animated.View style={[styles.backdrop, backdropAnimStyle]}>
+      <Animated.View style={[styles.backdrop, { backgroundColor: colors.overlay }, backdropAnimStyle]}>
         <Pressable style={StyleSheet.absoluteFill} onPress={handleClose} />
       </Animated.View>
 
@@ -144,14 +148,22 @@ export function BottomSheet({
             styles.sheet,
             {
               height: sheetHeight,
-              backgroundColor,
+              backgroundColor: sheetSurface,
+              borderColor: colors.borderAccent,
             },
             sheetAnimStyle,
           ]}
         >
+          {/* Dark frosted-glass layer for the Arc Reactor look. */}
+          <BlurView
+            intensity={isDark ? 30 : 20}
+            tint={isDark ? 'dark' : 'light'}
+            style={StyleSheet.absoluteFill}
+            pointerEvents="none"
+          />
           {showHandle && (
             <View style={styles.handleContainer}>
-              <View style={styles.handle} />
+              <View style={[styles.handle, { backgroundColor: colors.textTertiary }]} />
             </View>
           )}
           {children}
@@ -172,18 +184,20 @@ const styles = StyleSheet.create({
   },
   backdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(29,29,31,0.34)',
   },
   sheet: {
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderLeftWidth: StyleSheet.hairlineWidth,
+    borderRightWidth: StyleSheet.hairlineWidth,
     overflow: 'hidden',
     ...Platform.select({
       ios: {
         shadowColor: '#000',
-        shadowOffset: { width: 0, height: -8 },
-        shadowOpacity: 0.14,
-        shadowRadius: 20,
+        shadowOffset: { width: 0, height: -6 },
+        shadowOpacity: 0.3,
+        shadowRadius: 24,
       },
       android: { elevation: 24 },
     }),
@@ -194,9 +208,9 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   handle: {
-    width: 36,
+    width: 38,
     height: 4,
     borderRadius: 2,
-    backgroundColor: '#8E8E93',
+    opacity: 0.7,
   },
 });

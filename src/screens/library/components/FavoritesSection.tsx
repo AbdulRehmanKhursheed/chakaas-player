@@ -15,6 +15,7 @@ import { TrackArtwork } from '@/components/track/TrackArtwork';
 import type { Track } from '@/db/models/Track';
 import { modelToTrack, modelsToTracks } from '@/utils/trackMapper';
 import type { RootStackNavigationProp } from '@/types/navigation';
+import { useTheme } from '@/theme';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -31,6 +32,7 @@ interface CompactTrackRowProps {
 }
 
 function CompactTrackRow({ track, onPress }: CompactTrackRowProps) {
+  const { colors } = useTheme();
   const handlePress = useCallback(() => onPress(track), [track, onPress]);
 
   return (
@@ -46,16 +48,16 @@ function CompactTrackRow({ track, onPress }: CompactTrackRowProps) {
           size={52}
           borderRadius={8}
         />
-        <View style={rowStyles.heartBadge}>
-          <Ionicons name="heart" size={10} color="#FA233B" />
+        <View style={[rowStyles.heartBadge, { backgroundColor: colors.bgElevated }]}>
+          <Ionicons name="heart" size={10} color={colors.accent} />
         </View>
       </View>
 
       <View style={rowStyles.meta}>
-        <Text style={rowStyles.title} numberOfLines={1}>
+        <Text style={[rowStyles.title, { color: colors.textPrimary }]} numberOfLines={1}>
           {track.title}
         </Text>
-        <Text style={rowStyles.artist} numberOfLines={1}>
+        <Text style={[rowStyles.artist, { color: colors.textSecondary }]} numberOfLines={1}>
           {track.artist}
         </Text>
       </View>
@@ -81,7 +83,6 @@ const rowStyles = StyleSheet.create({
     width: 16,
     height: 16,
     borderRadius: 8,
-    backgroundColor: '#F5F5F7',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -92,13 +93,11 @@ const rowStyles = StyleSheet.create({
   title: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#1D1D1F',
     letterSpacing: -0.1,
   },
   artist: {
     fontSize: 12,
     fontWeight: '400',
-    color: '#6E6E73',
     marginTop: 2,
   },
 });
@@ -106,9 +105,10 @@ const rowStyles = StyleSheet.create({
 // ─── Empty state ──────────────────────────────────────────────────────────────
 
 function FavoritesEmptyState() {
+  const { colors } = useTheme();
   return (
     <View style={emptyStyles.container}>
-      <Text style={emptyStyles.text}>
+      <Text style={[emptyStyles.text, { color: colors.textSecondary }]}>
         No favorites yet. Tap the heart on any track.
       </Text>
     </View>
@@ -124,7 +124,6 @@ const emptyStyles = StyleSheet.create({
   text: {
     fontSize: 13,
     fontWeight: '400',
-    color: '#8E8E93',
     textAlign: 'center',
     lineHeight: 19,
   },
@@ -137,17 +136,18 @@ interface SectionHeaderProps {
 }
 
 function FavoritesSectionHeader({ onSeeAll }: SectionHeaderProps) {
+  const { colors } = useTheme();
   return (
     <View style={headerStyles.container}>
       <View style={headerStyles.left}>
-        <Ionicons name="heart" size={18} color="#FA233B" />
-        <Text style={headerStyles.title}>Favorites</Text>
+        <Ionicons name="heart" size={18} color={colors.accent} />
+        <Text style={[headerStyles.title, { color: colors.textPrimary }]}>Favorites</Text>
       </View>
       <TouchableOpacity
         onPress={onSeeAll}
         hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
       >
-        <Text style={headerStyles.seeAll}>See All</Text>
+        <Text style={[headerStyles.seeAll, { color: colors.accent }]}>See All</Text>
       </TouchableOpacity>
     </View>
   );
@@ -169,13 +169,11 @@ const headerStyles = StyleSheet.create({
   title: {
     fontSize: 18,
     fontWeight: '700',
-    color: '#1D1D1F',
     letterSpacing: -0.3,
   },
   seeAll: {
     fontSize: 13,
     fontWeight: '500',
-    color: '#FA233B',
   },
 });
 
@@ -183,6 +181,7 @@ const headerStyles = StyleSheet.create({
 
 export function FavoritesSection({ limit = 10 }: FavoritesSectionProps) {
   const navigation = useNavigation<RootStackNavigationProp>();
+  const { colors } = useTheme();
   const { playTrack } = usePlayerQueue();
   const likedTracks = useLikedTracks();
 
@@ -216,12 +215,12 @@ export function FavoritesSection({ limit = 10 }: FavoritesSectionProps) {
       <View
         style={{
           height: StyleSheet.hairlineWidth,
-          backgroundColor: '#F2F2F7',
+          backgroundColor: colors.border,
           marginLeft: 84,
         }}
       />
     ),
-    [],
+    [colors.border],
   );
 
   return (

@@ -4,6 +4,7 @@ import FastImage from 'react-native-fast-image';
 import { Blurhash } from 'react-native-blurhash';
 import { Ionicons } from '@expo/vector-icons';
 import { normalizeLocalUri } from '@/utils/layout';
+import { useTheme } from '@/theme';
 
 // ─── Props ───────────────────────────────────────────────────────────────────
 
@@ -15,14 +16,16 @@ interface TrackArtworkProps {
 }
 
 // ─── Fallback placeholder colors ─────────────────────────────────────────────
+// Subtle blue-graphite raised tones for the dark Arc Reactor canvas. Picked
+// deterministically per-track so empty artwork still reads as varied tiles.
 
 const PLACEHOLDER_COLORS = [
-  '#FFF1F3',
-  '#F2F2F7',
-  '#EAF2FF',
-  '#F7EFFB',
-  '#F8F5EC',
-  '#EEF8F1',
+  '#0E1218',
+  '#11161E',
+  '#141A24',
+  '#161C26',
+  '#10151D',
+  '#131922',
 ];
 
 function getColorForString(str: string): string {
@@ -39,8 +42,9 @@ export function TrackArtwork({
   uri,
   blurhash,
   size,
-  borderRadius = 8,
+  borderRadius = 12,
 }: TrackArtworkProps) {
+  const { colors } = useTheme();
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
 
@@ -68,8 +72,14 @@ export function TrackArtwork({
 
   if (!resolvedUri || imageError) {
     return (
-      <View style={[containerStyle, styles.placeholder, { backgroundColor: placeholderColor }]}>
-        <Ionicons name="musical-notes" size={size * 0.38} color="#FA233B" />
+      <View
+        style={[
+          containerStyle,
+          styles.placeholder,
+          { backgroundColor: placeholderColor, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.borderAccent },
+        ]}
+      >
+        <Ionicons name="musical-notes" size={size * 0.38} color={colors.accent} />
       </View>
     );
   }
@@ -88,7 +98,7 @@ export function TrackArtwork({
       {/* Colored placeholder if no blurhash and image not yet loaded */}
       {!blurhash && !imageLoaded && (
         <View style={[StyleSheet.absoluteFill, styles.placeholder, { backgroundColor: placeholderColor }]}>
-          <Ionicons name="musical-notes" size={size * 0.38} color="#FA233B" />
+          <Ionicons name="musical-notes" size={size * 0.38} color={colors.accent} />
         </View>
       )}
 

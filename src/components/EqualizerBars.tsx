@@ -20,6 +20,7 @@ import Animated, {
   cancelAnimation,
   Easing,
 } from 'react-native-reanimated';
+import { useTheme } from '@/theme';
 
 interface EqualizerBarsProps {
   /** Whether playback is active. Bars freeze when false. */
@@ -30,7 +31,7 @@ interface EqualizerBarsProps {
   barWidth?: number;
   /** Total height the bars can reach (in px). */
   height?: number;
-  /** Bar fill colour. */
+  /** Bar fill colour. Defaults to the arc-reactor cyan accent. */
   color?: string;
   /** Spacing between bars. */
   gap?: number;
@@ -127,10 +128,12 @@ export function EqualizerBars({
   count = 5,
   barWidth = 6,
   height = 60,
-  color = '#FFFFFF',
+  color,
   gap = 6,
   style,
 }: EqualizerBarsProps) {
+  const { colors } = useTheme();
+  const fill = color ?? colors.accent;
   const configs = useMemo(() => buildBarConfigs(count), [count]);
   return (
     <View style={[styles.row, { height, gap }, style]}>
@@ -141,7 +144,7 @@ export function EqualizerBars({
           playing={playing}
           width={barWidth}
           height={height}
-          color={color}
+          color={fill}
         />
       ))}
     </View>

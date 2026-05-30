@@ -4,10 +4,10 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
-  Platform,
 } from 'react-native';
 import FastImage from 'react-native-fast-image';
 import { Ionicons } from '@expo/vector-icons';
+import { useTheme } from '@/theme';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -26,12 +26,12 @@ interface GenreCardProps {
 // ─── Placeholder color helper ─────────────────────────────────────────────────
 
 const GENRE_COLORS = [
-  '#FFF1F3',
-  '#EAF2FF',
-  '#F7EFFB',
-  '#F8F5EC',
-  '#EEF8F1',
-  '#F2F2F7',
+  'rgba(25,227,255,0.14)',
+  'rgba(10,132,255,0.14)',
+  'rgba(95,240,255,0.12)',
+  'rgba(245,182,66,0.12)',
+  'rgba(52,211,153,0.12)',
+  'rgba(255,255,255,0.06)',
 ];
 
 function getGenreColor(genre: string): string {
@@ -53,17 +53,18 @@ interface CollageProps {
 }
 
 function ArtworkCollage({ artworks, placeholderColor }: CollageProps) {
+  const { colors } = useTheme();
   if (artworks.length === 0) {
     return (
       <View style={[collageStyles.container, { backgroundColor: placeholderColor }]}>
-        <Ionicons name="musical-notes" size={32} color="#FA233B" />
+        <Ionicons name="musical-notes" size={32} color={colors.accent} />
       </View>
     );
   }
 
   if (artworks.length === 1) {
     return (
-      <View style={collageStyles.container}>
+      <View style={[collageStyles.container, { backgroundColor: colors.bgRaised }]}>
         <FastImage
           source={{
             uri: artworks[0],
@@ -81,7 +82,7 @@ function ArtworkCollage({ artworks, placeholderColor }: CollageProps) {
   const slots = [artworks[0], artworks[1] ?? null, artworks[2] ?? null, artworks[3] ?? null];
 
   return (
-    <View style={collageStyles.container}>
+    <View style={[collageStyles.container, { backgroundColor: colors.bgRaised }]}>
       <View style={collageStyles.grid}>
         {slots.map((uri, idx) => (
           <View
@@ -102,7 +103,7 @@ function ArtworkCollage({ artworks, placeholderColor }: CollageProps) {
                 resizeMode={FastImage.resizeMode.cover}
               />
             ) : (
-              <Ionicons name="musical-note" size={14} color="#FA233B" />
+              <Ionicons name="musical-note" size={14} color={colors.accent} />
             )}
           </View>
         ))}
@@ -115,9 +116,8 @@ const collageStyles = StyleSheet.create({
   container: {
     width: COLLAGE_SIZE,
     height: COLLAGE_SIZE,
-    borderRadius: 10,
+    borderRadius: 12,
     overflow: 'hidden',
-    backgroundColor: '#F2F2F7',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -146,6 +146,7 @@ const collageStyles = StyleSheet.create({
 // ─── Genre Card ───────────────────────────────────────────────────────────────
 
 function GenreCardImpl({ genre, trackCount, artworks, onPress }: GenreCardProps) {
+  const { colors } = useTheme();
   const handlePress = useCallback(() => onPress(genre), [genre, onPress]);
   const placeholderColor = getGenreColor(genre);
 
@@ -153,11 +154,11 @@ function GenreCardImpl({ genre, trackCount, artworks, onPress }: GenreCardProps)
     <TouchableOpacity
       activeOpacity={0.8}
       onPress={handlePress}
-      style={styles.card}
+      style={[styles.card, { backgroundColor: colors.bgElevated, borderColor: colors.border }]}
       accessibilityLabel={`${genre}, ${trackCount} ${trackCount === 1 ? 'song' : 'songs'}`}
       accessibilityRole="button"
     >
-      <View style={styles.accentBar} />
+      <View style={[styles.accentBar, { backgroundColor: colors.accent }]} />
 
       {/* Artwork collage */}
       <View style={styles.artworkWrapper}>
@@ -166,16 +167,16 @@ function GenreCardImpl({ genre, trackCount, artworks, onPress }: GenreCardProps)
 
       {/* Text content */}
       <View style={styles.textContainer}>
-        <Text style={styles.genreName} numberOfLines={1}>
+        <Text style={[styles.genreName, { color: colors.textPrimary }]} numberOfLines={1}>
           {genre}
         </Text>
-        <Text style={styles.songCount}>
+        <Text style={[styles.songCount, { color: colors.textSecondary }]}>
           {trackCount} {trackCount === 1 ? 'song' : 'songs'}
         </Text>
       </View>
 
       {/* Chevron */}
-      <Text style={styles.chevron}>›</Text>
+      <Text style={[styles.chevron, { color: colors.textTertiary }]}>›</Text>
     </TouchableOpacity>
   );
 }
@@ -200,48 +201,26 @@ export const GenreCard = React.memo(GenreCardImpl, (prev, next) => {
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
+  // Soft elevation: elevated surface + cyan-tintable hairline. No heavy shadow.
   card: {
     flexDirection: 'row',
     alignItems: 'center',
     height: 100,
     marginBottom: 10,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
+    borderRadius: 16,
     overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: 'rgba(60,60,67,0.10)',
+    borderWidth: StyleSheet.hairlineWidth,
     paddingRight: 16,
     gap: 14,
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000000',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.08,
-        shadowRadius: 12,
-      },
-      android: { elevation: 4 },
-    }),
   },
 
-  // 4px accent left border
+  // 4px cyan accent left border
   accentBar: {
     width: 4,
     alignSelf: 'stretch',
-    backgroundColor: '#FA233B',
   },
 
-  artworkWrapper: {
-    // slight shadow for artwork
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.4,
-        shadowRadius: 6,
-      },
-      android: { elevation: 3 },
-    }),
-  },
+  artworkWrapper: {},
 
   textContainer: {
     flex: 1,
@@ -251,17 +230,14 @@ const styles = StyleSheet.create({
   genreName: {
     fontSize: 17,
     fontWeight: '700',
-    color: '#1D1D1F',
     letterSpacing: -0.2,
   },
   songCount: {
     fontSize: 13,
     fontWeight: '400',
-    color: '#6E6E73',
   },
   chevron: {
     fontSize: 24,
-    color: '#3A3A3A',
     fontWeight: '300',
   },
 });

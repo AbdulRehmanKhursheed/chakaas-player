@@ -4,7 +4,6 @@ import {
   Text,
   TouchableOpacity,
   StyleSheet,
-  Platform,
 } from 'react-native';
 import FastImage, { type Source as FastImageSource } from 'react-native-fast-image';
 import Animated, {
@@ -13,9 +12,11 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 import { MotiView } from 'moti';
+import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import type { YouTubeSearchResult } from '@/types/track';
 import { useDownloadStore } from '@/stores/downloadStore';
+import { useTheme } from '@/theme';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -59,6 +60,7 @@ interface CircularProgressProps {
 }
 
 function CircularProgress({ progress }: CircularProgressProps) {
+  const { colors } = useTheme();
   const clamped = Math.max(0, Math.min(100, progress));
   const radius  = 14;
   const stroke  = 2.5;
@@ -67,10 +69,10 @@ function CircularProgress({ progress }: CircularProgressProps) {
   return (
     <View style={circleStyles.wrapper}>
       {/* Background track */}
-      <View style={circleStyles.track} />
+      <View style={[circleStyles.track, { borderColor: colors.bgRaised }]} />
       {/* SVG-less approximation using a rotated border arc */}
-      <View style={[circleStyles.arc, { borderTopColor: '#FA233B' }]} />
-      <Text style={circleStyles.label}>{Math.round(clamped)}%</Text>
+      <View style={[circleStyles.arc, { borderTopColor: colors.accent }]} />
+      <Text style={[circleStyles.label, { color: colors.accent }]}>{Math.round(clamped)}%</Text>
     </View>
   );
 }
@@ -89,7 +91,6 @@ const circleStyles = StyleSheet.create({
     height: 36,
     borderRadius: 18,
     borderWidth: 2.5,
-    borderColor: '#D2D2D7',
   },
   arc: {
     position: 'absolute',
@@ -98,13 +99,11 @@ const circleStyles = StyleSheet.create({
     borderRadius: 18,
     borderWidth: 2.5,
     borderColor: 'transparent',
-    borderTopColor: '#FA233B',
     transform: [{ rotate: '45deg' }],
   },
   label: {
     fontSize: 8,
     fontWeight: '700',
-    color: '#FA233B',
     lineHeight: 10,
     textAlign: 'center',
   },
@@ -117,6 +116,7 @@ interface DownloadButtonProps {
 }
 
 function DownloadButton({ onPress }: DownloadButtonProps) {
+  const { colors } = useTheme();
   const scale = useSharedValue(1);
 
   const handlePressIn  = useCallback(() => {
@@ -142,8 +142,15 @@ function DownloadButton({ onPress }: DownloadButtonProps) {
       accessibilityRole="button"
     >
       <Animated.View style={[btnStyles.downloadBtn, animStyle]}>
-        <Ionicons name="arrow-down" size={14} color="#FFFFFF" />
-        <Text style={btnStyles.downloadLabel}>320k</Text>
+        {/* Cyan→blue brand gradient — the interactive HUD accent. */}
+        <LinearGradient
+          colors={colors.brandGradient}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={StyleSheet.absoluteFill}
+        />
+        <Ionicons name="arrow-down" size={14} color={colors.bg} />
+        <Text style={[btnStyles.downloadLabel, { color: colors.bg }]}>320k</Text>
       </Animated.View>
     </TouchableOpacity>
   );
@@ -154,24 +161,14 @@ const btnStyles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 3,
-    backgroundColor: '#FA233B',
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    ...Platform.select({
-      ios: {
-        shadowColor: '#FA233B',
-        shadowOffset: { width: 0, height: 3 },
-        shadowOpacity: 0.35,
-        shadowRadius: 8,
-      },
-      android: { elevation: 4 },
-    }),
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    overflow: 'hidden',
   },
   downloadLabel: {
     fontSize: 11,
-    fontWeight: '700',
-    color: '#FFFFFF',
+    fontWeight: '800',
     letterSpacing: 0.3,
     lineHeight: 16,
   },
@@ -186,6 +183,8 @@ function SongDiscoveryCardImpl({
   rationale,
   estimatedSizeReadable,
 }: SongDiscoveryCardProps) {
+  const { colors } = useTheme();
+
   // Self-subscribe to this card's own download status (if any). When the
   // parent renders 12 cards, each card only re-renders when its OWN row
   // in the download queue changes — progress on card A no longer
@@ -240,10 +239,13 @@ function SongDiscoveryCardImpl({
       animate={{ opacity: 1, translateY: 0 }}
       exit={{ opacity: 0, scale: 0.94 }}
       transition={{ type: 'timing', duration: 280 }}
-      style={styles.card}
+      style={[
+        styles.card,
+        { backgroundColor: colors.bgElevated, borderColor: colors.border },
+      ]}
     >
       {/* Thumbnail */}
-      <View style={styles.thumbnailWrapper}>
+      <View style={[styles.thumbnailWrapper, { backgroundColor: colors.bgRaised }]}>
         {fastImageSource ? (
           <FastImage
             source={fastImageSource}
@@ -251,25 +253,25 @@ function SongDiscoveryCardImpl({
             resizeMode={FastImage.resizeMode.cover}
           />
         ) : (
-          <View style={[styles.thumbnail, styles.thumbnailFallback]}>
-            <Ionicons name="musical-notes" size={24} color="#FA233B" />
+          <View style={[styles.thumbnail, styles.thumbnailFallback, { backgroundColor: colors.bgRaised }]}>
+            <Ionicons name="musical-notes" size={24} color={colors.accent} />
           </View>
         )}
 
         {/* Duration badge */}
         {durationStr ? (
-          <View style={styles.durationBadge}>
-            <Text style={styles.durationText}>{durationStr}</Text>
+          <View style={[styles.durationBadge, { backgroundColor: colors.overlay }]}>
+            <Text style={[styles.durationText, { color: colors.textPrimary }]}>{durationStr}</Text>
           </View>
         ) : null}
       </View>
 
       {/* Metadata */}
       <View style={styles.meta}>
-        <Text style={styles.title} numberOfLines={2}>
+        <Text style={[styles.title, { color: colors.textPrimary }]} numberOfLines={2}>
           {result.title}
         </Text>
-        <Text style={styles.author} numberOfLines={1}>
+        <Text style={[styles.author, { color: colors.textSecondary }]} numberOfLines={1}>
           {result.author}
         </Text>
 
@@ -277,15 +279,15 @@ function SongDiscoveryCardImpl({
         {(rationale || estimatedSizeReadable) ? (
           <View style={styles.captionRow}>
             {rationale ? (
-              <Text style={styles.rationale} numberOfLines={1}>
+              <Text style={[styles.rationale, { color: colors.accent }]} numberOfLines={1}>
                 {rationale}
               </Text>
             ) : null}
             {rationale && estimatedSizeReadable ? (
-              <Text style={styles.captionDot}>·</Text>
+              <Text style={[styles.captionDot, { color: colors.textTertiary }]}>·</Text>
             ) : null}
             {estimatedSizeReadable ? (
-              <Text style={styles.sizeText} numberOfLines={1}>
+              <Text style={[styles.sizeText, { color: colors.textSecondary }]} numberOfLines={1}>
                 ≈ {estimatedSizeReadable}
               </Text>
             ) : null}
@@ -293,24 +295,31 @@ function SongDiscoveryCardImpl({
         ) : null}
 
         {result.view_count ? (
-          <Text style={styles.views} numberOfLines={1}>
+          <Text style={[styles.views, { color: colors.textTertiary }]} numberOfLines={1}>
             {result.view_count}
           </Text>
         ) : null}
 
-        {/* Inline downloading progress bar */}
+        {/* Inline downloading progress bar — plain View driven by React
+            render (no Moti/Reanimated worklet). Animating a percent-unit
+            width inside a worklet is a known Reanimated-3 Android crash
+            source (see commit 9aa848f / DownloadQueueItem). */}
         {isDownloading && (
-          <View style={styles.inlineProgressTrack}>
-            <MotiView
-              animate={{ width: `${downloadProgress}%` as any }}
-              transition={{ type: 'timing', duration: 350 }}
-              style={styles.inlineProgressFill}
+          <View style={[styles.inlineProgressTrack, { backgroundColor: colors.bgRaised }]}>
+            <View
+              style={[
+                styles.inlineProgressFill,
+                {
+                  backgroundColor: colors.accent,
+                  width: `${Math.max(0, Math.min(100, downloadProgress))}%`,
+                },
+              ]}
             />
           </View>
         )}
 
         {isDone && (
-          <Text style={styles.doneText}>In library</Text>
+          <Text style={[styles.doneText, { color: '#34D399' }]}>In library</Text>
         )}
       </View>
 
@@ -326,7 +335,7 @@ function SongDiscoveryCardImpl({
               accessibilityLabel="Skip this song"
               accessibilityRole="button"
             >
-              <Text style={styles.skipText}>Skip</Text>
+              <Text style={[styles.skipText, { color: colors.textTertiary }]}>Skip</Text>
             </TouchableOpacity>
           </>
         )}
@@ -336,8 +345,8 @@ function SongDiscoveryCardImpl({
         )}
 
         {isDone && (
-          <View style={styles.doneCircle}>
-            <Ionicons name="checkmark" size={18} color="#34C759" />
+          <View style={[styles.doneCircle, { backgroundColor: 'rgba(52,211,153,0.18)' }]}>
+            <Ionicons name="checkmark" size={18} color="#34D399" />
           </View>
         )}
       </View>
@@ -360,45 +369,34 @@ export const SongDiscoveryCard = React.memo(
 );
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
+// Layout/geometry only — colours themed inline via useTheme(). Large edge-to-
+// edge artwork, cyan HUD hairline, soft elevation (no heavy black shadow).
 
 const styles = StyleSheet.create({
   card: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    backgroundColor: '#F2F2F7',
-    borderRadius: 12,
+    borderRadius: 16,
     marginHorizontal: 16,
     marginBottom: 10,
     padding: 12,
     gap: 12,
-    borderWidth: 1,
-    borderColor: '#D2D2D7',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000000',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.5,
-        shadowRadius: 10,
-      },
-      android: { elevation: 4 },
-    }),
+    borderWidth: StyleSheet.hairlineWidth,
   },
 
   // Thumbnail
   thumbnailWrapper: {
     position: 'relative',
     flexShrink: 0,
-    borderRadius: 8,
+    borderRadius: 12,
     overflow: 'hidden',
-    backgroundColor: '#FFFFFF',
   },
   thumbnail: {
-    width: 80,
-    height: 60,
-    borderRadius: 8,
+    width: 84,
+    height: 64,
+    borderRadius: 12,
   },
   thumbnailFallback: {
-    backgroundColor: '#D2D2D7',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -406,15 +404,13 @@ const styles = StyleSheet.create({
     position: 'absolute',
     bottom: 4,
     right: 4,
-    backgroundColor: 'rgba(0,0,0,0.82)',
-    borderRadius: 4,
-    paddingHorizontal: 4,
-    paddingVertical: 1,
+    borderRadius: 6,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
   },
   durationText: {
     fontSize: 9,
-    fontWeight: '600',
-    color: '#1D1D1F',
+    fontWeight: '700',
     lineHeight: 12,
   },
 
@@ -427,21 +423,18 @@ const styles = StyleSheet.create({
   },
   title: {
     fontSize: 13,
-    fontWeight: '600',
-    color: '#1D1D1F',
+    fontWeight: '700',
     lineHeight: 18,
     letterSpacing: -0.1,
   },
   author: {
     fontSize: 11,
-    fontWeight: '400',
-    color: '#6E6E73',
+    fontWeight: '500',
     marginTop: 1,
   },
   views: {
     fontSize: 10,
     fontWeight: '400',
-    color: '#8E8E93',
   },
   captionRow: {
     flexDirection: 'row',
@@ -452,38 +445,32 @@ const styles = StyleSheet.create({
   },
   rationale: {
     fontSize: 10,
-    fontWeight: '600',
-    color: '#FA233B',
+    fontWeight: '700',
     letterSpacing: 0.1,
     flexShrink: 1,
   },
   captionDot: {
     fontSize: 10,
-    color: '#8E8E93',
     fontWeight: '600',
   },
   sizeText: {
     fontSize: 10,
-    fontWeight: '500',
-    color: '#6E6E73',
+    fontWeight: '600',
     letterSpacing: 0.1,
   },
   inlineProgressTrack: {
-    height: 2,
-    backgroundColor: '#D2D2D7',
-    borderRadius: 1,
+    height: 3,
+    borderRadius: 2,
     marginTop: 6,
     overflow: 'hidden',
   },
   inlineProgressFill: {
-    height: 2,
-    backgroundColor: '#FA233B',
-    borderRadius: 1,
+    height: 3,
+    borderRadius: 2,
   },
   doneText: {
     fontSize: 11,
-    fontWeight: '500',
-    color: '#27AE60',
+    fontWeight: '600',
     marginTop: 5,
   },
 
@@ -501,14 +488,12 @@ const styles = StyleSheet.create({
   },
   skipText: {
     fontSize: 12,
-    fontWeight: '500',
-    color: '#8E8E93',
+    fontWeight: '600',
   },
   doneCircle: {
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: 'rgba(39,174,96,0.18)',
     justifyContent: 'center',
     alignItems: 'center',
   },

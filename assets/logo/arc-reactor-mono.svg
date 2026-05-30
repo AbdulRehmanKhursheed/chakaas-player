@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <!-- Monochrome white-on-transparent mark for Android notification status bar tinting -->
+  <g transform="translate(512 512)" fill="none" stroke="#FFFFFF" stroke-linecap="round">
+    <!-- Outer C-gap ring -->
+    <path d="M 195.3 278.8 A 340 340 0 1 0 195.3 -278.8" stroke-width="34"/>
+    <!-- Inner ring -->
+    <circle cx="0" cy="0" r="232" stroke-width="14"/>
+    <!-- Spokes -->
+    <g stroke-width="16">
+      <line x1="0" y1="-205" x2="0" y2="-150"/>
+      <line x1="178" y1="-103" x2="130" y2="-75"/>
+      <line x1="178" y1="103" x2="130" y2="75"/>
+      <line x1="0" y1="205" x2="0" y2="150"/>
+      <line x1="-178" y1="103" x2="-130" y2="75"/>
+      <line x1="-178" y1="-103" x2="-130" y2="-75"/>
+    </g>
+  </g>
+  <!-- Solid core -->
+  <circle cx="512" cy="512" r="120" fill="#FFFFFF"/>
+</svg>

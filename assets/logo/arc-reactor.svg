@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Field: near-black with a faint cyan bloom behind the reactor -->
+    <radialGradient id="field" cx="50%" cy="50%" r="62%">
+      <stop offset="0%" stop-color="#0C1820"/>
+      <stop offset="42%" stop-color="#091018"/>
+      <stop offset="100%" stop-color="#07090D"/>
+    </radialGradient>
+
+    <!-- Core glow: hot cyan center fading out -->
+    <radialGradient id="core" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#EAFEFF"/>
+      <stop offset="22%" stop-color="#5FF0FF"/>
+      <stop offset="62%" stop-color="#19E3FF"/>
+      <stop offset="100%" stop-color="#0E8FB8"/>
+    </radialGradient>
+
+    <!-- Soft halo around the whole reactor -->
+    <radialGradient id="halo" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#19E3FF" stop-opacity="0.55"/>
+      <stop offset="55%" stop-color="#19E3FF" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#19E3FF" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Gold accent gradient -->
+    <linearGradient id="gold" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFD37A"/>
+      <stop offset="50%" stop-color="#F5B642"/>
+      <stop offset="100%" stop-color="#C7861A"/>
+    </linearGradient>
+
+    <!-- Cyan ring gradient -->
+    <linearGradient id="ringCyan" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#5FF0FF"/>
+      <stop offset="100%" stop-color="#19E3FF"/>
+    </linearGradient>
+
+    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="14" result="b"/>
+      <feMerge>
+        <feMergeNode in="b"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Full-bleed field -->
+  <rect x="0" y="0" width="1024" height="1024" fill="url(#field)"/>
+
+  <!-- Reactor, centered at 512,512 -->
+  <g transform="translate(512 512)">
+    <!-- Ambient halo -->
+    <circle cx="0" cy="0" r="430" fill="url(#halo)"/>
+
+    <!-- Outer thin ring with a C-gap (open arc at lower-right reads as a stylized C).
+         Arc drawn from ~+55deg around counter-clockwise to ~-55deg, leaving the right-side gap. -->
+    <g filter="url(#glow)">
+      <path d="M 195.3 278.8 A 340 340 0 1 0 195.3 -278.8"
+            fill="none" stroke="url(#ringCyan)" stroke-width="26" stroke-linecap="round"/>
+    </g>
+
+    <!-- Gold accent ring (thin), concentric, also gapped to echo the C -->
+    <path d="M 156.0 248.0 A 290 290 0 1 0 156.0 -248.0"
+          fill="none" stroke="url(#gold)" stroke-width="10" stroke-linecap="round" opacity="0.95"/>
+
+    <!-- Inner structural ring (dim cyan), full circle -->
+    <circle cx="0" cy="0" r="232" fill="none" stroke="#19E3FF" stroke-width="6" opacity="0.45"/>
+
+    <!-- Reactor "spokes" / segment hints around the core (minimal, geometric) -->
+    <g stroke="#9FF6FF" stroke-width="9" stroke-linecap="round" opacity="0.8">
+      <line x1="0" y1="-205" x2="0" y2="-150"/>
+      <line x1="178" y1="-103" x2="130" y2="-75"/>
+      <line x1="178" y1="103" x2="130" y2="75"/>
+      <line x1="0" y1="205" x2="0" y2="150"/>
+      <line x1="-178" y1="103" x2="-130" y2="75"/>
+      <line x1="-178" y1="-103" x2="-130" y2="-75"/>
+    </g>
+
+    <!-- Core triangle hint (subtle nod to the reactor housing) -->
+    <circle cx="0" cy="0" r="150" fill="none" stroke="#19E3FF" stroke-width="5" opacity="0.55"/>
+
+    <!-- Glowing core -->
+    <circle cx="0" cy="0" r="130" fill="url(#core)" filter="url(#glow)"/>
+    <circle cx="0" cy="0" r="92" fill="url(#core)"/>
+    <circle cx="0" cy="0" r="44" fill="#F2FEFF"/>
+  </g>
+</svg>

@@ -24,6 +24,7 @@ import Animated, {
   cancelAnimation,
   Easing,
 } from 'react-native-reanimated';
+import { useTheme } from '@/theme';
 
 interface ShimmerProps {
   width?: DimensionValue;
@@ -32,19 +33,22 @@ interface ShimmerProps {
 }
 
 const SHIMMER_DURATION_MS = 1100;
-// Light-theme tokens — kept inline so the component reads correctly on the
-// app's white surface regardless of what the global `palette.shimmer*`
-// tokens are set to. The palette ships with dark values (used by an
-// alternate dark theme); using them here produced near-black skeletons on
-// a white background.
-const SHIMMER_BASE = '#E5E5EA';
-const SHIMMER_HIGHLIGHT = '#F2F2F7';
+// Scheme-aware shimmer tones. Dark uses the raised graphite surfaces so
+// placeholders sit naturally on the near-black Arc Reactor canvas; light
+// keeps a soft grey on white.
+const DARK_SHIMMER_BASE = '#161C26';
+const DARK_SHIMMER_HIGHLIGHT = '#1E2632';
+const LIGHT_SHIMMER_BASE = '#E5E9EE';
+const LIGHT_SHIMMER_HIGHLIGHT = '#F2F4F7';
 
 export function SkeletonShimmer({
   width = '100%',
   height = 14,
   borderRadius = 6,
 }: ShimmerProps) {
+  const { isDark } = useTheme();
+  const baseColor = isDark ? DARK_SHIMMER_BASE : LIGHT_SHIMMER_BASE;
+  const highlightColor = isDark ? DARK_SHIMMER_HIGHLIGHT : LIGHT_SHIMMER_HIGHLIGHT;
   const progress = useSharedValue(0);
 
   useEffect(() => {
@@ -76,14 +80,14 @@ export function SkeletonShimmer({
           width,
           height,
           borderRadius,
-          backgroundColor: SHIMMER_BASE,
+          backgroundColor: baseColor,
         },
       ]}
     >
       <Animated.View
         style={[
           styles.highlight,
-          { backgroundColor: SHIMMER_HIGHLIGHT, borderRadius },
+          { backgroundColor: highlightColor, borderRadius },
           highlightStyle,
         ]}
       />

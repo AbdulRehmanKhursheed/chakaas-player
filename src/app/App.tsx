@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { StatusBar, Platform } from 'react-native';
+import { StatusBar, Platform, DevSettings } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { NavigationContainer } from '@react-navigation/native';
@@ -23,6 +23,7 @@ import {
 import { navigationTheme } from './navigation/theme';
 import { ErrorBoundary } from './ErrorBoundary';
 import { GlobalSheets } from './GlobalSheets';
+import { bootRecovery } from './bootRecovery';
 import { logger } from '@/utils/logger';
 import { crashSink } from '@/utils/crashSink';
 
@@ -156,12 +157,25 @@ export default function App() {
       }
       // Let the existing handler run so Metro/Sentry still sees it.
       prev?.(error, isFatal);
+      // A FATAL JS error leaves the runtime in an indeterminate state that the
+      // render-tree ErrorBoundary cannot catch (the boundary only sees errors
+      // thrown during render). Rather than freeze on a dead screen, reload the
+      // JS bundle — but only AFTER the crash sink has been flushed above so the
+      // diagnostic survives the reload. Guarded so the recovery can't itself
+      // throw out of the global handler.
+      if (isFatal) {
+        try {
+          if (typeof DevSettings?.reload === 'function') DevSettings.reload();
+        } catch {
+          /* reload unavailable — fall through; user can relaunch manually. */
+        }
+      }
     };
     ErrorUtils.setGlobalHandler(ours);
 
-    // Promise rejection handler — RN exposes process.on for the Node-like
-    // global; HermesInternal also surfaces enablePromiseRejectionTracker. We
-    // try both, defensively.
+    // Promise rejection handler. Prefer Hermes' native rejection tracker when
+    // present (it surfaces rejections the Node-like `process.on` shim can miss
+    // under Hermes/RN 0.76); otherwise fall back to `process.on`.
     type RejectionListener = (reason: unknown, _promise?: Promise<unknown>) => void;
     const onUnhandledRejection: RejectionListener = (reason) => {
       try {
@@ -172,22 +186,44 @@ export default function App() {
       }
     };
     let detachRejection: (() => void) | null = null;
-    try {
-      const proc = (global as unknown as { process?: { on?: Function; off?: Function; removeListener?: Function } }).process;
-      if (proc && typeof proc.on === 'function') {
-        proc.on('unhandledRejection', onUnhandledRejection);
-        detachRejection = () => {
-          try {
-            if (typeof proc.off === 'function') proc.off!('unhandledRejection', onUnhandledRejection);
-            else if (typeof proc.removeListener === 'function')
-              proc.removeListener!('unhandledRejection', onUnhandledRejection);
-          } catch {
-            /* ignore */
-          }
-        };
+    const hermes = (global as unknown as {
+      HermesInternal?: {
+        enablePromiseRejectionTracker?: (opts: {
+          allRejections?: boolean;
+          onUnhandled?: (id: number, reason: unknown) => void;
+        }) => void;
+      };
+    }).HermesInternal;
+    if (hermes && typeof hermes.enablePromiseRejectionTracker === 'function') {
+      try {
+        hermes.enablePromiseRejectionTracker({
+          allRejections: true,
+          onUnhandled: (_id, reason) => onUnhandledRejection(reason),
+        });
+        // Hermes has no symmetric "disable" — leave it installed for the
+        // process lifetime. detachRejection stays null.
+      } catch {
+        /* tracker unavailable — fall through to the process.on path below. */
       }
-    } catch {
-      /* no process global — skip */
+    }
+    if (!detachRejection && !(hermes && typeof hermes.enablePromiseRejectionTracker === 'function')) {
+      try {
+        const proc = (global as unknown as { process?: { on?: Function; off?: Function; removeListener?: Function } }).process;
+        if (proc && typeof proc.on === 'function') {
+          proc.on('unhandledRejection', onUnhandledRejection);
+          detachRejection = () => {
+            try {
+              if (typeof proc.off === 'function') proc.off!('unhandledRejection', onUnhandledRejection);
+              else if (typeof proc.removeListener === 'function')
+                proc.removeListener!('unhandledRejection', onUnhandledRejection);
+            } catch {
+              /* ignore */
+            }
+          };
+        }
+      } catch {
+        /* no process global — skip */
+      }
     }
 
     return () => {
@@ -198,6 +234,14 @@ export default function App() {
       }
       detachRejection?.();
     };
+  }, []);
+
+  // Cold-start recovery: stop any orphaned download foreground service and
+  // purge stranded temp files left by a previous NATIVE crash before the user
+  // can start a new download. Fire-and-forget so it never blocks first paint;
+  // `bootRecovery` is internally idempotent and never throws.
+  useEffect(() => {
+    void bootRecovery();
   }, []);
 
   // Kick off background-fetch + recommendation cleanups + play tracker once

@@ -6,12 +6,96 @@ import TrackPlayer, {
 } from 'react-native-track-player';
 import type { Track as RNTPTrack } from 'react-native-track-player';
 import { useCallback, useEffect, useState } from 'react';
+import { Alert } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { usePlayerStore } from '@/stores/playerStore';
+import { Track } from '@/types/track';
+import { resolveAudioStream } from '@/features/download/MultiSourceResolver';
+import type { ResolveParams } from '@/features/download/MultiSourceResolver';
+import { trackMapper } from './trackMapper';
+import {
+  bumpQueueVersion,
+  clearOnlineContext,
+  setOnlineContext,
+  setStreamMeta,
+} from './useQueue';
+import type { OnlineQueueItem } from './useQueue';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
 export type RepeatModeKey = 'off' | 'track' | 'queue';
+
+/**
+ * Input to `playOrStream`. The canonical `Track` (`@/types/track`) has no
+ * streaming-hint fields, so we accept them here as optional extras alongside
+ * the standard track shape rather than mutating the shared type. Browse/catalog
+ * screens that surface online (not-yet-downloaded) rows pass the provider hints
+ * so the resolver can fetch a fresh CDN URL; downloaded rows just pass a `Track`
+ * with a real `file_path` and the hints are ignored.
+ */
+export interface PlayableTrack extends Track {
+  /** Which backend this catalog row came from. */
+  provider?: 'youtube' | 'saavn';
+  /** Saavn song id (when `provider === 'saavn'`). */
+  saavnId?: string;
+  /** Saavn `encrypted_media_url` captured at search time — fastest Saavn path. */
+  saavnEncryptedUrl?: string;
+  /** Whether the Saavn 320 kbps tier is available. */
+  saavnHas320kbps?: boolean;
+}
+
+/** A `file_path` is "usable" when it points at an on-device file, not a remote URL. */
+function hasLocalFile(filePath: string | null | undefined): boolean {
+  if (!filePath) return false;
+  const v = filePath.trim();
+  if (!v) return false;
+  // Remote URLs are stream-only — treat anything else (absolute path,
+  // file://, content://) as a downloaded local file.
+  return !v.startsWith('http://') && !v.startsWith('https://');
+}
+
+/** Resolves which provider a catalog row came from, defaulting on hint presence. */
+function resolveProvider(track: PlayableTrack): 'youtube' | 'saavn' {
+  return track.provider ?? (track.youtube_id ? 'youtube' : 'saavn');
+}
+
+/** Builds `resolveAudioStream` params from a catalog row's hints. */
+function buildResolveParams(track: PlayableTrack): ResolveParams {
+  const provider = resolveProvider(track);
+  return {
+    query: `${track.title} ${track.artist}`,
+    hints: {
+      youtubeId: provider === 'youtube' ? track.youtube_id ?? undefined : undefined,
+      saavnId: provider === 'saavn' ? track.saavnId ?? undefined : undefined,
+      saavnEncryptedUrl: track.saavnEncryptedUrl,
+      saavnHas320kbps: track.saavnHas320kbps,
+    },
+  };
+}
+
+/** The provider id used as the `stream:<id>` suffix for a catalog row. */
+function streamIdFor(track: PlayableTrack): string {
+  return track.saavnId ?? track.youtube_id ?? track.id;
+}
+
+/** Album label fallback consistent with SearchScreen. */
+function albumFor(track: PlayableTrack): string {
+  const provider = resolveProvider(track);
+  return provider === 'saavn' ? track.album || 'JioSaavn' : track.album || 'YouTube';
+}
+
+/** Maps a catalog row into an `OnlineQueueItem` for the autoplay context. */
+function toOnlineQueueItem(track: PlayableTrack): OnlineQueueItem {
+  return {
+    id: streamIdFor(track),
+    title: track.title,
+    artist: track.artist,
+    album: albumFor(track),
+    artwork: track.artwork_path ?? undefined,
+    durationMs: track.duration_ms > 0 ? track.duration_ms : undefined,
+    resolve: buildResolveParams(track),
+  };
+}
 
 const REPEAT_MODE_MAP: Record<RepeatModeKey, RepeatMode> = {
   off: RepeatMode.Off,
@@ -239,6 +323,116 @@ export function usePlayer() {
     await setRepeatMode(next);
   }, [repeatMode, setRepeatMode]);
 
+  // ── Play-or-stream (Spotify-like stream-everywhere) ─────────────────────
+
+  /**
+   * Single entry point browse/catalog screens call to play a track regardless
+   * of whether it's been downloaded.
+   *
+   * - Downloaded (usable local `file_path`) → the existing local play path:
+   *   resets the queue to the single track and plays it.
+   * - Online / catalog row (no local file) → resolve a fresh CDN stream via the
+   *   MultiSourceResolver using the track's hints, then play it transiently as
+   *   `stream:<id>` (no DB row, no download). Mirrors SearchScreen's resolve +
+   *   streamTrack flow.
+   *
+   * `context` (optional) is the ordered list the track was tapped from (e.g. an
+   * album or playlist). When the chosen track is online, the context's online
+   * rows become the autoplay context so playback continues song-to-song; later
+   * items are resolved lazily as playback advances (see `useQueue`). Passing no
+   * context plays a single track — matching the required
+   * `playOrStream(track): Promise<void>` contract.
+   *
+   * Note: we drive RNTP directly here (rather than calling `usePlayerQueue`)
+   * so this hook doesn't subscribe to the live queue snapshot — that would add
+   * a re-render to every `usePlayer` consumer (MiniPlayer, NowPlaying, …) on
+   * any queue change. `bumpQueueVersion()` still notifies the queue hooks.
+   */
+  const playOrStream = useCallback(
+    async (track: PlayableTrack, context?: PlayableTrack[]): Promise<void> => {
+      // ── Downloaded → local play ──
+      if (hasLocalFile(track.file_path)) {
+        try {
+          clearOnlineContext();
+          await TrackPlayer.reset();
+          await TrackPlayer.add(trackMapper(track));
+          await TrackPlayer.play();
+          bumpQueueVersion();
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+        } catch (err) {
+          const message =
+            err instanceof Error ? err.message : 'Playback failed. Please try again.';
+          Alert.alert('Cannot play this song', message);
+        }
+        return;
+      }
+
+      // ── Online → resolve + stream ──
+      const resolve = buildResolveParams(track);
+      const streamId = streamIdFor(track);
+      const album = albumFor(track);
+
+      try {
+        const stream = await resolveAudioStream(resolve);
+        const fullId = `stream:${streamId}`;
+        const rntpTrack: RNTPTrack = {
+          id: fullId,
+          url: stream.url,
+          title: track.title,
+          artist: track.artist,
+          album,
+          artwork: track.artwork_path ?? undefined,
+          duration:
+            track.duration_ms > 0
+              ? track.duration_ms / 1000
+              : stream.durationMs
+                ? stream.durationMs / 1000
+                : undefined,
+          // Saavn's CDN needs Referer/User-Agent; RNTP forwards these natively.
+          headers: stream.requestHeaders,
+        };
+        // Stash so PlaybackError can re-resolve an expired CDN URL.
+        setStreamMeta(fullId, {
+          resolve,
+          title: track.title,
+          artist: track.artist,
+          album,
+          artwork: track.artwork_path ?? undefined,
+          durationMs: track.duration_ms > 0 ? track.duration_ms : stream.durationMs,
+        });
+        // `reset` inside this path clears any prior online context; re-establish
+        // it AFTER so continuous autoplay has the full list to draw from.
+        clearOnlineContext();
+        await TrackPlayer.reset();
+        await TrackPlayer.add(rntpTrack);
+        await TrackPlayer.play();
+
+        // Establish the online autoplay context from the tapped list (online
+        // rows only — downloaded rows in the list aren't part of the streaming
+        // context). Single-track calls leave no context, so playback stops at
+        // the end of the one track.
+        if (context && context.length > 1) {
+          const onlineItems = context
+            .filter((t) => !hasLocalFile(t.file_path))
+            .map(toOnlineQueueItem);
+          if (onlineItems.length > 1) {
+            setOnlineContext(onlineItems, streamId);
+          }
+        }
+
+        bumpQueueVersion();
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      } catch (err) {
+        console.warn('[usePlayer] playOrStream failed', err);
+        Alert.alert(
+          'Could not play this song',
+          'Try a different track, or download it instead.',
+        );
+      }
+    },
+    [],
+  );
+
   return {
     // State
     activeTrack,
@@ -257,5 +451,6 @@ export function usePlayer() {
     setVolume,
     setRepeatMode,
     cycleRepeatMode,
+    playOrStream,
   };
 }

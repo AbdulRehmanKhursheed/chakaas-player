@@ -47,6 +47,13 @@ interface DownloadStore {
   addToQueue(item: Omit<DownloadItem, 'progress' | 'status'>): void;
   addManyToQueue(items: Array<Omit<DownloadItem, 'progress' | 'status'>>): void;
   updateProgress(id: string, progress: number, status: DownloadStatus): void;
+  /**
+   * Atomically claims the first `'queued'` item: flips it to `'downloading'`
+   * (progress 0) inside a SINGLE immer producer and returns its id, or `null`
+   * if nothing is queued. Closes the find-then-update gap that let two workers
+   * read the same stale snapshot and claim the same item.
+   */
+  claimNextQueued(): string | null;
   setError(id: string, error: string): void;
   removeItem(id: string): void;
   clearCompleted(): void;
@@ -105,6 +112,20 @@ export const useDownloadStore = create<DownloadStore>()(
           }
         }
       }),
+
+    claimNextQueued: () => {
+      let claimedId: string | null = null;
+      set((state) => {
+        const item = state.queue.find((d) => d.status === 'queued');
+        if (item) {
+          item.status = 'downloading';
+          item.progress = 0;
+          delete item.error;
+          claimedId = item.id;
+        }
+      });
+      return claimedId;
+    },
 
     setError: (id, error) =>
       set((state) => {

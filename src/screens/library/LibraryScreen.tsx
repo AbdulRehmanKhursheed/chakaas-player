@@ -54,6 +54,8 @@ import { ArtistRow } from './components/ArtistRow';
 import { GenreCard } from './components/GenreCard';
 import { importDeviceAudio } from '@/features/localAudio/LocalAudioImporter';
 import { bulkDeleteTracks, cleanupVoiceNotesAndClips } from '@/db/cleanup';
+import { useTheme } from '@/theme';
+import { LinearGradient } from 'expo-linear-gradient';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -86,15 +88,21 @@ interface SearchBarProps {
 }
 
 function SearchBar({ value, onChange, placeholder = 'Search songs…' }: SearchBarProps) {
+  const { colors } = useTheme();
   return (
-    <View style={searchStyles.container}>
-      <Ionicons name="search" size={18} color="#8E8E93" />
+    <View
+      style={[
+        searchStyles.container,
+        { backgroundColor: colors.bgRaised, borderColor: colors.border },
+      ]}
+    >
+      <Ionicons name="search" size={18} color={colors.textTertiary} />
       <TextInput
-        style={searchStyles.input}
+        style={[searchStyles.input, { color: colors.textPrimary }]}
         value={value}
         onChangeText={onChange}
         placeholder={placeholder}
-        placeholderTextColor="#8E8E93"
+        placeholderTextColor={colors.textTertiary}
         returnKeyType="search"
         clearButtonMode="while-editing"
         autoCorrect={false}
@@ -105,7 +113,7 @@ function SearchBar({ value, onChange, placeholder = 'Search songs…' }: SearchB
           onPress={() => onChange('')}
           hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
         >
-          <Ionicons name="close-circle" size={18} color="#8E8E93" />
+          <Ionicons name="close-circle" size={18} color={colors.textTertiary} />
         </TouchableOpacity>
       )}
     </View>
@@ -116,8 +124,8 @@ const searchStyles = StyleSheet.create({
   container: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#F2F2F7',
     borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
     marginHorizontal: 20,
     marginBottom: 12,
     paddingHorizontal: 14,
@@ -127,7 +135,6 @@ const searchStyles = StyleSheet.create({
   input: {
     flex: 1,
     fontSize: 15,
-    color: '#1D1D1F',
     fontWeight: '400',
   },
 });
@@ -148,6 +155,7 @@ const SORT_LABELS: Record<SortMode, string> = {
 const SORT_KEYS: SortMode[] = ['recently_added', 'a_z', 'most_played'];
 
 function SortPicker({ mode, onChange }: SortPickerProps) {
+  const { colors } = useTheme();
   const [sheetOpen, setSheetOpen] = useState(false);
 
   const handleOpen = useCallback(() => setSheetOpen(true), []);
@@ -164,20 +172,19 @@ function SortPicker({ mode, onChange }: SortPickerProps) {
   return (
     <>
       <TouchableOpacity onPress={handleOpen} style={sortStyles.button}>
-        <Text style={sortStyles.label}>{SORT_LABELS[mode]}</Text>
-        <Text style={sortStyles.chevron}>⌄</Text>
+        <Text style={[sortStyles.label, { color: colors.accent }]}>{SORT_LABELS[mode]}</Text>
+        <Text style={[sortStyles.chevron, { color: colors.accent }]}>⌄</Text>
       </TouchableOpacity>
 
       <BottomSheet
         isVisible={sheetOpen}
         onClose={handleClose}
         snapPoint={300}
-        backgroundColor="#F5F5F7"
       >
         <View style={sortSheetStyles.header}>
-          <Text style={sortSheetStyles.title}>Sort by</Text>
+          <Text style={[sortSheetStyles.title, { color: colors.textSecondary }]}>Sort by</Text>
         </View>
-        <View style={sortSheetStyles.divider} />
+        <View style={[sortSheetStyles.divider, { backgroundColor: colors.border }]} />
         {SORT_KEYS.map((key, idx) => {
           const selected = key === mode;
           return (
@@ -190,17 +197,17 @@ function SortPicker({ mode, onChange }: SortPickerProps) {
                 <Text
                   style={[
                     sortSheetStyles.rowLabel,
-                    selected && sortSheetStyles.rowLabelSelected,
+                    { color: selected ? colors.accent : colors.textPrimary },
                   ]}
                 >
                   {SORT_LABELS[key]}
                 </Text>
                 {selected && (
-                  <Ionicons name="checkmark" size={20} color="#FA233B" />
+                  <Ionicons name="checkmark" size={20} color={colors.accent} />
                 )}
               </TouchableOpacity>
               {idx < SORT_KEYS.length - 1 && (
-                <View style={sortSheetStyles.rowSeparator} />
+                <View style={[sortSheetStyles.rowSeparator, { backgroundColor: colors.border }]} />
               )}
             </React.Fragment>
           );
@@ -211,7 +218,7 @@ function SortPicker({ mode, onChange }: SortPickerProps) {
           activeOpacity={0.7}
           style={sortSheetStyles.row}
         >
-          <Text style={sortSheetStyles.cancelLabel}>Cancel</Text>
+          <Text style={[sortSheetStyles.cancelLabel, { color: colors.accent }]}>Cancel</Text>
         </TouchableOpacity>
       </BottomSheet>
     </>
@@ -227,13 +234,11 @@ const sortSheetStyles = StyleSheet.create({
   title: {
     fontSize: 13,
     fontWeight: '700',
-    color: '#8E8E93',
     letterSpacing: 0.5,
     textTransform: 'uppercase',
   },
   divider: {
     height: StyleSheet.hairlineWidth,
-    backgroundColor: 'rgba(60,60,67,0.16)',
     marginHorizontal: 20,
   },
   row: {
@@ -246,15 +251,10 @@ const sortSheetStyles = StyleSheet.create({
   rowLabel: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#1D1D1F',
     letterSpacing: -0.2,
-  },
-  rowLabelSelected: {
-    color: '#FA233B',
   },
   rowSeparator: {
     height: StyleSheet.hairlineWidth,
-    backgroundColor: 'rgba(60,60,67,0.14)',
     marginLeft: 20,
     marginRight: 20,
   },
@@ -265,7 +265,6 @@ const sortSheetStyles = StyleSheet.create({
   cancelLabel: {
     fontSize: 16,
     fontWeight: '700',
-    color: '#FA233B',
     letterSpacing: -0.2,
   },
 });
@@ -281,11 +280,9 @@ const sortStyles = StyleSheet.create({
   label: {
     fontSize: 12,
     fontWeight: '500',
-    color: '#FA233B',
   },
   chevron: {
     fontSize: 12,
-    color: '#FA233B',
     marginTop: 1,
   },
 });
@@ -293,26 +290,29 @@ const sortStyles = StyleSheet.create({
 // ─── Alphabetical section header ──────────────────────────────────────────────
 
 function SectionHeader({ letter }: { letter: string }) {
+  const { colors } = useTheme();
   return (
-    <View style={sectionHeaderStyles.container}>
-      <Text style={sectionHeaderStyles.letter}>{letter}</Text>
+    <View
+      style={[
+        sectionHeaderStyles.container,
+        { backgroundColor: colors.bg, borderBottomColor: colors.border },
+      ]}
+    >
+      <Text style={[sectionHeaderStyles.letter, { color: colors.accent }]}>{letter}</Text>
     </View>
   );
 }
 
 const sectionHeaderStyles = StyleSheet.create({
   container: {
-    backgroundColor: '#F5F5F7',
     paddingHorizontal: 20,
     paddingTop: 10,
     paddingBottom: 4,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(60,60,67,0.14)',
   },
   letter: {
     fontSize: 13,
     fontWeight: '700',
-    color: '#FA233B',
     letterSpacing: 0.5,
   },
 });
@@ -357,12 +357,21 @@ function SongRowImpl({
   onSwipeLike,
   onSwipeQueue,
 }: SongRowProps) {
+  const { colors } = useTheme();
   const handlePress = useCallback(() => onPress(track), [track, onPress]);
   const handleLongPress = useCallback(() => {
     onLongPress(track);
   }, [track, onLongPress]);
   const handleSwipeLike = useCallback(() => onSwipeLike(track), [track, onSwipeLike]);
   const handleSwipeQueue = useCallback(() => onSwipeQueue(track), [track, onSwipeQueue]);
+
+  // Pre-blended OPAQUE active/selected tints over the dark canvas (`bg`). Must
+  // stay opaque — the Swipeable's action pills sit behind the row and would
+  // bleed through any rgba() tint. Light scheme falls back to its own raised
+  // surfaces so the row never goes invisible on a light canvas.
+  const baseBg = colors.bg;
+  const activeBg = colors.isDark ? '#091F25' : colors.bgRaised;
+  const selectedBg = colors.isDark ? '#0A2C34' : colors.accentMuted;
 
   return (
     <SwipeableTrackRow
@@ -377,8 +386,7 @@ function SongRowImpl({
         delayLongPress={280}
         style={[
           songRowStyles.container,
-          isActive && songRowStyles.containerActive,
-          isSelected && songRowStyles.containerSelected,
+          { backgroundColor: isSelected ? selectedBg : isActive ? activeBg : baseBg },
         ]}
       >
         {selectMode ? (
@@ -386,19 +394,23 @@ function SongRowImpl({
             <Ionicons
               name={isSelected ? 'checkmark-circle' : 'radio-button-off-outline'}
               size={26}
-              color={isSelected ? '#FA233B' : '#C7C7CC'}
+              color={isSelected ? colors.accent : colors.textTertiary}
             />
           </View>
         ) : null}
         <TrackArtwork uri={track.artworkPath} blurhash={null} size={50} borderRadius={8} />
         <View style={songRowStyles.meta}>
           <Text
-            style={[songRowStyles.title, isActive && songRowStyles.titleActive]}
+            style={[
+              songRowStyles.title,
+              { color: isActive ? colors.accent : colors.textPrimary },
+              isActive && songRowStyles.titleActive,
+            ]}
             numberOfLines={1}
           >
             {track.title}
           </Text>
-          <Text style={songRowStyles.artist} numberOfLines={1}>
+          <Text style={[songRowStyles.artist, { color: colors.textSecondary }]} numberOfLines={1}>
             {track.artist}
             {track.album ? ` · ${track.album}` : ''}
           </Text>
@@ -410,10 +422,12 @@ function SongRowImpl({
             barWidth={3}
             gap={3}
             height={16}
-            color="#FA233B"
+            color={colors.accent}
           />
         ) : (
-          <Text style={songRowStyles.duration}>{formatDuration(track.durationMs)}</Text>
+          <Text style={[songRowStyles.duration, { color: colors.textTertiary }]}>
+            {formatDuration(track.durationMs)}
+          </Text>
         )}
       </TouchableOpacity>
     </SwipeableTrackRow>
@@ -450,20 +464,9 @@ const songRowStyles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 10,
     gap: 12,
-    // Solid background — otherwise the Swipeable's action pills render
-    // behind the (transparent) row and bleed through visually at rest,
-    // showing "Queue" / "Like" labels overlapping every track.
-    backgroundColor: '#F5F5F7',
-  },
-  // OPAQUE active/selected states. Previously these used rgba() with low
-  // alpha which is semi-transparent — the Swipeable's action pills behind
-  // the row showed through wherever the active/selected tint was applied.
-  // Pre-blended hex values keep the same visual tint but stay opaque.
-  containerActive: {
-    backgroundColor: '#F5E8EC', // #F5F5F7 blended with 6% #FA233B
-  },
-  containerSelected: {
-    backgroundColor: '#F5E4E8', // #F5F5F7 blended with 8% #FA233B
+    // Background is applied inline (opaque, theme-aware) — the Swipeable's
+    // action pills render behind the row and would bleed through a
+    // transparent surface, showing "Queue" / "Like" labels at rest.
   },
   checkboxWrap: {
     width: 26,
@@ -475,23 +478,19 @@ const songRowStyles = StyleSheet.create({
   title: {
     fontSize: 15,
     fontWeight: '600',
-    color: '#1D1D1F',
     letterSpacing: -0.1,
   },
   titleActive: {
-    color: '#FA233B',
     fontWeight: '700',
   },
   artist: {
     fontSize: 12,
     fontWeight: '400',
-    color: '#6E6E73',
     marginTop: 2,
   },
   duration: {
     fontSize: 12,
     fontWeight: '400',
-    color: '#8E8E93',
   },
 });
 
@@ -505,6 +504,7 @@ interface PlaylistCardProps {
 }
 
 function PlaylistCard({ playlist, onPress }: PlaylistCardProps) {
+  const { colors } = useTheme();
   const handlePress = useCallback(() => onPress(playlist.id), [playlist, onPress]);
   return (
     <TouchableOpacity
@@ -512,15 +512,20 @@ function PlaylistCard({ playlist, onPress }: PlaylistCardProps) {
       onPress={handlePress}
       style={playlistCardStyles.card}
     >
-      <View style={playlistCardStyles.artContainer}>
+      <View
+        style={[
+          playlistCardStyles.artContainer,
+          { backgroundColor: colors.bgElevated, borderColor: colors.border },
+        ]}
+      >
         <TrackArtwork
           uri={playlist.artworkPath}
           blurhash={null}
           size={PLAYLIST_CARD_SIZE}
-          borderRadius={12}
+          borderRadius={16}
         />
       </View>
-      <Text style={playlistCardStyles.name} numberOfLines={2}>
+      <Text style={[playlistCardStyles.name, { color: colors.textPrimary }]} numberOfLines={2}>
         {playlist.name}
       </Text>
     </TouchableOpacity>
@@ -531,26 +536,17 @@ const playlistCardStyles = StyleSheet.create({
   card: {
     width: PLAYLIST_CARD_SIZE,
   },
+  // Soft elevation: elevated surface + cyan-tintable hairline. The previous
+  // heavy black drop shadow is intentionally dropped for the dark HUD look.
   artContainer: {
-    borderRadius: 12,
+    borderRadius: 16,
     overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: '#D2D2D7',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 6 },
-        shadowOpacity: 0.5,
-        shadowRadius: 12,
-      },
-      android: { elevation: 8 },
-    }),
+    borderWidth: StyleSheet.hairlineWidth,
   },
   name: {
     marginTop: 8,
     fontSize: 13,
     fontWeight: '600',
-    color: '#1D1D1F',
     lineHeight: 18,
   },
 });
@@ -563,6 +559,7 @@ interface TabBarProps {
 }
 
 function TabBar({ activeTab, onTabPress }: TabBarProps) {
+  const { colors } = useTheme();
   const indicatorLeft = useSharedValue(0);
   const indicatorWidth = useSharedValue(0);
 
@@ -582,7 +579,7 @@ function TabBar({ activeTab, onTabPress }: TabBarProps) {
   }));
 
   return (
-    <View style={tabStyles.container}>
+    <View style={[tabStyles.container, { borderBottomColor: colors.border }]}>
       {TABS.map((tab) => {
         const isActive = tab === activeTab;
         return (
@@ -592,13 +589,21 @@ function TabBar({ activeTab, onTabPress }: TabBarProps) {
             style={tabStyles.tab}
             activeOpacity={0.7}
           >
-            <Text style={[tabStyles.label, isActive && tabStyles.activeLabel]}>
+            <Text
+              style={[
+                tabStyles.label,
+                { color: isActive ? colors.textPrimary : colors.textSecondary },
+                isActive && tabStyles.activeLabel,
+              ]}
+            >
               {tab}
             </Text>
           </TouchableOpacity>
         );
       })}
-      <Animated.View style={[tabStyles.indicator, indicatorStyle]} />
+      <Animated.View
+        style={[tabStyles.indicator, { backgroundColor: colors.accent }, indicatorStyle]}
+      />
     </View>
   );
 }
@@ -606,8 +611,7 @@ function TabBar({ activeTab, onTabPress }: TabBarProps) {
 const tabStyles = StyleSheet.create({
   container: {
     flexDirection: 'row',
-    borderBottomWidth: 1,
-    borderBottomColor: '#F2F2F7',
+    borderBottomWidth: StyleSheet.hairlineWidth,
     marginBottom: 4,
     position: 'relative',
   },
@@ -619,18 +623,15 @@ const tabStyles = StyleSheet.create({
   label: {
     fontSize: 12,
     fontWeight: '500',
-    color: '#8E8E93',
     letterSpacing: 0.1,
   },
   activeLabel: {
-    color: '#1D1D1F',
     fontWeight: '700',
   },
   indicator: {
     position: 'absolute',
     bottom: 0,
     height: 2.5,
-    backgroundColor: '#FA233B',
     borderRadius: 2,
   },
 });
@@ -643,6 +644,7 @@ interface PlaylistsFABProps {
 }
 
 function PlaylistsFAB({ onPress, bottomOffset }: PlaylistsFABProps) {
+  const { colors } = useTheme();
   const scale = useSharedValue(1);
   const fabStyle = useAnimatedStyle(() => ({
     transform: [{ scale: scale.value }],
@@ -656,7 +658,13 @@ function PlaylistsFAB({ onPress, bottomOffset }: PlaylistsFABProps) {
   }, []);
 
   return (
-    <Animated.View style={[fabStyles.fab, { bottom: bottomOffset }, fabStyle]}>
+    <Animated.View
+      style={[
+        fabStyles.fab,
+        { bottom: bottomOffset, shadowColor: colors.accent },
+        fabStyle,
+      ]}
+    >
       <TouchableOpacity
         onPress={onPress}
         onPressIn={handlePressIn}
@@ -664,7 +672,13 @@ function PlaylistsFAB({ onPress, bottomOffset }: PlaylistsFABProps) {
         activeOpacity={1}
         style={fabStyles.inner}
       >
-        <Ionicons name="add" size={20} color="#FFFFFF" />
+        <LinearGradient
+          colors={colors.brandGradient}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={StyleSheet.absoluteFill}
+        />
+        <Ionicons name="add" size={20} color="#07090D" />
         <Text style={fabStyles.label}>New Playlist</Text>
       </TouchableOpacity>
     </Animated.View>
@@ -675,14 +689,13 @@ const fabStyles = StyleSheet.create({
   fab: {
     position: 'absolute',
     right: 20,
-    borderRadius: 28,
-    backgroundColor: '#FA233B',
+    borderRadius: 999,
+    // Soft cyan glow instead of a heavy black drop shadow.
     ...Platform.select({
       ios: {
-        shadowColor: '#FA233B',
         shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.45,
-        shadowRadius: 12,
+        shadowOpacity: 0.4,
+        shadowRadius: 14,
       },
       android: { elevation: 10 },
     }),
@@ -693,11 +706,13 @@ const fabStyles = StyleSheet.create({
     paddingHorizontal: 18,
     paddingVertical: 14,
     gap: 8,
+    borderRadius: 999,
+    overflow: 'hidden',
   },
   label: {
     fontSize: 14,
-    fontWeight: '700',
-    color: '#FFFFFF',
+    fontWeight: '800',
+    color: '#07090D',
   },
 });
 
@@ -750,6 +765,7 @@ function buildGenreGroups(tracks: Track[]): GenreGroup[] {
 
 export function LibraryScreen() {
   const navigation = useNavigation<RootStackNavigationProp>();
+  const { colors } = useTheme();
   const { playTrack, addTrack } = usePlayerQueue();
   const insets = useSafeAreaInsets();
   const [refreshing, setRefreshing] = useState(false);
@@ -1287,17 +1303,25 @@ export function LibraryScreen() {
 
   const emptyComponent = (
     <View style={styles.empty}>
-      <Ionicons name="musical-notes" size={40} color="#FA233B" />
-      <Text style={styles.emptyText}>Nothing here yet</Text>
-      <Text style={styles.emptySubtext}>Import songs already on this device to start listening.</Text>
+      <Ionicons name="musical-notes" size={40} color={colors.accent} />
+      <Text style={[styles.emptyText, { color: colors.textSecondary }]}>Nothing here yet</Text>
+      <Text style={[styles.emptySubtext, { color: colors.textTertiary }]}>
+        Import songs already on this device to start listening.
+      </Text>
       <TouchableOpacity
         onPress={handleImportDeviceAudio}
         disabled={isImportingAudio}
         activeOpacity={0.82}
         style={styles.emptyAction}
       >
+        <LinearGradient
+          colors={colors.goldGradient}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={StyleSheet.absoluteFill}
+        />
         {isImportingAudio ? (
-          <ActivityIndicator size="small" color="#FFFFFF" />
+          <ActivityIndicator size="small" color="#1A1205" />
         ) : (
           <Text style={styles.emptyActionText}>Add Device Songs</Text>
         )}
@@ -1307,18 +1331,20 @@ export function LibraryScreen() {
 
   const playlistsEmptyComponent = (
     <View style={styles.empty}>
-      <Ionicons name="albums" size={40} color="#FA233B" />
-      <Text style={styles.emptyText}>No playlists yet</Text>
-      <Text style={styles.emptySubtext}>Tap the button below to get started</Text>
+      <Ionicons name="albums" size={40} color={colors.accent} />
+      <Text style={[styles.emptyText, { color: colors.textSecondary }]}>No playlists yet</Text>
+      <Text style={[styles.emptySubtext, { color: colors.textTertiary }]}>
+        Tap the button below to get started
+      </Text>
     </View>
   );
 
   return (
-    <View style={styles.root}>
-      <StatusBar barStyle="dark-content" backgroundColor="#F5F5F7" />
+    <View style={[styles.root, { backgroundColor: colors.bg }]}>
+      <StatusBar barStyle={colors.isDark ? 'light-content' : 'dark-content'} backgroundColor={colors.bg} />
 
-      {/* Frosted-glass header — same BlurView treatment as BlurHeader, but
-          inlined so the existing layout (and its non-Animated list views)
+      {/* Dark-glass header — same BlurView treatment as the Header primitive,
+          but inlined so the existing layout (and its non-Animated list views)
           don't need to be restructured.
 
           When `selectMode` is on, the title/count is swapped for the bulk-
@@ -1332,8 +1358,13 @@ export function LibraryScreen() {
         ]}
       >
         <View pointerEvents="none" style={StyleSheet.absoluteFill}>
-          <BlurView intensity={50} tint="light" style={StyleSheet.absoluteFill} />
-          <View style={styles.headerSurface} />
+          <BlurView
+            intensity={40}
+            tint={colors.isDark ? 'dark' : 'light'}
+            style={StyleSheet.absoluteFill}
+          />
+          <View style={[styles.headerSurface, { backgroundColor: colors.overlay }]} />
+          <View style={[styles.headerHairline, { backgroundColor: colors.borderAccent }]} />
         </View>
         {selectMode ? (
           <View style={styles.selectionBar}>
@@ -1341,9 +1372,9 @@ export function LibraryScreen() {
               onPress={exitSelectMode}
               hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
             >
-              <Text style={styles.selectionCancel}>Cancel</Text>
+              <Text style={[styles.selectionCancel, { color: colors.textPrimary }]}>Cancel</Text>
             </TouchableOpacity>
-            <Text style={styles.selectionCount} numberOfLines={1}>
+            <Text style={[styles.selectionCount, { color: colors.accent }]} numberOfLines={1}>
               {selectedIds.size} selected
             </Text>
             <View style={styles.selectionRightCluster}>
@@ -1355,6 +1386,7 @@ export function LibraryScreen() {
                 <Text
                   style={[
                     styles.selectionAction,
+                    { color: colors.textPrimary },
                     visibleTrackIds.length === 0 && styles.selectionActionDisabled,
                   ]}
                 >
@@ -1367,11 +1399,12 @@ export function LibraryScreen() {
                 hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
               >
                 {isDeleting ? (
-                  <ActivityIndicator size="small" color="#FA233B" />
+                  <ActivityIndicator size="small" color={colors.danger} />
                 ) : (
                   <Text
                     style={[
                       styles.selectionDelete,
+                      { color: colors.danger },
                       (selectedIds.size === 0) && styles.selectionActionDisabled,
                     ]}
                   >
@@ -1383,8 +1416,8 @@ export function LibraryScreen() {
           </View>
         ) : (
           <>
-            <Text style={styles.headerTitle}>Library</Text>
-            <Text style={styles.headerCount}>
+            <Text style={[styles.headerTitle, { color: colors.textPrimary }]}>Library</Text>
+            <Text style={[styles.headerCount, { color: colors.textSecondary }]}>
               {safeTracks.length} {safeTracks.length === 1 ? 'song' : 'songs'}
             </Text>
           </>
@@ -1393,13 +1426,19 @@ export function LibraryScreen() {
 
       {!hasImportedDeviceAudio && (
         <TouchableOpacity
-          style={styles.importButton}
+          style={[styles.importButton, { shadowColor: colors.gold }]}
           onPress={handleImportDeviceAudio}
           disabled={isImportingAudio}
           activeOpacity={0.8}
         >
+          <LinearGradient
+            colors={colors.goldGradient}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={StyleSheet.absoluteFill}
+          />
           {isImportingAudio ? (
-            <ActivityIndicator size="small" color="#FFFFFF" />
+            <ActivityIndicator size="small" color="#1A1205" />
           ) : (
             <Text style={styles.importButtonText}>Add songs from this device</Text>
           )}
@@ -1449,8 +1488,8 @@ export function LibraryScreen() {
                   <RefreshControl
                     refreshing={refreshing}
                     onRefresh={handleRefresh}
-                    tintColor="#FA233B"
-                    colors={['#FA233B']}
+                    tintColor={colors.accent}
+                    colors={[colors.accent]}
                   />
                 }
               />
@@ -1543,7 +1582,6 @@ export function LibraryScreen() {
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: '#F5F5F7',
   },
   header: {
     paddingBottom: 10,
@@ -1556,18 +1594,22 @@ const styles = StyleSheet.create({
   },
   headerSurface: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(245,245,247,0.78)',
+  },
+  headerHairline: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: StyleSheet.hairlineWidth,
   },
   headerTitle: {
     fontSize: 34,
     fontWeight: '800',
-    color: '#1D1D1F',
     letterSpacing: -1.1,
   },
   headerCount: {
     fontSize: 12,
     fontWeight: '500',
-    color: '#8E8E93',
   },
   selectionBar: {
     flex: 1,
@@ -1579,7 +1621,6 @@ const styles = StyleSheet.create({
   selectionCancel: {
     fontSize: 15,
     fontWeight: '600',
-    color: '#1D1D1F',
     letterSpacing: -0.1,
   },
   selectionCount: {
@@ -1587,7 +1628,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     fontSize: 16,
     fontWeight: '800',
-    color: '#FA233B',
     letterSpacing: -0.2,
   },
   selectionRightCluster: {
@@ -1598,31 +1638,30 @@ const styles = StyleSheet.create({
   selectionAction: {
     fontSize: 13,
     fontWeight: '600',
-    color: '#1D1D1F',
     letterSpacing: -0.1,
   },
   selectionDelete: {
     fontSize: 14,
     fontWeight: '800',
-    color: '#FA233B',
     letterSpacing: -0.1,
   },
   selectionActionDisabled: {
     opacity: 0.35,
   },
+  // Gold gradient CTA (premium / bulk import). Background gradient is rendered
+  // inline; soft gold glow instead of a heavy black shadow.
   importButton: {
     marginHorizontal: 20,
     marginBottom: 14,
     height: 48,
-    borderRadius: 18,
+    borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#FA233B',
+    overflow: 'hidden',
     ...Platform.select({
       ios: {
-        shadowColor: '#FA233B',
         shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.22,
+        shadowOpacity: 0.3,
         shadowRadius: 16,
       },
       android: { elevation: 4 },
@@ -1631,7 +1670,7 @@ const styles = StyleSheet.create({
   importButtonText: {
     fontSize: 14,
     fontWeight: '800',
-    color: '#FFFFFF',
+    color: '#1A1205',
     letterSpacing: -0.1,
   },
   playlistsRoot: {
@@ -1648,34 +1687,29 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 10,
   },
-  emptyIcon: {
-    fontSize: 40,
-    color: '#D2D2D7',
-  },
   emptyText: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#8E8E93',
   },
   emptySubtext: {
     fontSize: 13,
-    color: '#C7C7CC',
     textAlign: 'center',
     paddingHorizontal: 36,
     lineHeight: 19,
   },
+  // Gold gradient CTA for the empty-state import action.
   emptyAction: {
     marginTop: 8,
     minHeight: 42,
     paddingHorizontal: 18,
-    borderRadius: 21,
+    borderRadius: 999,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#FA233B',
+    overflow: 'hidden',
   },
   emptyActionText: {
     fontSize: 13,
     fontWeight: '800',
-    color: '#FFFFFF',
+    color: '#1A1205',
   },
 });

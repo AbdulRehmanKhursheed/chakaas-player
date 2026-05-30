@@ -89,6 +89,27 @@ try {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Background-fetch headless task registration — MUST run at module top-level.
+// When the OS wakes the app while it's terminated (Android headless mode),
+// react-native-background-fetch dispatches to this registered task rather than
+// the in-process callback wired up by configureBackgroundFetch(). The task only
+// applies affinity decay; it never downloads. Wrapped defensively so a missing
+// native module / require failure can't take boot down.
+// ─────────────────────────────────────────────────────────────────────────────
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const BackgroundFetch = require('react-native-background-fetch').default;
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { BackgroundFetchHeadlessTask } = require('./src/features/backgroundSync/BackgroundFetchHandler');
+  BackgroundFetch.registerHeadlessTask(BackgroundFetchHeadlessTask);
+} catch (e) {
+  // Non-fatal — the in-process configure() callback still handles foreground
+  // and warm-start fetches.
+  // eslint-disable-next-line no-console
+  console.warn('[Chakaas] BackgroundFetch.registerHeadlessTask failed:', e);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Global error capture: any uncaught error / module-import crash gets stored
 // here so we can render it on screen instead of showing a black screen.
 // ─────────────────────────────────────────────────────────────────────────────

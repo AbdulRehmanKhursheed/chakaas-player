@@ -10,7 +10,7 @@
     "splash": {
       "image": "./assets/splash.png",
       "resizeMode": "contain",
-      "backgroundColor": "#F5F5F7"
+      "backgroundColor": "#07090D"
     },
     "assetBundlePatterns": [
       "**/*"
@@ -20,7 +20,7 @@
       "versionCode": 1,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#F5F5F7"
+        "backgroundColor": "#07090D"
       },
       "permissions": [
         "android.permission.INTERNET",

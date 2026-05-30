@@ -59,7 +59,8 @@ import { usePlayer, useStableActiveTrack } from '@/features/player/usePlayer';
 import { usePlayerStore } from '@/stores/playerStore';
 import { useUIStore } from '@/stores/uiStore';
 import { useAccentColor } from '@/hooks/useAccentColor';
-import { usePlayerQueue } from '@/features/player/useQueue';
+import { usePlayerQueue, isStreamTrack, getStreamMeta } from '@/features/player/useQueue';
+import { DownloadManager } from '@/features/download/DownloadManager';
 import { tracksCollection } from '@/db';
 import { logger } from '@/utils/logger';
 import { EqualizerBars } from '@/components/EqualizerBars';
@@ -69,6 +70,7 @@ import { BottomSheet } from '@/components/ui/BottomSheet';
 import { SleepTimer, type SleepTimerState } from '@/features/player/SleepTimer';
 import { useColorTheme, isDarkOrGrey, GOLD } from '@/features/player/ColorTheme';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useTheme } from '@/theme';
 import TrackPlayer from 'react-native-track-player';
 
 import { PlayerControls } from './components/PlayerControls';
@@ -78,7 +80,8 @@ import { VolumeSlider } from './components/VolumeSlider';
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const ARTWORK_SIZE = Math.min(SCREEN_WIDTH - 96, 300);
+// Large, near edge-to-edge artwork for the HUD hero surface.
+const ARTWORK_SIZE = Math.min(SCREEN_WIDTH - 56, 340);
 const SAFE_TOP = Platform.OS === 'ios' ? 54 : (StatusBar.currentHeight ?? 24) + 8;
 
 const SPRING_GENTLE = { damping: 22, stiffness: 180, mass: 1 };
@@ -124,13 +127,16 @@ function ConnectedProgressSlider({ onSeek, accentColor }: ConnectedProgressSlide
 // Apple Music, Tidal) all show *something* derived from the song itself
 // rather than the app's logo when artwork is missing.
 
+// Deterministic per-song fallback gradients — tuned to the Arc Reactor /
+// J.A.R.V.I.S. palette (cyan, blue, gold, with a couple of accent hues) so a
+// missing-artwork tile still reads as part of the HUD identity.
 const PLACEHOLDER_GRADIENT_PAIRS: Array<[string, string]> = [
-  ['#FA233B', '#FF7D8A'],
-  ['#1D1D1F', '#3A3A3C'],
-  ['#5856D6', '#AF52DE'],
-  ['#FF9500', '#FFCC00'],
-  ['#34C759', '#30B0C7'],
-  ['#FF2D55', '#FF9500'],
+  ['#19E3FF', '#0A84FF'],
+  ['#0A84FF', '#5856D6'],
+  ['#5FF0FF', '#19E3FF'],
+  ['#F5B642', '#FFD479'],
+  ['#19E3FF', '#34D399'],
+  ['#0E1218', '#19E3FF'],
 ];
 
 function pickGradient(seed: string): [string, string] {
@@ -187,6 +193,7 @@ interface QueuePanelProps {
 }
 
 function QueuePanel({ activeTrackId, accentColor, isPlaying }: QueuePanelProps) {
+  const { colors } = useTheme();
   const { queue } = usePlayerQueue();
 
   const handleJump = useCallback(
@@ -206,8 +213,8 @@ function QueuePanel({ activeTrackId, accentColor, isPlaying }: QueuePanelProps) 
   if (!queue || queue.length === 0) {
     return (
       <View style={styles.queueEmpty}>
-        <Ionicons name="musical-notes-outline" size={28} color="#C7C7CC" />
-        <Text style={styles.queueEmptyText}>Queue is empty</Text>
+        <Ionicons name="musical-notes-outline" size={28} color={colors.textTertiary} />
+        <Text style={[styles.queueEmptyText, { color: colors.textSecondary }]}>Queue is empty</Text>
       </View>
     );
   }
@@ -229,9 +236,11 @@ function QueuePanel({ activeTrackId, accentColor, isPlaying }: QueuePanelProps) 
             android_ripple={{ color: `${accentColor}1A`, borderless: false }}
             style={({ pressed }) => [
               styles.queueItem,
+              { borderBottomColor: colors.border },
               isActive && {
-                backgroundColor: `${accentColor}14`,
-                borderRadius: 10,
+                backgroundColor: `${accentColor}1F`,
+                borderRadius: 12,
+                borderBottomColor: 'transparent',
                 paddingHorizontal: 8,
                 marginHorizontal: -8,
               },
@@ -247,21 +256,22 @@ function QueuePanel({ activeTrackId, accentColor, isPlaying }: QueuePanelProps) 
             {track.artwork ? (
               <FastImage source={{ uri: track.artwork }} style={styles.queueArt} />
             ) : (
-              <View style={[styles.queueArt, styles.queueArtPlaceholder]}>
-                <Ionicons name="musical-note" size={16} color="#8E8E93" />
+              <View style={[styles.queueArt, styles.queueArtPlaceholder, { backgroundColor: colors.bgRaised }]}>
+                <Ionicons name="musical-note" size={16} color={colors.textSecondary} />
               </View>
             )}
             <View style={styles.queueInfo}>
               <Text
                 style={[
                   styles.queueTitle,
+                  { color: colors.textPrimary },
                   isActive && { color: accentColor, fontWeight: '700' },
                 ]}
                 numberOfLines={1}
               >
                 {track.title ?? 'Unknown Title'}
               </Text>
-              <Text style={styles.queueArtist} numberOfLines={1}>
+              <Text style={[styles.queueArtist, { color: colors.textSecondary }]} numberOfLines={1}>
                 {track.artist ?? 'Unknown Artist'}
               </Text>
             </View>
@@ -275,7 +285,7 @@ function QueuePanel({ activeTrackId, accentColor, isPlaying }: QueuePanelProps) 
                 color={accentColor}
               />
             ) : (
-              <Text style={styles.queueIndex}>{index + 1}</Text>
+              <Text style={[styles.queueIndex, { color: colors.textTertiary }]}>{index + 1}</Text>
             )}
           </Pressable>
         );
@@ -294,6 +304,7 @@ interface SleepTimerSheetProps {
 }
 
 function SleepTimerSheet({ isVisible, onClose, accentColor, state }: SleepTimerSheetProps) {
+  const { colors } = useTheme();
   const options = [5, 15, 30, 45, 60] as const;
   const handlePick = useCallback(
     (mins: number) => {
@@ -317,31 +328,38 @@ function SleepTimerSheet({ isVisible, onClose, accentColor, state }: SleepTimerS
   return (
     <BottomSheet isVisible={isVisible} onClose={onClose} snapPoint={420}>
       <View style={sheetStyles.body}>
-        <Text style={sheetStyles.title}>Sleep Timer</Text>
-        <Text style={sheetStyles.subtitle}>Pause playback after…</Text>
+        <Text style={[sheetStyles.title, { color: colors.textPrimary }]}>Sleep Timer</Text>
+        <Text style={[sheetStyles.subtitle, { color: colors.textSecondary }]}>Pause playback after…</Text>
         <View style={sheetStyles.grid}>
-          {options.map((mins) => (
-            <Pressable
-              key={mins}
-              onPress={() => handlePick(mins)}
-              style={({ pressed }) => [
-                sheetStyles.pill,
-                pressed && { opacity: 0.7 },
-                state.mode === 'duration' &&
-                  Math.round(state.totalMs / 60_000) === mins && {
+          {options.map((mins) => {
+            const pillActive =
+              state.mode === 'duration' && Math.round(state.totalMs / 60_000) === mins;
+            return (
+              <Pressable
+                key={mins}
+                onPress={() => handlePick(mins)}
+                style={({ pressed }) => [
+                  sheetStyles.pill,
+                  { backgroundColor: colors.bgRaised, borderColor: colors.border },
+                  pressed && { opacity: 0.7 },
+                  pillActive && {
                     backgroundColor: `${accentColor}22`,
                     borderColor: accentColor,
                   },
-              ]}
-            >
-              <Text style={sheetStyles.pillText}>{mins} min</Text>
-            </Pressable>
-          ))}
+                ]}
+              >
+                <Text style={[sheetStyles.pillText, { color: pillActive ? accentColor : colors.textPrimary }]}>
+                  {mins} min
+                </Text>
+              </Pressable>
+            );
+          })}
           <Pressable
             onPress={handleEOT}
             style={({ pressed }) => [
               sheetStyles.pill,
               sheetStyles.pillWide,
+              { backgroundColor: colors.bgRaised, borderColor: colors.border },
               pressed && { opacity: 0.7 },
               state.mode === 'end-of-track' && {
                 backgroundColor: `${accentColor}22`,
@@ -349,8 +367,19 @@ function SleepTimerSheet({ isVisible, onClose, accentColor, state }: SleepTimerS
               },
             ]}
           >
-            <Ionicons name="musical-notes" size={16} color="#1D1D1F" />
-            <Text style={sheetStyles.pillText}>End of track</Text>
+            <Ionicons
+              name="musical-notes"
+              size={16}
+              color={state.mode === 'end-of-track' ? accentColor : colors.textPrimary}
+            />
+            <Text
+              style={[
+                sheetStyles.pillText,
+                { color: state.mode === 'end-of-track' ? accentColor : colors.textPrimary },
+              ]}
+            >
+              End of track
+            </Text>
           </Pressable>
         </View>
         {state.isActive ? (
@@ -358,10 +387,11 @@ function SleepTimerSheet({ isVisible, onClose, accentColor, state }: SleepTimerS
             onPress={handleCancel}
             style={({ pressed }) => [
               sheetStyles.cancelButton,
+              { borderColor: colors.danger },
               pressed && { opacity: 0.7 },
             ]}
           >
-            <Text style={sheetStyles.cancelText}>Cancel timer</Text>
+            <Text style={[sheetStyles.cancelText, { color: colors.danger }]}>Cancel timer</Text>
           </Pressable>
         ) : null}
       </View>
@@ -379,12 +409,10 @@ const sheetStyles = StyleSheet.create({
   title: {
     fontSize: 18,
     fontWeight: '800',
-    color: '#1D1D1F',
     letterSpacing: -0.3,
   },
   subtitle: {
     fontSize: 13,
-    color: '#6E6E73',
   },
   grid: {
     flexDirection: 'row',
@@ -395,10 +423,8 @@ const sheetStyles = StyleSheet.create({
   pill: {
     paddingVertical: 12,
     paddingHorizontal: 18,
-    borderRadius: 22,
-    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#E5E5EA',
     minWidth: 84,
     alignItems: 'center',
     flexDirection: 'row',
@@ -411,18 +437,15 @@ const sheetStyles = StyleSheet.create({
   pillText: {
     fontSize: 15,
     fontWeight: '600',
-    color: '#1D1D1F',
   },
   cancelButton: {
     paddingVertical: 12,
     alignItems: 'center',
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#FF3B30',
     marginTop: 12,
   },
   cancelText: {
-    color: '#FF3B30',
     fontWeight: '700',
     fontSize: 14,
   },
@@ -442,6 +465,7 @@ function useSleepTimerState(): SleepTimerState {
 
 export function NowPlayingScreen() {
   const navigation = useNavigation<RootStackNavigationProp<'NowPlaying'>>();
+  const { colors, isDark } = useTheme();
 
   // Stable module-singleton subscription — see comment on
   // `useStableActiveTrack`. RNTP's bundled `useActiveTrack` would re-subscribe
@@ -468,6 +492,12 @@ export function NowPlayingScreen() {
   const artworkUri = activeTrack?.artwork ?? null;
   const { accentColor: extractedAccentColor } = useAccentColor(artworkUri);
 
+  // Transient streamed tracks carry a synthetic `stream:<id>` id and have no
+  // DB row, so the heart/like and 3-dot menu (which look up
+  // `tracksCollection.find(id)`) can't operate on them. For these we surface a
+  // "Save to library" affordance instead that kicks off a download.
+  const isStream = isStreamTrack(activeTrack?.id);
+
   // Premium theming: when album-color theming is on, blend the ColorTheme
   // store's dominant colour (with gold fallback for dark/grey art) into the
   // existing accent extraction. When the setting is off, lock to gold so
@@ -476,11 +506,11 @@ export function NowPlayingScreen() {
   const themedColors = useColorTheme((s) => s.colors);
   const accentColor = useMemo(() => {
     if (!albumThemingEnabled) return GOLD;
-    if (!artworkUri) return '#FA233B';
+    if (!artworkUri) return colors.accent;
     const candidate = themedColors.dominant ?? extractedAccentColor;
     if (isDarkOrGrey(candidate)) return GOLD;
     return candidate;
-  }, [albumThemingEnabled, artworkUri, themedColors.dominant, extractedAccentColor]);
+  }, [albumThemingEnabled, artworkUri, themedColors.dominant, extractedAccentColor, colors.accent]);
 
   // Sleep-timer wiring.
   const sleepState = useSleepTimerState();
@@ -536,7 +566,9 @@ export function NowPlayingScreen() {
   useEffect(() => {
     let cancelled = false;
     const id = activeTrack?.id;
-    if (!id) {
+    // Streamed tracks have no DB row — there's nothing to look up, and the
+    // heart is replaced by the Save-to-library button below.
+    if (!id || isStreamTrack(id)) {
       setLiked(false);
       likedRef.current = false;
       return;
@@ -601,6 +633,49 @@ export function NowPlayingScreen() {
   const likeStyle = useAnimatedStyle(() => ({
     transform: [{ scale: likeScale.value }],
   }));
+
+  // ── Save-to-library (streamed tracks only) ───────────────────────────────
+  // A streamed track isn't in the library/DB, so instead of like/menu we let
+  // the user enqueue a download. The provider hints needed to fetch it live in
+  // the stream meta registry keyed by the synthetic `stream:<id>` RNTP id.
+  const [savingState, setSavingState] = useState<'idle' | 'saving' | 'saved'>('idle');
+  // Reset the affordance whenever the active track changes.
+  useEffect(() => {
+    setSavingState('idle');
+  }, [activeTrack?.id]);
+
+  const handleSaveToLibrary = useCallback(async () => {
+    const id = activeTrack?.id;
+    if (!id || !isStreamTrack(id) || savingState !== 'idle') return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+    const meta = getStreamMeta(String(id));
+    const hints = meta?.resolve.hints;
+    // Prefer the provider-native id from the hints; fall back to stripping the
+    // `stream:` prefix off the RNTP id.
+    const providerId =
+      hints?.saavnId ?? hints?.youtubeId ?? String(id).replace(/^stream:/, '');
+    const provider: 'youtube' | 'saavn' = hints?.youtubeId ? 'youtube' : 'saavn';
+
+    setSavingState('saving');
+    try {
+      const result = await DownloadManager.enqueue({
+        youtubeId: providerId,
+        title: meta?.title ?? activeTrack?.title ?? 'Unknown',
+        artist: meta?.artist ?? activeTrack?.artist ?? 'Unknown',
+        album: meta?.album ?? (typeof activeTrack?.album === 'string' ? activeTrack.album : undefined),
+        thumbnail: meta?.artwork ?? artworkUri ?? '',
+        durationMs: meta?.durationMs,
+        provider,
+        saavnEncryptedUrl: hints?.saavnEncryptedUrl,
+        saavnHas320kbps: hints?.saavnHas320kbps,
+      });
+      setSavingState(result.success ? 'saved' : 'idle');
+    } catch (err) {
+      logger.warn('[NowPlaying] save to library failed:', err);
+      setSavingState('idle');
+    }
+  }, [activeTrack?.id, activeTrack?.title, activeTrack?.artist, activeTrack?.album, artworkUri, savingState]);
 
   // ── Artwork breathing animation ───────────────────────────────────────────
   const artworkScale = useSharedValue(1);
@@ -677,30 +752,40 @@ export function NowPlayingScreen() {
   const openSheet = useUIStore((s) => s.openSheet);
   const handleMenu = useCallback(() => {
     if (!activeTrack?.id) return;
+    // Streamed tracks have no DB row, so the track-context sheet (which loads
+    // the track via `tracksCollection.find`) would come up empty. Route the
+    // 3-dot action to Save-to-library instead.
+    if (isStreamTrack(activeTrack.id)) {
+      void handleSaveToLibrary();
+      return;
+    }
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     openSheet('track-context', String(activeTrack.id));
-  }, [activeTrack?.id, openSheet]);
+  }, [activeTrack?.id, openSheet, handleSaveToLibrary]);
 
   // ── Gradient colours derived from accent ──────────────────────────────────
   // Build a smooth 4-stop gradient: a stronger dominant-tint at the top
-  // (where the blurred art shows through), fading through a near-white mid
-  // band, and settling into the page background so the bottom controls have
-  // crisp contrast. The extra alpha stop kills the visible "seam" between
-  // the accent wash and the white plate that the 3-stop version produced
-  // when the dominant colour was very saturated.
+  // (where the blurred art shows through), fading through a dark mid band, and
+  // settling into the near-black canvas so the bottom controls have crisp
+  // contrast. The extra alpha stop kills the visible "seam" between the accent
+  // wash and the dark plate when the dominant colour is very saturated.
   const gradientColors: [string, string, string, string] = [
-    `${accentColor}33`,
-    `${accentColor}10`,
-    '#F5F5F7f2',
-    '#F5F5F7',
+    `${accentColor}3D`,
+    `${accentColor}14`,
+    `${colors.bg}F2`,
+    colors.bg,
   ];
-  const gradientLocations: [number, number, number, number] = [0, 0.28, 0.62, 1];
+  const gradientLocations: [number, number, number, number] = [0, 0.3, 0.66, 1];
 
   // ─────────────────────────────────────────────────────────────────────────
 
   return (
-    <View style={styles.root}>
-      <StatusBar barStyle="dark-content" translucent backgroundColor="transparent" />
+    <View style={[styles.root, { backgroundColor: colors.bg }]}>
+      <StatusBar
+        barStyle={isDark ? 'light-content' : 'dark-content'}
+        translucent
+        backgroundColor="transparent"
+      />
 
       {/* ── Blurred full-screen background ─────────────────────────────────── */}
       {artworkUri ? (
@@ -709,18 +794,23 @@ export function NowPlayingScreen() {
             source={{ uri: artworkUri }}
             style={StyleSheet.absoluteFillObject}
             resizeMode="cover"
-            blurRadius={Platform.OS === 'android' ? 18 : 0}
+            blurRadius={Platform.OS === 'android' ? 22 : 0}
           />
           {Platform.OS === 'ios' && (
             <BlurView
-              intensity={80}
-              tint="light"
+              intensity={90}
+              tint={isDark ? 'dark' : 'light'}
               style={StyleSheet.absoluteFillObject}
             />
           )}
+          {/* Darken the blurred art so the cool-white HUD text stays legible. */}
+          <View
+            pointerEvents="none"
+            style={[StyleSheet.absoluteFillObject, { backgroundColor: colors.overlay }]}
+          />
         </>
       ) : (
-        <View style={[StyleSheet.absoluteFillObject, { backgroundColor: '#F5F5F7' }]} />
+        <View style={[StyleSheet.absoluteFillObject, { backgroundColor: colors.bg }]} />
       )}
 
       {/* Soft light gradient overlay — dominant accent fades to background */}
@@ -744,13 +834,13 @@ export function NowPlayingScreen() {
             style={styles.headerButton}
             hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
           >
-            <Ionicons name="chevron-down" size={26} color="#1D1D1F" />
+            <Ionicons name="chevron-down" size={26} color={colors.textPrimary} />
           </TouchableOpacity>
 
           <View style={styles.headerCenter}>
-            <Text style={styles.headerOverline}>Now Playing</Text>
+            <Text style={[styles.headerOverline, { color: colors.textSecondary }]}>Now Playing</Text>
             {activeTrack?.album ? (
-              <Text style={styles.headerAlbum} numberOfLines={1}>
+              <Text style={[styles.headerAlbum, { color: colors.textPrimary }]} numberOfLines={1}>
                 {activeTrack.album}
               </Text>
             ) : null}
@@ -767,16 +857,16 @@ export function NowPlayingScreen() {
               <View>
                 <Animated.View
                   pointerEvents="none"
-                  style={[styles.sleepGlow, { backgroundColor: GOLD }, sleepGlowStyle]}
+                  style={[styles.sleepGlow, { backgroundColor: colors.gold }, sleepGlowStyle]}
                 />
                 <Ionicons
                   name="moon"
                   size={22}
-                  color={sleepState.isActive ? GOLD : '#1D1D1F'}
+                  color={sleepState.isActive ? colors.gold : colors.textPrimary}
                 />
               </View>
               {sleepLabel ? (
-                <Text style={[styles.sleepLabel, { color: GOLD }]}>{sleepLabel}</Text>
+                <Text style={[styles.sleepLabel, { color: colors.gold }]}>{sleepLabel}</Text>
               ) : null}
             </TouchableOpacity>
 
@@ -785,7 +875,7 @@ export function NowPlayingScreen() {
               style={styles.headerButton}
               hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
             >
-              <Ionicons name="ellipsis-horizontal" size={25} color="#1D1D1F" />
+              <Ionicons name="ellipsis-horizontal" size={25} color={colors.textPrimary} />
             </TouchableOpacity>
           </View>
         </View>
@@ -821,27 +911,57 @@ export function NowPlayingScreen() {
         <View style={styles.trackInfo}>
           <View style={styles.titleRow}>
             <View style={styles.titleMarqueeWrap}>
-              <MarqueeText style={styles.trackTitle}>
+              <MarqueeText style={[styles.trackTitle, { color: colors.textPrimary }]}>
                 {activeTrack?.title ?? 'Not Playing'}
               </MarqueeText>
             </View>
-            <TouchableOpacity
-              onPress={handleLike}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              accessibilityRole="button"
-              accessibilityLabel={liked ? 'Unlike song' : 'Like song'}
-            >
-              <Animated.View style={[styles.likeButton, likeStyle]}>
-                <Ionicons
-                  name={liked ? 'heart' : 'heart-outline'}
-                  size={28}
-                  color={liked ? '#FA233B' : '#8E8E93'}
-                />
-              </Animated.View>
-            </TouchableOpacity>
+            {isStream ? (
+              <TouchableOpacity
+                onPress={handleSaveToLibrary}
+                disabled={savingState !== 'idle'}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                accessibilityRole="button"
+                accessibilityLabel={
+                  savingState === 'saved'
+                    ? 'Saved to library'
+                    : savingState === 'saving'
+                      ? 'Saving to library'
+                      : 'Save to library'
+                }
+              >
+                <View style={styles.likeButton}>
+                  <Ionicons
+                    name={
+                      savingState === 'saved'
+                        ? 'checkmark-circle'
+                        : savingState === 'saving'
+                          ? 'arrow-down-circle'
+                          : 'arrow-down-circle-outline'
+                    }
+                    size={28}
+                    color={savingState === 'saved' ? colors.accent : accentColor}
+                  />
+                </View>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity
+                onPress={handleLike}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                accessibilityRole="button"
+                accessibilityLabel={liked ? 'Unlike song' : 'Like song'}
+              >
+                <Animated.View style={[styles.likeButton, likeStyle]}>
+                  <Ionicons
+                    name={liked ? 'heart' : 'heart-outline'}
+                    size={28}
+                    color={liked ? accentColor : colors.textSecondary}
+                  />
+                </Animated.View>
+              </TouchableOpacity>
+            )}
           </View>
 
-          <MarqueeText style={styles.trackArtist}>
+          <MarqueeText style={[styles.trackArtist, { color: colors.textSecondary }]}>
             {activeTrack?.artist ?? '—'}
           </MarqueeText>
         </View>
@@ -907,7 +1027,6 @@ export function NowPlayingScreen() {
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: '#F5F5F7',
   },
   scrollView: {
     flex: 1,
@@ -954,47 +1073,48 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   headerOverline: {
-    fontSize: 13,
+    fontSize: 11,
     fontWeight: '700',
-    letterSpacing: -0.1,
-    color: '#1D1D1F',
+    letterSpacing: 1.2,
+    textTransform: 'uppercase',
   },
   headerAlbum: {
-    fontSize: 11,
-    color: '#6E6E73',
-    marginTop: 1,
+    fontSize: 13,
+    fontWeight: '600',
+    marginTop: 2,
     maxWidth: 180,
     textAlign: 'center',
   },
   // ── Artwork ───────────────────────────────────────────────────────────────
   artworkWrapper: {
     alignItems: 'center',
-    paddingHorizontal: 32,
-    paddingTop: 8,
-    paddingBottom: 22,
+    paddingHorizontal: 28,
+    paddingTop: 10,
+    paddingBottom: 26,
   },
   artworkShadow: {
-    borderRadius: 22,
+    borderRadius: 20,
+    // Soft, deep elevation — no harsh black drop. Reads as floating glass.
     ...Platform.select({
       ios: {
         shadowColor: '#000',
-        shadowOffset: { width: 0, height: 16 },
-        shadowOpacity: 0.22,
-        shadowRadius: 30,
+        shadowOffset: { width: 0, height: 18 },
+        shadowOpacity: 0.45,
+        shadowRadius: 36,
       },
-      android: { elevation: 24 },
+      android: { elevation: 20 },
     }),
   },
   artworkFadeBox: {
     width: ARTWORK_SIZE,
     height: ARTWORK_SIZE,
-    borderRadius: 22,
+    borderRadius: 20,
     overflow: 'hidden',
   },
   artwork: {
     width: ARTWORK_SIZE,
     height: ARTWORK_SIZE,
-    borderRadius: 22,
+    borderRadius: 20,
   },
   artworkPlaceholder: {
     justifyContent: 'center',
@@ -1027,7 +1147,6 @@ const styles = StyleSheet.create({
   trackTitle: {
     fontSize: 22,
     fontWeight: '800',
-    color: '#1D1D1F',
     letterSpacing: -0.7,
   },
   likeButton: {
@@ -1040,7 +1159,6 @@ const styles = StyleSheet.create({
   trackArtist: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#6E6E73',
   },
 
   // ── Progress ──────────────────────────────────────────────────────────────
@@ -1057,9 +1175,9 @@ const styles = StyleSheet.create({
   },
   morphRing: {
     position: 'absolute',
-    width: 92,
-    height: 92,
-    borderRadius: 46,
+    width: 96,
+    height: 96,
+    borderRadius: 48,
     borderWidth: 2,
     alignSelf: 'center',
     top: -13,
@@ -1107,7 +1225,6 @@ const styles = StyleSheet.create({
   },
   queueEmptyText: {
     fontSize: 14,
-    color: '#8E8E93',
   },
   queueItem: {
     flexDirection: 'row',
@@ -1115,15 +1232,13 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     gap: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(60,60,67,0.10)',
   },
   queueArt: {
     width: 44,
     height: 44,
-    borderRadius: 6,
+    borderRadius: 8,
   },
   queueArtPlaceholder: {
-    backgroundColor: '#FFFFFF',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -1134,15 +1249,12 @@ const styles = StyleSheet.create({
   queueTitle: {
     fontSize: 14,
     fontWeight: '500',
-    color: '#1D1D1F',
   },
   queueArtist: {
     fontSize: 12,
-    color: '#6E6E73',
   },
   queueIndex: {
     fontSize: 13,
-    color: '#8E8E93',
     fontWeight: '500',
     minWidth: 20,
     textAlign: 'right',

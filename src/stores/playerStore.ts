@@ -1,9 +1,24 @@
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { MMKV } from 'react-native-mmkv';
-import type Track from '@/db/models/Track';
 
 type RepeatMode = 'off' | 'track' | 'queue';
+
+/**
+ * Lightweight snapshot of the currently-playing track, populated from RNTP's
+ * `PlaybackActiveTrackChanged` event. This is intentionally NOT the WatermelonDB
+ * `Track` model — streamed (online) tracks have no DB row, so we mirror only the
+ * RNTP-visible fields. Consumers outside the player (e.g. the recommendation
+ * engine) can read `currentTrack` without importing RNTP.
+ */
+export interface CurrentTrackInfo {
+  /** RNTP track id — a DB UUID for library tracks or `stream:<id>` for streams. */
+  id: string;
+  title: string;
+  artist: string;
+  album?: string;
+  artwork?: string;
+}
 
 // ── MMKV persistence ────────────────────────────────────────────────────────
 // Repeat mode + shuffle survive cold starts — losing them every launch was a
@@ -46,13 +61,13 @@ function persist(state: PersistedPlayerState): void {
 // ── Store ──────────────────────────────────────────────────────────────────
 
 interface PlayerStore {
-  currentTrack: Track | null;
+  currentTrack: CurrentTrackInfo | null;
   isPlaying: boolean;
   repeatMode: RepeatMode;
   shuffleEnabled: boolean;
   volume: number; // 0.0 – 1.0
 
-  setCurrentTrack(track: Track | null): void;
+  setCurrentTrack(track: CurrentTrackInfo | null): void;
   setIsPlaying(playing: boolean): void;
   setRepeatMode(mode: RepeatMode): void;
   toggleShuffle(): void;

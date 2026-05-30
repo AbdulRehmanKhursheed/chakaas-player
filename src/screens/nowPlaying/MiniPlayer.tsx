@@ -21,14 +21,16 @@ import Animated, {
 } from 'react-native-reanimated';
 import { PanGestureHandler } from 'react-native-gesture-handler';
 import { LinearGradient } from 'expo-linear-gradient';
+import { BlurView } from 'expo-blur';
 import { useNavigation } from '@react-navigation/native';
 import TrackPlayer, { useProgress } from 'react-native-track-player';
 import * as Haptics from 'expo-haptics';
 import { usePlayer, useStableActiveTrack } from '@/features/player/usePlayer';
 import type { RootStackNavigationProp } from '@/types/navigation';
 import { TrackArtwork } from '@/components/track/TrackArtwork';
-import { useColorTheme, isDarkOrGrey, GOLD } from '@/features/player/ColorTheme';
+import { useColorTheme, isDarkOrGrey } from '@/features/player/ColorTheme';
 import { MarqueeText } from '@/components/ui/MarqueeText';
+import { useTheme } from '@/theme';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -42,27 +44,11 @@ const SPRING_CONFIG = {
   mass: 0.8,
 };
 
-/**
- * Lighten a hex colour toward white. Used to soften the dominant album
- * colour for a subtle tint over a white base.
- */
-function lighten(hex: string, ratio: number): string {
-  const clean = hex.replace('#', '');
-  if (clean.length !== 6) return hex;
-  const r = parseInt(clean.slice(0, 2), 16);
-  const g = parseInt(clean.slice(2, 4), 16);
-  const b = parseInt(clean.slice(4, 6), 16);
-  const blend = (c: number) =>
-    Math.round(c + (255 - c) * ratio)
-      .toString(16)
-      .padStart(2, '0');
-  return `#${blend(r)}${blend(g)}${blend(b)}`;
-}
-
 // ─── Main Component ──────────────────────────────────────────────────────────
 
 export function MiniPlayer() {
   const navigation = useNavigation<RootStackNavigationProp<'NowPlaying'>>();
+  const { colors, isDark } = useTheme();
   // Stable subscription — does NOT tear down on each useProgress tick, so
   // PlaybackActiveTrackChanged events fired mid-render are never dropped.
   // Fixes the "MiniPlayer stuck on previous track while Library highlights
@@ -71,14 +57,13 @@ export function MiniPlayer() {
   const progress = useProgress(250);
   const { isPlaying, togglePlayPause, skipToNext, skipToPrevious } = usePlayer();
 
-  // Themed colours from the active track's artwork — fall back to gold
-  // when the dominant is too dark / grey to read well.
+  // Themed colours from the active track's artwork — fall back to the cyan
+  // arc-reactor accent when the dominant is too dark / grey to read well.
   const themeColors = useColorTheme((s) => s.colors);
   const accent =
     !themeColors.dominant || isDarkOrGrey(themeColors.dominant)
-      ? GOLD
+      ? colors.accent
       : themeColors.dominant;
-  const tintBackground = lighten(accent, 0.78);
 
   // Entrance animation — slide up from below the tab bar
   const translateY = useSharedValue(MINI_PLAYER_HEIGHT + 20);
@@ -240,13 +225,30 @@ export function MiniPlayer() {
       <Animated.View
         style={[
           styles.container,
-          // Subtle (~30%) album-color tint over the white base.
-          { backgroundColor: tintBackground },
+          { borderColor: colors.borderAccent },
           containerAnimStyle,
         ]}
       >
+        {/* Dark-glass base + faint album-accent wash */}
+        <BlurView
+          intensity={isDark ? 40 : 60}
+          tint={isDark ? 'dark' : 'light'}
+          style={StyleSheet.absoluteFill}
+        />
+        <View
+          pointerEvents="none"
+          style={[StyleSheet.absoluteFill, { backgroundColor: colors.bgElevated, opacity: isDark ? 0.82 : 0.9 }]}
+        />
+        <LinearGradient
+          pointerEvents="none"
+          colors={[`${accent}1F`, `${accent}00`]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={StyleSheet.absoluteFill}
+        />
+
         {/* Themed progress bar — sits flush at the top edge */}
-        <View style={styles.progressTrack}>
+        <View style={[styles.progressTrack, { backgroundColor: colors.bgRaised }]}>
           <Animated.View
             style={[styles.progressFill, { backgroundColor: accent }, progressBarStyle]}
           />
@@ -273,10 +275,10 @@ export function MiniPlayer() {
 
           {/* Track info */}
           <View style={styles.info}>
-            <MarqueeText style={styles.title}>
+            <MarqueeText style={[styles.title, { color: colors.textPrimary }]}>
               {activeTrack.title ?? 'Unknown Title'}
             </MarqueeText>
-            <Text style={styles.artist} numberOfLines={1}>
+            <Text style={[styles.artist, { color: colors.textSecondary }]} numberOfLines={1}>
               {activeTrack.artist ?? 'Unknown Artist'}
             </Text>
           </View>
@@ -307,7 +309,7 @@ export function MiniPlayer() {
               accessibilityLabel="Skip to next song"
               accessibilityRole="button"
             >
-              <Ionicons name="play-skip-forward" size={22} color="#3A3A3C" />
+              <Ionicons name="play-skip-forward" size={22} color={colors.textPrimary} />
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -317,7 +319,7 @@ export function MiniPlayer() {
               accessibilityLabel="Stop playback and close mini player"
               accessibilityRole="button"
             >
-              <Ionicons name="close" size={20} color="#8E8E93" />
+              <Ionicons name="close" size={20} color={colors.textTertiary} />
             </TouchableOpacity>
           </View>
         </Pressable>
@@ -331,21 +333,19 @@ export function MiniPlayer() {
 const styles = StyleSheet.create({
   container: {
     height: MINI_PLAYER_HEIGHT,
-    backgroundColor: '#FFFFFF',
     // Round only the top corners — bottom edge is flush against the tab bar.
-    borderTopLeftRadius: 22,
-    borderTopRightRadius: 22,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
     marginHorizontal: 16,
     marginBottom: 0,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(60,60,67,0.12)',
     overflow: 'hidden',
     ...Platform.select({
       ios: {
         shadowColor: '#000000',
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.12,
-        shadowRadius: 18,
+        shadowOffset: { width: 0, height: 6 },
+        shadowOpacity: 0.35,
+        shadowRadius: 16,
       },
       android: { elevation: 12 },
     }),
@@ -356,11 +356,10 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     height: 2,
-    backgroundColor: '#E5E5EA',
+    zIndex: 2,
   },
   progressFill: {
     height: 2,
-    backgroundColor: '#FA233B',
   },
   innerRow: {
     flex: 1,
@@ -369,6 +368,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingTop: 2, // offset for the 2px progress bar
     gap: 12,
+    zIndex: 1,
   },
   artworkWrap: {
     width: 48,
@@ -389,13 +389,11 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#1D1D1F',
     letterSpacing: -0.1,
   },
   artist: {
     fontSize: 12,
     fontWeight: '400',
-    color: '#6E6E73',
   },
   controls: {
     flexDirection: 'row',

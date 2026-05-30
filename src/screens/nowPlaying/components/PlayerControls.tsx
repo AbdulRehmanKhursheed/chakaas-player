@@ -25,7 +25,9 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
+import { LinearGradient } from 'expo-linear-gradient';
 import type { RepeatModeKey } from '@/features/player/usePlayer';
+import { useTheme } from '@/theme';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -52,12 +54,14 @@ function PlayButton({
   isPlaying,
   isLoading,
   onPress,
-  accentColor,
+  glowColor,
+  gradientColors,
 }: {
   isPlaying: boolean;
   isLoading?: boolean;
   onPress: () => void;
-  accentColor: string;
+  glowColor: string;
+  gradientColors: readonly [string, string, ...string[]];
 }) {
   const scale = useSharedValue(1);
 
@@ -75,23 +79,27 @@ function PlayButton({
 
   return (
     <TouchableOpacity onPress={handlePress} activeOpacity={1}>
+      {/* Arc-reactor glow ring behind the FAB */}
       <Animated.View
-        style={[
-          styles.playCircle,
-          { backgroundColor: accentColor },
-          animStyle,
-        ]}
+        style={[styles.playCircle, { shadowColor: glowColor }, animStyle]}
       >
-        {isLoading ? (
-          <ActivityIndicator size="small" color="#FFFFFF" />
-        ) : (
-          <Ionicons
-            name={isPlaying ? 'pause' : 'play'}
-            size={31}
-            color="#FFFFFF"
-            style={!isPlaying ? styles.playIconNudge : undefined}
-          />
-        )}
+        <LinearGradient
+          colors={gradientColors}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.playGradient}
+        >
+          {isLoading ? (
+            <ActivityIndicator size="small" color="#07090D" />
+          ) : (
+            <Ionicons
+              name={isPlaying ? 'pause' : 'play'}
+              size={31}
+              color="#07090D"
+              style={!isPlaying ? styles.playIconNudge : undefined}
+            />
+          )}
+        </LinearGradient>
       </Animated.View>
     </TouchableOpacity>
   );
@@ -102,9 +110,11 @@ function PlayButton({
 function SkipButton({
   direction,
   onPress,
+  color,
 }: {
   direction: 'prev' | 'next';
   onPress: () => void;
+  color: string;
 }) {
   const scale = useSharedValue(1);
 
@@ -126,7 +136,7 @@ function SkipButton({
         <Ionicons
           name={direction === 'prev' ? 'play-skip-back' : 'play-skip-forward'}
           size={30}
-          color="#1D1D1F"
+          color={color}
         />
       </Animated.View>
     </TouchableOpacity>
@@ -141,6 +151,9 @@ function IconButton({
   badge,
   onPress,
   accentColor,
+  inactiveColor,
+  disabledColor,
+  badgeColor,
   disabled = false,
 }: {
   icon: React.ComponentProps<typeof Ionicons>['name'];
@@ -148,6 +161,9 @@ function IconButton({
   badge?: string;
   onPress: () => void;
   accentColor: string;
+  inactiveColor: string;
+  disabledColor: string;
+  badgeColor: string;
   disabled?: boolean;
 }) {
   const scale = useSharedValue(1);
@@ -186,13 +202,13 @@ function IconButton({
         <Ionicons
           name={icon}
           size={22}
-          color={disabled ? '#C7C7CC' : active ? accentColor : '#8E8E93'}
+          color={disabled ? disabledColor : active ? accentColor : inactiveColor}
         />
         <Animated.View
           style={[styles.activeDot, { backgroundColor: accentColor }, dotStyle]}
         >
           {badge ? (
-            <View style={styles.badgeOne} />
+            <View style={[styles.badgeOne, { backgroundColor: badgeColor }]} />
           ) : null}
         </Animated.View>
       </Animated.View>
@@ -212,10 +228,16 @@ function PlayerControlsImpl({
   onRepeat,
   shuffleEnabled,
   onShuffle,
-  accentColor = '#FA233B',
+  accentColor,
 }: PlayerControlsProps) {
+  const { colors } = useTheme();
+  const accent = accentColor ?? colors.accent;
   const repeatBadge = repeatMode === 'track' ? '1' : undefined;
   const repeatActive = repeatMode !== 'off';
+
+  // Arc-reactor FAB: a glowing two-stop gradient driven by the (album-derived)
+  // accent so it still tints per-track, settling into the brand cyan→blue feel.
+  const playGradient: readonly [string, string] = [accent, colors.brandGradient[1]];
 
   return (
     <View style={styles.row}>
@@ -224,23 +246,27 @@ function PlayerControlsImpl({
         icon="shuffle"
         active={shuffleEnabled && false}
         onPress={onShuffle}
-        accentColor={accentColor}
+        accentColor={accent}
+        inactiveColor={colors.textSecondary}
+        disabledColor={colors.textTertiary}
+        badgeColor={colors.bg}
         disabled
       />
 
       {/* Previous */}
-      <SkipButton direction="prev" onPress={onPrevious} />
+      <SkipButton direction="prev" onPress={onPrevious} color={colors.textPrimary} />
 
       {/* Play / Pause */}
       <PlayButton
         isPlaying={isPlaying}
         isLoading={isLoading}
         onPress={onPlayPause}
-        accentColor={accentColor}
+        glowColor={accent}
+        gradientColors={playGradient}
       />
 
       {/* Next */}
-      <SkipButton direction="next" onPress={onNext} />
+      <SkipButton direction="next" onPress={onNext} color={colors.textPrimary} />
 
       {/* Repeat */}
       <IconButton
@@ -248,7 +274,10 @@ function PlayerControlsImpl({
         active={repeatActive}
         badge={repeatBadge}
         onPress={onRepeat}
-        accentColor={accentColor}
+        accentColor={accent}
+        inactiveColor={colors.textSecondary}
+        disabledColor={colors.textTertiary}
+        badgeColor={colors.bg}
       />
     </View>
   );
@@ -269,22 +298,26 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
   },
 
-  // ── Play button ─────────────────────────────────────────────────────────
+  // ── Play button — glowing arc-reactor FAB ─────────────────────────────────
   playCircle: {
-    width: 66,
-    height: 66,
-    borderRadius: 33,
-    justifyContent: 'center',
-    alignItems: 'center',
+    width: 70,
+    height: 70,
+    borderRadius: 35,
     ...Platform.select({
       ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 6 },
-        shadowOpacity: 0.22,
-        shadowRadius: 18,
+        shadowOffset: { width: 0, height: 0 },
+        shadowOpacity: 0.85,
+        shadowRadius: 22,
       },
-      android: { elevation: 14 },
+      android: { elevation: 16 },
     }),
+  },
+  playGradient: {
+    width: 70,
+    height: 70,
+    borderRadius: 35,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   playIconNudge: {
     marginLeft: 2,
@@ -319,6 +352,5 @@ const styles = StyleSheet.create({
     width: 5,
     height: 5,
     borderRadius: 2.5,
-    backgroundColor: '#FFFFFF',
   },
 });

@@ -31,6 +31,7 @@ import {
 import TrackPlayer from 'react-native-track-player';
 import * as Haptics from 'expo-haptics';
 import { usePlayerStore } from '@/stores/playerStore';
+import { useTheme } from '@/theme';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -47,7 +48,9 @@ interface VolumeSliderProps {
 
 // ─── Component ───────────────────────────────────────────────────────────────
 
-export function VolumeSlider({ accentColor = '#FA233B' }: VolumeSliderProps) {
+export function VolumeSlider({ accentColor }: VolumeSliderProps) {
+  const { colors } = useTheme();
+  const accent = accentColor ?? colors.accent;
   const storeVolume = usePlayerStore((s) => s.volume);
   const setStoreVolume = usePlayerStore((s) => s.setVolume);
 
@@ -147,7 +150,7 @@ export function VolumeSlider({ accentColor = '#FA233B' }: VolumeSliderProps) {
 
   return (
     <View style={styles.row}>
-      <Ionicons name="volume-mute" size={18} color="#8E8E93" />
+      <Ionicons name="volume-mute" size={18} color={colors.textSecondary} />
 
       {/* Slider */}
       <View style={styles.sliderFlex}>
@@ -160,12 +163,16 @@ export function VolumeSlider({ accentColor = '#FA233B' }: VolumeSliderProps) {
                   trackWidth.value = e.nativeEvent.layout.width;
                 }}
               >
-                <View style={styles.trackBg} />
+                <View style={[styles.trackBg, { backgroundColor: colors.bgRaised }]} />
                 <Animated.View
-                  style={[styles.trackFilled, { backgroundColor: accentColor }, filledBarStyle]}
+                  style={[styles.trackFilled, { backgroundColor: accent }, filledBarStyle]}
                 />
                 <Animated.View
-                  style={[styles.thumb, thumbStyle]}
+                  style={[
+                    styles.thumb,
+                    { backgroundColor: accent, borderColor: accent, shadowColor: accent },
+                    thumbStyle,
+                  ]}
                   pointerEvents="none"
                 />
               </Animated.View>
@@ -174,7 +181,7 @@ export function VolumeSlider({ accentColor = '#FA233B' }: VolumeSliderProps) {
         </TapGestureHandler>
       </View>
 
-      <Ionicons name="volume-high" size={18} color="#8E8E93" />
+      <Ionicons name="volume-high" size={18} color={colors.textSecondary} />
     </View>
   );
 }
@@ -201,7 +208,6 @@ const styles = StyleSheet.create({
     right: 0,
     height: TRACK_HEIGHT,
     borderRadius: TRACK_HEIGHT / 2,
-    backgroundColor: '#E5E5EA',
   },
   trackFilled: {
     position: 'absolute',
@@ -214,18 +220,15 @@ const styles = StyleSheet.create({
     width: THUMB_SIZE,
     height: THUMB_SIZE,
     borderRadius: THUMB_SIZE / 2,
-    backgroundColor: '#FFFFFF',
     borderWidth: 2,
-    borderColor: '#FFFFFF',
     top: (THUMB_SIZE + 16 - THUMB_SIZE) / 2,
     ...Platform.select({
       ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.18,
-        shadowRadius: 5,
+        shadowOffset: { width: 0, height: 0 },
+        shadowOpacity: 0.9,
+        shadowRadius: 7,
       },
-      android: { elevation: 4 },
+      android: { elevation: 6 },
     }),
   },
 });

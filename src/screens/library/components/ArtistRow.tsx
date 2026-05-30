@@ -4,9 +4,9 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
-  Platform,
 } from 'react-native';
 import FastImage from 'react-native-fast-image';
+import { useTheme } from '@/theme';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -24,17 +24,17 @@ interface ArtistRowProps {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
- * Returns a deterministic background color for the initial-letter placeholder.
- * Uses the same palette hashing approach as TrackArtwork so the app feels
- * visually consistent.
+ * Returns a deterministic background tint for the initial-letter placeholder.
+ * Uses the same hashing approach as TrackArtwork so the app feels visually
+ * consistent — recoloured to subtle cool HUD tints on the dark canvas.
  */
 const PLACEHOLDER_COLORS = [
-  '#FFF1F3',
-  '#EAF2FF',
-  '#F7EFFB',
-  '#F8F5EC',
-  '#EEF8F1',
-  '#F2F2F7',
+  'rgba(25,227,255,0.14)',
+  'rgba(10,132,255,0.14)',
+  'rgba(95,240,255,0.12)',
+  'rgba(245,182,66,0.12)',
+  'rgba(52,211,153,0.12)',
+  'rgba(255,255,255,0.06)',
 ];
 
 function getPlaceholderColor(name: string): string {
@@ -57,6 +57,7 @@ function ArtistRowImpl({
   artworkPath,
   onPress,
 }: ArtistRowProps) {
+  const { colors } = useTheme();
   const handlePress = useCallback(() => onPress(artist), [artist, onPress]);
 
   const placeholderColor = getPlaceholderColor(artist);
@@ -66,12 +67,12 @@ function ArtistRowImpl({
     <TouchableOpacity
       activeOpacity={0.75}
       onPress={handlePress}
-      style={styles.container}
+      style={[styles.container, { borderBottomColor: colors.border }]}
       accessibilityLabel={`${artist}, ${trackCount} ${trackCount === 1 ? 'song' : 'songs'}`}
       accessibilityRole="button"
     >
       {/* Left: circular artist photo or initial placeholder */}
-      <View style={styles.avatarWrapper}>
+      <View style={[styles.avatarWrapper, { borderColor: colors.borderAccent }]}>
         {artworkPath ? (
           <FastImage
             source={{
@@ -84,23 +85,23 @@ function ArtistRowImpl({
           />
         ) : (
           <View style={[styles.avatar, styles.avatarPlaceholder, { backgroundColor: placeholderColor }]}>
-            <Text style={styles.avatarInitial}>{initial}</Text>
+            <Text style={[styles.avatarInitial, { color: colors.accent }]}>{initial}</Text>
           </View>
         )}
       </View>
 
       {/* Center: name + song count */}
       <View style={styles.textContainer}>
-        <Text style={styles.artistName} numberOfLines={1}>
+        <Text style={[styles.artistName, { color: colors.textPrimary }]} numberOfLines={1}>
           {artist}
         </Text>
-        <Text style={styles.songCount}>
+        <Text style={[styles.songCount, { color: colors.textSecondary }]}>
           {trackCount} {trackCount === 1 ? 'song' : 'songs'}
         </Text>
       </View>
 
       {/* Right: chevron */}
-      <Text style={styles.chevron}>›</Text>
+      <Text style={[styles.chevron, { color: colors.textTertiary }]}>›</Text>
     </TouchableOpacity>
   );
 }
@@ -132,26 +133,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     gap: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#F2F2F7',
   },
 
-  // Avatar
+  // Avatar — cyan HUD hairline ring, no heavy shadow.
   avatarWrapper: {
     width: AVATAR_SIZE,
     height: AVATAR_SIZE,
     borderRadius: AVATAR_SIZE / 2,
     overflow: 'hidden',
-    borderWidth: 1.5,
-    borderColor: '#D2D2D7',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.08,
-        shadowRadius: 8,
-      },
-      android: { elevation: 3 },
-    }),
+    borderWidth: 1,
   },
   avatar: {
     width: AVATAR_SIZE,
@@ -165,7 +155,6 @@ const styles = StyleSheet.create({
   avatarInitial: {
     fontSize: 18,
     fontWeight: '700',
-    color: '#FA233B',
   },
 
   // Text
@@ -177,19 +166,16 @@ const styles = StyleSheet.create({
   artistName: {
     fontSize: 15,
     fontWeight: '700',
-    color: '#1D1D1F',
     letterSpacing: -0.2,
   },
   songCount: {
     fontSize: 12,
     fontWeight: '400',
-    color: '#6E6E73',
   },
 
   // Chevron
   chevron: {
     fontSize: 22,
-    color: '#8E8E93',
     fontWeight: '300',
     marginRight: 2,
   },

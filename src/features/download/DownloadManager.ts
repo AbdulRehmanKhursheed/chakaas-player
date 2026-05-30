@@ -318,6 +318,20 @@ const NOTIFICATION_MIN_GAP_MS = 250;
 const _lastNotificationStatus = new Map<string, DownloadStatus>();
 
 /**
+ * Per-id throttle for the Zustand STORE write (distinct from the notification
+ * throttle above). With MAX_CONCURRENT=3 workers each firing a progress
+ * callback every ~300 ms, `updateProgress` was previously called on every
+ * native tick — each producing a fresh immer queue array and driving a
+ * re-render storm that crashed the app on scroll. We coalesce store writes
+ * per id: only push when the status changed, at the 0%/100% endpoints, on a
+ * ≥2% delta, or after a ≥200 ms gap. Entries are deleted when an id reaches a
+ * terminal state (or is removed) so the map can't grow unbounded.
+ */
+const _lastStoreProgress = new Map<string, { pct: number; ts: number; status: DownloadStatus }>();
+const STORE_MIN_GAP_MS = 200;
+const STORE_MIN_PCT_DELTA = 2;
+
+/**
  * Serialization mutex for notifee.displayNotification calls.
  * With MAX_CONCURRENT=3 workers each emitting progress every 300ms, two
  * pushProgress calls can pass the wall-clock throttle in the same JS tick
@@ -344,13 +358,38 @@ async function pushProgress(
   queueLength: number,
   status: DownloadStatus,
 ): Promise<void> {
-  useDownloadStore.getState().updateProgress(id, pct, status);
+  const wallNow = Date.now();
+
+  // ── Store-write coalescing ─────────────────────────────────────────────
+  // Gate the Zustand write per id so bulk downloads don't trigger a re-render
+  // storm. Always let status transitions and terminal states (done/error/100)
+  // through immediately; otherwise require a ≥2% delta OR a ≥200 ms gap.
+  const lastStore = _lastStoreProgress.get(id);
+  const isTerminalStatus = status === 'done' || status === 'error';
+  const statusChanged = lastStore === undefined || lastStore.status !== status;
+  const storeGateOk =
+    statusChanged ||
+    isTerminalStatus ||
+    pct === 0 ||
+    pct === 100 ||
+    Math.abs(pct - lastStore.pct) >= STORE_MIN_PCT_DELTA ||
+    wallNow - lastStore.ts >= STORE_MIN_GAP_MS;
+
+  if (storeGateOk) {
+    useDownloadStore.getState().updateProgress(id, pct, status);
+    if (isTerminalStatus || pct === 100) {
+      // Terminal: the worker's finally also clears the per-id maps, but drop
+      // this entry now so a late tick can't re-seed it and leak unbounded.
+      _lastStoreProgress.delete(id);
+    } else {
+      _lastStoreProgress.set(id, { pct, ts: wallNow, status });
+    }
+  }
 
   const lastPct = _lastNotificationProgress.get(id) ?? -10;
   const lastStatus = _lastNotificationStatus.get(id);
   const isStageTransition = lastStatus !== status;
   const isTerminal = pct >= 100;
-  const wallNow = Date.now();
   const wallGapOk = wallNow - _lastNotificationWallMs >= NOTIFICATION_MIN_GAP_MS;
   const pctGapOk = Math.abs(pct - lastPct) >= 5;
 
@@ -358,6 +397,10 @@ async function pushProgress(
 
   _lastNotificationProgress.set(id, pct);
   _lastNotificationStatus.set(id, status);
+  // Set the wall-clock marker BEFORE the awaited notifee call below so two
+  // concurrent workers in the same tick can't both pass the gate (the read
+  // above + this write were previously split by the await, making the
+  // throttle non-atomic and racing notifee's native FG-service state).
   _lastNotificationWallMs = wallNow;
 
   // Chain onto the in-flight native call so we never have two
@@ -811,6 +854,7 @@ class DownloadManagerClass {
     _lastNotificationWallMs = 0;
     _lastNotificationProgress.clear();
     _lastNotificationStatus.clear();
+    _lastStoreProgress.clear();
     try {
       resetErrorNotificationState();
     } catch (err) {
@@ -903,15 +947,19 @@ class DownloadManagerClass {
       if (_cancelAll) return;
 
       const store = useDownloadStore.getState();
-      const next = store.queue.find((item) => item.status === 'queued');
-      if (!next) return;
-
-      // Claim atomically — switch to 'downloading' immediately so other
-      // workers see it as taken. Note: we intentionally do NOT reset
+      // Claim atomically — flip the first 'queued' item to 'downloading'
+      // inside ONE immer producer and get back its id. This closes the
+      // find-then-update gap (two workers could read the same stale snapshot
+      // and both claim the same item). Note: we intentionally do NOT reset
       // `_cancelCurrent` here (it no longer exists). Each pipeline now keys
       // its cancel checks off `_cancelledIds.has(id)` so different items
       // can't share cancellation state.
-      store.updateProgress(next.id, 0, 'downloading');
+      const claimedId = store.claimNextQueued();
+      if (!claimedId) return;
+
+      const next = store.queue.find((item) => item.id === claimedId);
+      if (!next) return;
+
       _activeCount += 1;
 
       const resolved: ResolvedParams = {
@@ -974,6 +1022,9 @@ class DownloadManagerClass {
         _activeFetchTasks.delete(next.id);
         _lastNotificationProgress.delete(next.id);
         _lastNotificationStatus.delete(next.id);
+        // Drop the per-id store-write throttle entry so the coalescing map
+        // can't grow unbounded across a long bulk session.
+        _lastStoreProgress.delete(next.id);
         _activeCount = Math.max(0, _activeCount - 1);
       }
     }

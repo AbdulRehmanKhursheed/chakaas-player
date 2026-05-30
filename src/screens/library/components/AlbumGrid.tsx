@@ -5,12 +5,12 @@ import {
   StyleSheet,
   TouchableOpacity,
   Dimensions,
-  Platform,
 } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
 import FastImage from 'react-native-fast-image';
 import { Ionicons } from '@expo/vector-icons';
 import { normalizeLocalUri } from '@/utils/layout';
+import { useTheme } from '@/theme';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -48,18 +48,22 @@ interface AlbumCardProps {
 }
 
 function AlbumCard({ album, onPress }: AlbumCardProps) {
+  const { colors } = useTheme();
   const handlePress = useCallback(() => onPress(album), [album, onPress]);
 
   return (
     <TouchableOpacity
       activeOpacity={0.8}
       onPress={handlePress}
-      style={styles.card}
+      style={[
+        styles.card,
+        { backgroundColor: colors.bgElevated, borderColor: colors.border },
+      ]}
       accessibilityLabel={`${album.name} by ${album.artist}`}
       accessibilityRole="button"
     >
-      {/* Square artwork */}
-      <View style={styles.artworkContainer}>
+      {/* Square artwork — edge-to-edge */}
+      <View style={[styles.artworkContainer, { backgroundColor: colors.bgRaised }]}>
         {album.artworkPath ? (
           <FastImage
             source={{
@@ -71,21 +75,27 @@ function AlbumCard({ album, onPress }: AlbumCardProps) {
             resizeMode={FastImage.resizeMode.cover}
           />
         ) : (
-          <View style={[styles.artwork, styles.artworkPlaceholder]}>
-            <Ionicons name="musical-notes" size={34} color="#FA233B" />
+          <View
+            style={[
+              styles.artwork,
+              styles.artworkPlaceholder,
+              { backgroundColor: colors.accentMuted },
+            ]}
+          >
+            <Ionicons name="musical-notes" size={34} color={colors.accent} />
           </View>
         )}
       </View>
 
       {/* Text metadata */}
       <View style={styles.textContainer}>
-        <Text style={styles.albumName} numberOfLines={1}>
+        <Text style={[styles.albumName, { color: colors.textPrimary }]} numberOfLines={1}>
           {album.name}
         </Text>
-        <Text style={styles.artistName} numberOfLines={1}>
+        <Text style={[styles.artistName, { color: colors.textSecondary }]} numberOfLines={1}>
           {album.artist}
         </Text>
-        <Text style={styles.trackCount}>
+        <Text style={[styles.trackCount, { color: colors.textTertiary }]}>
           {album.trackCount} {album.trackCount === 1 ? 'song' : 'songs'}
         </Text>
       </View>
@@ -96,6 +106,7 @@ function AlbumCard({ album, onPress }: AlbumCardProps) {
 // ─── Grid Component ───────────────────────────────────────────────────────────
 
 export function AlbumGrid({ albums, onPress, contentBottomPadding = 100 }: AlbumGridProps) {
+  const { colors } = useTheme();
   const renderItem = useCallback(
     ({ item }: { item: AlbumItem }) => (
       <AlbumCard album={item} onPress={onPress} />
@@ -111,9 +122,11 @@ export function AlbumGrid({ albums, onPress, contentBottomPadding = 100 }: Album
   if (albums.length === 0) {
     return (
       <View style={styles.emptyState}>
-        <Ionicons name="albums" size={40} color="#FA233B" />
-        <Text style={styles.emptyTitle}>No albums yet</Text>
-        <Text style={styles.emptySubtitle}>Add music to see your albums</Text>
+        <Ionicons name="albums" size={40} color={colors.accent} />
+        <Text style={[styles.emptyTitle, { color: colors.textPrimary }]}>No albums yet</Text>
+        <Text style={[styles.emptySubtitle, { color: colors.textSecondary }]}>
+          Add music to see your albums
+        </Text>
       </View>
     );
   }
@@ -137,31 +150,19 @@ export function AlbumGrid({ albums, onPress, contentBottomPadding = 100 }: Album
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
-  // Card
+  // Card — soft elevation via hairline + elevated surface (no heavy shadow).
   card: {
     flex: 1,
     margin: GAP / 2,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 10,
+    borderRadius: 16,
     overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: '#F2F2F7',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000000',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.5,
-        shadowRadius: 8,
-      },
-      android: { elevation: 4 },
-    }),
+    borderWidth: StyleSheet.hairlineWidth,
   },
 
-  // Artwork — always square
+  // Artwork — always square, edge-to-edge
   artworkContainer: {
     width: '100%',
     aspectRatio: 1,
-    backgroundColor: '#F2F2F7',
   },
   artwork: {
     width: '100%',
@@ -170,7 +171,6 @@ const styles = StyleSheet.create({
   artworkPlaceholder: {
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#FFF1F3',
   },
 
   // Text area below artwork
@@ -183,18 +183,15 @@ const styles = StyleSheet.create({
   albumName: {
     fontSize: 13,
     fontWeight: '600',
-    color: '#1D1D1F',
     letterSpacing: -0.1,
   },
   artistName: {
     fontSize: 11,
     fontWeight: '400',
-    color: '#6E6E73',
   },
   trackCount: {
     fontSize: 10,
     fontWeight: '500',
-    color: '#8E8E93',
     marginTop: 2,
   },
 
@@ -209,11 +206,9 @@ const styles = StyleSheet.create({
   emptyTitle: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#8E8E93',
   },
   emptySubtitle: {
     fontSize: 13,
     fontWeight: '400',
-    color: '#C7C7CC',
   },
 });

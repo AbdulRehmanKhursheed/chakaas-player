@@ -13,6 +13,7 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
+import { useTheme } from '@/theme';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -25,7 +26,7 @@ interface IconButtonProps {
   onPress: () => void;
   /** Outer container size in px. Default 44 */
   size?: number;
-  /** Icon / tint colour. Defaults to #1D1D1F */
+  /** Icon / tint colour. Defaults to the theme's primary text colour. */
   color?: string;
   /** Background colour. Defaults to transparent for ghost. */
   backgroundColor?: string;
@@ -69,7 +70,7 @@ export function IconButton({
   icon,
   onPress,
   size = 44,
-  color = '#1D1D1F',
+  color,
   backgroundColor,
   variant = 'circular',
   hapticStyle = 'light',
@@ -78,6 +79,8 @@ export function IconButton({
   style,
   accessibilityLabel,
 }: IconButtonProps) {
+  const { colors } = useTheme();
+  const tint = color ?? colors.textPrimary;
   const scale = useSharedValue(1);
   const opacity = useSharedValue(1);
 
@@ -106,15 +109,15 @@ export function IconButton({
     opacity: opacity.value,
   }));
 
-  const borderRadius = variant === 'circular' ? size / 2 : variant === 'square' ? 10 : 0;
-  const bgColor = backgroundColor ?? (variant === 'ghost' ? 'transparent' : 'rgba(60,60,67,0.08)');
+  const borderRadius = variant === 'circular' ? size / 2 : variant === 'square' ? 12 : 0;
+  const bgColor = backgroundColor ?? (variant === 'ghost' ? 'transparent' : colors.bgRaised);
 
   const iconEl = typeof icon === 'string'
     ? (
       <Animated.Text
         style={{
           fontSize: size * 0.45,
-          color,
+          color: tint,
           lineHeight: size * 0.55,
           includeFontPadding: false,
           textAlignVertical: 'center',
@@ -164,10 +167,11 @@ export function IconButton({
 export function AccentIconButton(
   props: Omit<IconButtonProps, 'color' | 'backgroundColor'>,
 ) {
+  const { colors } = useTheme();
   return (
     <IconButton
-      color="#FA233B"
-      backgroundColor="rgba(250,35,59,0.10)"
+      color={colors.accent}
+      backgroundColor={colors.accentMuted}
       {...props}
     />
   );

@@ -11,6 +11,7 @@ import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
 import type { Track } from '@/types/track';
 import { BottomSheet } from '@/components/ui/BottomSheet';
+import { useTheme } from '@/theme';
 import { TrackArtwork } from './TrackArtwork';
 
 // ─── Option definition ───────────────────────────────────────────────────────
@@ -56,6 +57,9 @@ function MenuItem({
   destructive = false,
   accent = false,
 }: Omit<MenuOption, 'id' | 'hidden'>) {
+  const { colors } = useTheme();
+  const iconColor = destructive ? colors.danger : accent ? colors.accent : colors.textSecondary;
+  const labelColor = destructive ? colors.danger : accent ? colors.accent : colors.textPrimary;
   return (
     <TouchableOpacity
       style={styles.menuItem}
@@ -64,18 +68,10 @@ function MenuItem({
       accessibilityRole="button"
       accessibilityLabel={label}
     >
-      <View style={styles.menuItemIconWrap}>
-        <Ionicons
-          name={icon}
-          size={20}
-          color={destructive ? '#FF3B30' : accent ? '#FA233B' : '#6E6E73'}
-        />
+      <View style={[styles.menuItemIconWrap, { backgroundColor: colors.bgRaised }]}>
+        <Ionicons name={icon} size={20} color={iconColor} />
       </View>
-      <Text style={[
-        styles.menuItemLabel,
-        destructive && styles.destructiveLabel,
-        accent && styles.accentLabel,
-      ]}>
+      <Text style={[styles.menuItemLabel, { color: labelColor }]}>
         {label}
       </Text>
     </TouchableOpacity>
@@ -96,6 +92,7 @@ export function TrackContextMenu({
   onViewAlbum,
   onDelete,
 }: TrackContextMenuProps) {
+  const { colors } = useTheme();
   const withClose = useCallback(
     (fn?: () => void) => () => {
       try {
@@ -174,7 +171,6 @@ export function TrackContextMenu({
       isVisible={isVisible}
       onClose={onClose}
       snapPoint={Math.min(visibleOptions.length * 56 + 140, 520)}
-      backgroundColor="#F5F5F7"
     >
       {/* Track identity header */}
       <View style={styles.header}>
@@ -182,20 +178,20 @@ export function TrackContextMenu({
           uri={track.artwork_path}
           blurhash={null}
           size={48}
-          borderRadius={8}
+          borderRadius={10}
         />
         <View style={styles.headerInfo}>
-          <Text style={styles.headerTitle} numberOfLines={1}>
+          <Text style={[styles.headerTitle, { color: colors.textPrimary }]} numberOfLines={1}>
             {track.title}
           </Text>
-          <Text style={styles.headerMeta} numberOfLines={1}>
+          <Text style={[styles.headerMeta, { color: colors.textSecondary }]} numberOfLines={1}>
             {track.artist}
             {track.album ? ` · ${track.album}` : ''}
           </Text>
         </View>
       </View>
 
-      <View style={styles.divider} />
+      <View style={[styles.divider, { backgroundColor: colors.border }]} />
 
       {/* Menu options */}
       <ScrollView
@@ -214,7 +210,7 @@ export function TrackContextMenu({
             />
             {/* Separator — not after the last item */}
             {index < visibleOptions.length - 1 && (
-              <View style={styles.separator} />
+              <View style={[styles.separator, { backgroundColor: colors.border }]} />
             )}
           </React.Fragment>
         ))}
@@ -242,18 +238,15 @@ const styles = StyleSheet.create({
   headerTitle: {
     fontSize: 16,
     fontWeight: '700',
-    color: '#1D1D1F',
     letterSpacing: -0.2,
   },
   headerMeta: {
     fontSize: 13,
     fontWeight: '500',
-    color: '#6E6E73',
     marginTop: 3,
   },
   divider: {
     height: StyleSheet.hairlineWidth,
-    backgroundColor: 'rgba(60,60,67,0.16)',
     marginHorizontal: 20,
   },
   optionsList: {
@@ -273,23 +266,14 @@ const styles = StyleSheet.create({
     borderRadius: 17,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#FFFFFF',
   },
   menuItemLabel: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#1D1D1F',
     letterSpacing: -0.2,
-  },
-  accentLabel: {
-    color: '#FA233B',
-  },
-  destructiveLabel: {
-    color: '#FF3B30',
   },
   separator: {
     height: StyleSheet.hairlineWidth,
-    backgroundColor: 'rgba(60,60,67,0.14)',
     marginLeft: 74,
     marginRight: 20,
   },

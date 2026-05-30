@@ -31,8 +31,9 @@ const lightTheme: Theme = {
 };
 
 // Convenience export for cases where the theme is needed outside React
-// (e.g. StyleSheet.create calls at module scope)
-export const theme = lightTheme;
+// (e.g. StyleSheet.create calls at module scope). Defaults to DARK so
+// module-scope styles render the Arc Reactor look out of the box.
+export const theme = darkTheme;
 
 export function useTheme(): Theme {
   const colorScheme = useUIStore((state) => state.colorScheme);
@@ -40,8 +41,8 @@ export function useTheme(): Theme {
 }
 
 // Re-export building blocks for consumers that need individual tokens
-export { darkColors, lightColors } from './colors';
-export type { Colors, } from './colors';
+export { darkColors, lightColors, palette } from './colors';
+export type { Colors, SemanticColors } from './colors';
 export { textStyles, fontSizes, fontWeights, lineHeights, letterSpacings } from './typography';
 export type { TextStyles, TextStyleKey } from './typography';
 export { spacing, borderRadius, darkShadows, lightShadows } from './spacing';

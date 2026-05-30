@@ -22,8 +22,9 @@ import { useQuery } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { useRecentlyPlayed } from '@/hooks/useTrackDB';
 import { useSafeTracks } from '@/hooks/useSafeTracks';
-import { usePlayerQueue } from '@/features/player/useQueue';
+import { usePlayer } from '@/features/player/usePlayer';
 import { useDownloadStore } from '@/stores/downloadStore';
+import { useTheme } from '@/theme';
 import type { RootStackNavigationProp } from '@/types/navigation';
 import type { Track } from '@/db/models/Track';
 import { modelToTrack, modelsToTracks } from '@/utils/trackMapper';
@@ -44,6 +45,9 @@ import * as Haptics from 'expo-haptics';
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const SEVEN_DAYS_AGO = () => Math.floor(Date.now() / 1000) - 7 * 24 * 60 * 60;
+
+// Done/success green for the "added to downloads" checkmark.
+const SUCCESS_GREEN = '#34D399';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -67,27 +71,28 @@ interface SectionHeaderProps {
 }
 
 function SectionHeader({ title, onSeeAll, onRefresh, refreshing }: SectionHeaderProps) {
+  const { colors } = useTheme();
   return (
     <View style={styles.sectionHeader}>
-      <Text style={styles.sectionTitle}>{title}</Text>
+      <Text style={[styles.sectionTitle, { color: colors.textPrimary }]}>{title}</Text>
       <View style={styles.sectionHeaderRight}>
         {onRefresh && (
           <TouchableOpacity
             onPress={onRefresh}
             hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
             disabled={refreshing}
-            style={styles.refreshBtn}
+            style={[styles.refreshBtn, { backgroundColor: colors.accentMuted }]}
           >
             {refreshing ? (
-              <ActivityIndicator size="small" color="#FA233B" />
+              <ActivityIndicator size="small" color={colors.accent} />
             ) : (
-              <Ionicons name="refresh" size={18} color="#FA233B" />
+              <Ionicons name="refresh" size={18} color={colors.accent} />
             )}
           </TouchableOpacity>
         )}
         {onSeeAll && (
           <TouchableOpacity onPress={onSeeAll} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-            <Text style={styles.seeAll}>See All</Text>
+            <Text style={[styles.seeAll, { color: colors.accent }]}>See All</Text>
           </TouchableOpacity>
         )}
       </View>
@@ -103,6 +108,7 @@ interface TrackCardProps {
 }
 
 function TrackCard({ track, onPress }: TrackCardProps) {
+  const { colors } = useTheme();
   const handlePress = useCallback(() => onPress(track), [track, onPress]);
   return (
     <HapticPressable
@@ -123,9 +129,9 @@ function TrackCard({ track, onPress }: TrackCardProps) {
           160-px card width frequently, and the auto-scroll matches Apple
           Music's "Made For You" tile behaviour. */}
       <View style={styles.trackCardTitleWrap}>
-        <MarqueeText style={styles.trackCardTitle}>{track.title}</MarqueeText>
+        <MarqueeText style={[styles.trackCardTitle, { color: colors.textPrimary }]}>{track.title}</MarqueeText>
       </View>
-      <Text style={styles.trackCardArtist} numberOfLines={1}>
+      <Text style={[styles.trackCardArtist, { color: colors.textSecondary }]} numberOfLines={1}>
         {track.artist}
       </Text>
     </HapticPressable>
@@ -141,6 +147,7 @@ interface DiscoverRowProps {
 }
 
 function DiscoverRow({ item, index, onDismiss }: DiscoverRowProps) {
+  const { colors } = useTheme();
   const [enqueuing, setEnqueuing] = useState(false);
   const [enqueued, setEnqueued] = useState(false);
 
@@ -174,13 +181,13 @@ function DiscoverRow({ item, index, onDismiss }: DiscoverRowProps) {
 
   return (
     <View style={styles.verticalRow}>
-      <Text style={styles.verticalIndex}>{index + 1}</Text>
+      <Text style={[styles.verticalIndex, { color: colors.textTertiary }]}>{index + 1}</Text>
       <TrackArtwork uri={item.thumbnail} blurhash={null} size={50} borderRadius={8} />
       <View style={styles.verticalMeta}>
-        <Text style={styles.verticalTitle} numberOfLines={1}>
+        <Text style={[styles.verticalTitle, { color: colors.textPrimary }]} numberOfLines={1}>
           {item.title}
         </Text>
-        <Text style={styles.verticalArtist} numberOfLines={1}>
+        <Text style={[styles.verticalArtist, { color: colors.textSecondary }]} numberOfLines={1}>
           {item.author} · {item.reason}
         </Text>
       </View>
@@ -193,7 +200,7 @@ function DiscoverRow({ item, index, onDismiss }: DiscoverRowProps) {
         hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
         style={styles.discoverDismissBtn}
       >
-        <Ionicons name="close" size={18} color="#8E8E93" />
+        <Ionicons name="close" size={18} color={colors.textTertiary} />
       </HapticPressable>
       <HapticPressable
         hapticStyle="medium"
@@ -205,7 +212,7 @@ function DiscoverRow({ item, index, onDismiss }: DiscoverRowProps) {
         <Ionicons
           name={enqueued ? 'checkmark-circle' : 'arrow-down-circle'}
           size={26}
-          color={enqueued ? '#1DB954' : '#FA233B'}
+          color={enqueued ? SUCCESS_GREEN : colors.accent}
         />
       </HapticPressable>
     </View>
@@ -215,11 +222,17 @@ function DiscoverRow({ item, index, onDismiss }: DiscoverRowProps) {
 // ─── "Daily Picks" empty state ────────────────────────────────────────────────
 
 function DiscoveringState() {
+  const { colors } = useTheme();
   return (
-    <View style={styles.discoveringContainer}>
-      <Ionicons name="sparkles" size={28} color="#FA233B" />
-      <Text style={styles.discoveringText}>Discovering music for you…</Text>
-      <Text style={styles.discoveringSubtext}>Check back soon</Text>
+    <View
+      style={[
+        styles.discoveringContainer,
+        { backgroundColor: colors.bgElevated, borderColor: colors.borderAccent },
+      ]}
+    >
+      <Ionicons name="sparkles" size={28} color={colors.accent} />
+      <Text style={[styles.discoveringText, { color: colors.textPrimary }]}>Discovering music for you…</Text>
+      <Text style={[styles.discoveringSubtext, { color: colors.textTertiary }]}>Check back soon</Text>
     </View>
   );
 }
@@ -232,17 +245,21 @@ interface DownloadsButtonProps {
 }
 
 function DownloadsQuickButton({ activeCount, onPress }: DownloadsButtonProps) {
+  const { colors } = useTheme();
   return (
     <TouchableOpacity
       activeOpacity={0.75}
       onPress={onPress}
-      style={styles.downloadsButton}
+      style={[
+        styles.downloadsButton,
+        { backgroundColor: colors.bgRaised, borderColor: colors.borderAccent },
+      ]}
       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
     >
-      <Ionicons name="arrow-down" size={20} color="#FA233B" />
+      <Ionicons name="arrow-down" size={20} color={colors.accent} />
       {activeCount > 0 && (
-        <View style={styles.downloadsBadge}>
-          <Text style={styles.downloadsBadgeText}>
+        <View style={[styles.downloadsBadge, { backgroundColor: colors.accent, borderColor: colors.bg }]}>
+          <Text style={[styles.downloadsBadgeText, { color: '#07090D' }]}>
             {activeCount > 9 ? '9+' : activeCount}
           </Text>
         </View>
@@ -255,7 +272,10 @@ function DownloadsQuickButton({ activeCount, onPress }: DownloadsButtonProps) {
 
 export function HomeScreen() {
   const navigation = useNavigation<RootStackNavigationProp>();
-  const { playTrack } = usePlayerQueue();
+  const { colors, isDark } = useTheme();
+  // `playOrStream` plays downloaded rows locally and streams not-yet-downloaded
+  // rows instantly — the same entry point used across browse/catalog screens.
+  const { playOrStream } = usePlayer();
 
   // `safeTracks` strips non-music junk (WhatsApp voices, UUID-named files,
   // ringtones) before any downstream section sees the library. Every memo
@@ -323,13 +343,14 @@ export function HomeScreen() {
       .sort((a, b) => b.addedAt - a.addedAt);
   }, [safeTracks]);
 
-  // Play a track in context of the full library
+  // Play a track in context of the full library. `playOrStream` handles both
+  // downloaded (local file) and online (stream-on-tap) rows transparently.
   const handleTrackPress = useCallback(
     (track: Track) => {
-      void playTrack(modelToTrack(track), modelsToTracks(safeTracks));
+      void playOrStream(modelToTrack(track), modelsToTracks(safeTracks));
       navigation.navigate('NowPlaying');
     },
-    [playTrack, safeTracks, navigation],
+    [playOrStream, safeTracks, navigation],
   );
 
   // Pull-to-refresh actually does something now: bump the discover nonce so
@@ -383,23 +404,30 @@ export function HomeScreen() {
   );
 
   return (
-    <View style={styles.root}>
-      <StatusBar barStyle="dark-content" backgroundColor="#F5F5F7" />
+    <View style={[styles.root, { backgroundColor: colors.bg }]}>
+      <StatusBar
+        barStyle={isDark ? 'light-content' : 'dark-content'}
+        backgroundColor={colors.bg}
+      />
 
       {/* ── Sticky frosted header ── */}
       <Animated.View style={[styles.header, headerStyle]}>
         {/* Frosted backdrop fades in on scroll */}
         <View pointerEvents="none" style={StyleSheet.absoluteFill}>
-          <BlurView intensity={60} tint="light" style={StyleSheet.absoluteFill} />
+          <BlurView
+            intensity={60}
+            tint={isDark ? 'dark' : 'light'}
+            style={StyleSheet.absoluteFill}
+          />
           <Animated.View
-            style={[styles.headerSurface, headerSurfaceStyle]}
+            style={[styles.headerSurface, { backgroundColor: colors.overlay }, headerSurfaceStyle]}
             pointerEvents="none"
           />
         </View>
 
         <View>
-          <Text style={styles.logoText}>Chakaas</Text>
-          <Text style={styles.greeting}>{getGreeting()}</Text>
+          <Text style={[styles.logoText, { color: colors.accent }]}>Chakaas</Text>
+          <Text style={[styles.greeting, { color: colors.textSecondary }]}>{getGreeting()}</Text>
         </View>
 
         {/* Downloads quick-access button — always shown; badge when active */}
@@ -407,7 +435,9 @@ export function HomeScreen() {
           activeCount={activeDownloadCount}
           onPress={handleDownloadsPress}
         />
-        <Animated.View style={[styles.headerHairline, headerHairlineStyle]} />
+        <Animated.View
+          style={[styles.headerHairline, { backgroundColor: colors.borderAccent }, headerHairlineStyle]}
+        />
       </Animated.View>
 
       <Animated.ScrollView
@@ -419,8 +449,8 @@ export function HomeScreen() {
           <RefreshControl
             refreshing={discoverFetching}
             onRefresh={handleRefresh}
-            tintColor="#FA233B"
-            colors={['#FA233B']}
+            tintColor={colors.accent}
+            colors={[colors.accent]}
           />
         }
       >
@@ -498,8 +528,8 @@ export function HomeScreen() {
                 ))}
               {discoverFetching && (
                 <View style={styles.discoverInlineLoader}>
-                  <ActivityIndicator size="small" color="#FA233B" />
-                  <Text style={styles.discoverInlineLoaderText}>
+                  <ActivityIndicator size="small" color={colors.accent} />
+                  <Text style={[styles.discoverInlineLoaderText, { color: colors.textSecondary }]}>
                     Finding fresh picks…
                   </Text>
                 </View>
@@ -554,15 +584,11 @@ export function HomeScreen() {
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: '#F5F5F7',
   },
   header: {
     paddingTop: Platform.OS === 'ios' ? 56 : 36,
     paddingBottom: 12,
     paddingHorizontal: 20,
-    // Solid fallback for environments where the BlurView isn't rendered
-    // (Android <12, RN snapshot tests, etc.) — kept faintly tinted so the
-    // top still reads as a chrome surface even without blur.
     backgroundColor: 'transparent',
     zIndex: 10,
     flexDirection: 'row',
@@ -572,7 +598,6 @@ const styles = StyleSheet.create({
   },
   headerSurface: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(245,245,247,0.82)',
   },
   headerHairline: {
     position: 'absolute',
@@ -580,19 +605,16 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     height: StyleSheet.hairlineWidth,
-    backgroundColor: 'rgba(60,60,67,0.18)',
   },
   logoText: {
     fontSize: 36,
     fontWeight: '800',
-    color: '#FA233B',
     letterSpacing: -1.3,
     lineHeight: 40,
   },
   greeting: {
     fontSize: 14,
     fontWeight: '400',
-    color: '#6E6E73',
     marginTop: 2,
   },
   // Downloads quick-access button
@@ -600,26 +622,14 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: '#FFFFFF',
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(60,60,67,0.12)',
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 4,
     position: 'relative',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 5 },
-        shadowOpacity: 0.08,
-        shadowRadius: 12,
-      },
-      android: { elevation: 3 },
-    }),
   },
   downloadsButtonIcon: {
     fontSize: 20,
-    color: '#1D1D1F',
     fontWeight: '600',
     lineHeight: 24,
   },
@@ -630,15 +640,14 @@ const styles = StyleSheet.create({
     minWidth: 18,
     height: 18,
     borderRadius: 9,
-    backgroundColor: '#FA233B',
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 4,
+    borderWidth: 1.5,
   },
   downloadsBadgeText: {
     fontSize: 10,
     fontWeight: '800',
-    color: '#FFFFFF',
     lineHeight: 13,
   },
   scrollContent: {
@@ -668,7 +677,6 @@ const styles = StyleSheet.create({
     borderRadius: 15,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: 'rgba(250,35,59,0.10)',
   },
   discoverDimmed: {
     opacity: 0.4,
@@ -684,18 +692,15 @@ const styles = StyleSheet.create({
   discoverInlineLoaderText: {
     fontSize: 12,
     fontWeight: '500',
-    color: '#8E8E93',
   },
   sectionTitle: {
     fontSize: 18,
     fontWeight: '700',
-    color: '#1D1D1F',
     letterSpacing: -0.3,
   },
   seeAll: {
     fontSize: 13,
     fontWeight: '500',
-    color: '#FA233B',
   },
   horizontalList: {
     paddingHorizontal: 20,
@@ -714,14 +719,12 @@ const styles = StyleSheet.create({
   trackCardTitle: {
     fontSize: 13,
     fontWeight: '600',
-    color: '#1D1D1F',
     letterSpacing: -0.1,
     lineHeight: 18,
   },
   trackCardArtist: {
     fontSize: 11,
     fontWeight: '400',
-    color: '#6E6E73',
     marginTop: 2,
   },
   // Vertical list rows
@@ -736,7 +739,6 @@ const styles = StyleSheet.create({
     width: 20,
     fontSize: 13,
     fontWeight: '600',
-    color: '#8E8E93',
     textAlign: 'center',
   },
   verticalMeta: {
@@ -745,19 +747,16 @@ const styles = StyleSheet.create({
   verticalTitle: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#1D1D1F',
     letterSpacing: -0.1,
   },
   verticalArtist: {
     fontSize: 12,
     fontWeight: '400',
-    color: '#6E6E73',
     marginTop: 2,
   },
   verticalDuration: {
     fontSize: 12,
     fontWeight: '400',
-    color: '#8E8E93',
   },
   discoverActionBtn: {
     width: 38,
@@ -777,26 +776,21 @@ const styles = StyleSheet.create({
     height: 120,
     marginHorizontal: 20,
     borderRadius: 16,
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: '#D2D2D7',
+    borderWidth: StyleSheet.hairlineWidth,
     justifyContent: 'center',
     alignItems: 'center',
     gap: 6,
   },
   discoveringIcon: {
     fontSize: 22,
-    color: '#FA233B',
   },
   discoveringText: {
     fontSize: 15,
     fontWeight: '600',
-    color: '#1D1D1F',
   },
   discoveringSubtext: {
     fontSize: 12,
     fontWeight: '400',
-    color: '#8E8E93',
   },
   // Vertical skeleton
   verticalSkeletonContainer: {
@@ -812,7 +806,6 @@ const styles = StyleSheet.create({
     width: 50,
     height: 50,
     borderRadius: 8,
-    backgroundColor: '#F2F2F7',
     opacity: 0.7,
   },
   verticalSkeletonText: {
@@ -823,14 +816,12 @@ const styles = StyleSheet.create({
     height: 12,
     width: '70%',
     borderRadius: 6,
-    backgroundColor: '#F2F2F7',
     opacity: 0.7,
   },
   skeletonLine2: {
     height: 10,
     width: '45%',
     borderRadius: 5,
-    backgroundColor: '#F2F2F7',
     opacity: 0.5,
   },
 });

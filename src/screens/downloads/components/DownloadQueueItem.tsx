@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Platform } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import FastImage, { type Source as FastImageSource } from 'react-native-fast-image';
 import Animated, {
   useAnimatedStyle,
@@ -8,6 +8,8 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 import { useDownloadStore, type DownloadItem } from '@/stores/downloadStore';
+import { useTheme } from '@/theme';
+import type { Colors } from '@/theme';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -19,16 +21,29 @@ interface DownloadQueueItemProps {
   onCancel: (id: string) => void;
 }
 
-// ─── Constants ────────────────────────────────────────────────────────────────
+// ─── Status → semantic token mapping ──────────────────────────────────────────
+// Maps each download phase to an Arc Reactor token. Cyan accent drives the
+// active "downloading" phase (the HUD's interactive state); gold for the
+// post-download processing phases; success/danger for terminal states.
 
-const STATUS_COLORS: Record<DownloadItem['status'], string> = {
-  queued:      '#6E6E73',
-  downloading: '#FA233B',
-  converting:  '#3498DB',
-  tagging:     '#9B59B6',
-  done:        '#27AE60',
-  error:       '#E74C3C',
-};
+function statusColor(status: DownloadItem['status'], colors: Colors): string {
+  switch (status) {
+    case 'queued':
+      return colors.textSecondary;
+    case 'downloading':
+      return colors.accent;
+    case 'converting':
+      return colors.accentGlow;
+    case 'tagging':
+      return colors.gold;
+    case 'done':
+      return '#34D399';
+    case 'error':
+      return colors.danger;
+    default:
+      return colors.textSecondary;
+  }
+}
 
 const STATUS_LABELS: Record<DownloadItem['status'], string> = {
   queued:      'Queued',
@@ -57,10 +72,11 @@ interface ProgressBarProps {
 }
 
 function AnimatedProgressBar({ progress, status }: ProgressBarProps) {
-  const color = STATUS_COLORS[status];
+  const { colors } = useTheme();
+  const color = statusColor(status, colors);
   const clamped = Math.max(0, Math.min(100, progress));
   return (
-    <View style={barStyles.track}>
+    <View style={[barStyles.track, { backgroundColor: colors.bgRaised }]}>
       <View
         style={[barStyles.fill, { backgroundColor: color, width: `${clamped}%` }]}
       />
@@ -71,7 +87,6 @@ function AnimatedProgressBar({ progress, status }: ProgressBarProps) {
 const barStyles = StyleSheet.create({
   track: {
     height: 3,
-    backgroundColor: '#D2D2D7',
     borderRadius: 2,
     overflow: 'hidden',
     marginTop: 6,
@@ -85,9 +100,10 @@ const barStyles = StyleSheet.create({
 // ─── Thumbnail placeholder ────────────────────────────────────────────────────
 
 function ThumbnailPlaceholder() {
+  const { colors } = useTheme();
   return (
-    <View style={styles.thumbnailPlaceholder}>
-      <Ionicons name="musical-notes" size={22} color="#FA233B" />
+    <View style={[styles.thumbnailPlaceholder, { backgroundColor: colors.bgRaised }]}>
+      <Ionicons name="musical-notes" size={22} color={colors.accent} />
     </View>
   );
 }
@@ -95,6 +111,8 @@ function ThumbnailPlaceholder() {
 // ─── Component ────────────────────────────────────────────────────────────────
 
 function DownloadQueueItemImpl({ id, onCancel }: DownloadQueueItemProps) {
+  const { colors } = useTheme();
+
   // Per-row store subscription. When ANOTHER item in the queue updates,
   // Zustand+Immer keeps this item's reference stable so we don't re-render.
   // When THIS item updates, the reference changes and only we re-render.
@@ -150,15 +168,20 @@ function DownloadQueueItemImpl({ id, onCancel }: DownloadQueueItemProps) {
     statusLabel = 'Failed';
   }
 
-  const statusColor = STATUS_COLORS[item.status];
+  const statusTone = statusColor(item.status, colors);
 
   return (
-    <View style={styles.container}>
+    <View
+      style={[
+        styles.container,
+        { backgroundColor: colors.bgElevated, borderColor: colors.border },
+      ]}
+    >
       {/* Thumbnail */}
       {fastImageSource ? (
         <FastImage
           source={fastImageSource}
-          style={styles.thumbnail}
+          style={[styles.thumbnail, { backgroundColor: colors.bgRaised }]}
           resizeMode={FastImage.resizeMode.cover}
         />
       ) : (
@@ -167,13 +190,13 @@ function DownloadQueueItemImpl({ id, onCancel }: DownloadQueueItemProps) {
 
       {/* Center content */}
       <View style={styles.content}>
-        <Text style={styles.title} numberOfLines={1}>
+        <Text style={[styles.title, { color: colors.textPrimary }]} numberOfLines={1}>
           {item.title}
         </Text>
-        <Text style={styles.artist} numberOfLines={1}>
+        <Text style={[styles.artist, { color: colors.textSecondary }]} numberOfLines={1}>
           {item.artist}
         </Text>
-        <Text style={[styles.statusText, { color: statusColor }]} numberOfLines={1}>
+        <Text style={[styles.statusText, { color: statusTone }]} numberOfLines={1}>
           {statusLabel}
         </Text>
 
@@ -182,7 +205,7 @@ function DownloadQueueItemImpl({ id, onCancel }: DownloadQueueItemProps) {
 
         {/* Error message */}
         {isError && item.error ? (
-          <Text style={styles.errorText} numberOfLines={2}>
+          <Text style={[styles.errorText, { color: colors.danger }]} numberOfLines={2}>
             {item.error}
           </Text>
         ) : null}
@@ -190,8 +213,8 @@ function DownloadQueueItemImpl({ id, onCancel }: DownloadQueueItemProps) {
 
       {/* Right action */}
       {isDone ? (
-        <View style={styles.doneIcon}>
-          <Ionicons name="checkmark" size={18} color="#FFFFFF" />
+        <View style={[styles.doneIcon, { backgroundColor: '#34D399' }]}>
+          <Ionicons name="checkmark" size={18} color={colors.bg} />
         </View>
       ) : (
         <Animated.View style={cancelAnimStyle}>
@@ -199,12 +222,12 @@ function DownloadQueueItemImpl({ id, onCancel }: DownloadQueueItemProps) {
             onPress={handleCancel}
             onPressIn={handleCancelPressIn}
             onPressOut={handleCancelPressOut}
-            style={styles.cancelButton}
+            style={[styles.cancelButton, { backgroundColor: colors.bgRaised }]}
             hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
             accessibilityLabel={`Cancel download of ${item.title}`}
             accessibilityRole="button"
           >
-            <Ionicons name="close" size={16} color="#8E8E93" />
+            <Ionicons name="close" size={16} color={colors.textSecondary} />
           </TouchableOpacity>
         </Animated.View>
       )}
@@ -221,6 +244,9 @@ export const DownloadQueueItem = React.memo(
 );
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
+// Layout/geometry only — every colour is themed inline via useTheme(). Soft
+// elevation: no heavy black drop shadow (the dark canvas carries depth via the
+// cyan HUD hairline + elevated surface).
 
 const styles = StyleSheet.create({
   container: {
@@ -230,34 +256,21 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
     gap: 12,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
+    borderRadius: 16,
     marginHorizontal: 16,
     marginBottom: 8,
-    borderWidth: 1,
-    borderColor: '#F2F2F7',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.45,
-        shadowRadius: 6,
-      },
-      android: { elevation: 3 },
-    }),
+    borderWidth: StyleSheet.hairlineWidth,
   },
   thumbnail: {
     width: 60,
     height: 60,
-    borderRadius: 8,
+    borderRadius: 12,
     flexShrink: 0,
-    backgroundColor: '#F2F2F7',
   },
   thumbnailPlaceholder: {
     width: 60,
     height: 60,
-    borderRadius: 8,
-    backgroundColor: '#F2F2F7',
+    borderRadius: 12,
     justifyContent: 'center',
     alignItems: 'center',
     flexShrink: 0,
@@ -270,27 +283,24 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#1D1D1F',
     letterSpacing: -0.1,
     lineHeight: 19,
   },
   artist: {
     fontSize: 12,
     fontWeight: '400',
-    color: '#6E6E73',
     marginTop: 1,
     lineHeight: 17,
   },
   statusText: {
     fontSize: 11,
-    fontWeight: '500',
+    fontWeight: '600',
     marginTop: 3,
     lineHeight: 15,
   },
   errorText: {
     fontSize: 10,
     fontWeight: '400',
-    color: '#E74C3C',
     marginTop: 4,
     lineHeight: 14,
   },
@@ -298,7 +308,6 @@ const styles = StyleSheet.create({
     width: 30,
     height: 30,
     borderRadius: 15,
-    backgroundColor: '#34C759',
     justifyContent: 'center',
     alignItems: 'center',
     marginTop: 15,
@@ -308,7 +317,6 @@ const styles = StyleSheet.create({
     width: 30,
     height: 30,
     borderRadius: 15,
-    backgroundColor: '#D2D2D7',
     justifyContent: 'center',
     alignItems: 'center',
     marginTop: 15,

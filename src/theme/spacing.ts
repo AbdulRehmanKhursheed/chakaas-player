@@ -24,6 +24,9 @@ export const borderRadius = {
   // Bottom-sheet / large rounded surfaces. Apple Music uses ~24 px on its
   // pull-up sheets; we use the same here so things feel native.
   sheet: 24,
+  // Fully-rounded (pills, circular controls). `pill` is the Arc Reactor name;
+  // `full` is kept as an alias for existing callers.
+  pill: 999,
   full: 9999,
 } as const;
 
@@ -65,12 +68,13 @@ export const darkShadows = {
     },
     android: { elevation: 12 },
   }) ?? {},
+  // Arc-reactor cyan glow — used on the play control and accent surfaces.
   accent: Platform.select({
     ios: {
-      shadowColor: '#FA233B',
-      shadowOffset: { width: 0, height: 4 },
-      shadowOpacity: 0.35,
-      shadowRadius: 12,
+      shadowColor: '#19E3FF',
+      shadowOffset: { width: 0, height: 0 },
+      shadowOpacity: 0.45,
+      shadowRadius: 14,
     },
     android: { elevation: 6 },
   }) ?? {},
@@ -114,11 +118,12 @@ export const lightShadows = {
     },
     android: { elevation: 12 },
   }) ?? {},
+  // Arc-reactor cyan glow (light scheme variant — slightly softer).
   accent: Platform.select({
     ios: {
-      shadowColor: '#FA233B',
-      shadowOffset: { width: 0, height: 4 },
-      shadowOpacity: 0.2,
+      shadowColor: '#0AB4D6',
+      shadowOffset: { width: 0, height: 0 },
+      shadowOpacity: 0.28,
       shadowRadius: 12,
     },
     android: { elevation: 6 },

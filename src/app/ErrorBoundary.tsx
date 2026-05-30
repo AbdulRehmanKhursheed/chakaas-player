@@ -10,6 +10,8 @@ import {
   View,
 } from 'react-native';
 
+import { useDownloadStore } from '@/stores/downloadStore';
+
 interface Props {
   children: React.ReactNode;
 }
@@ -48,6 +50,15 @@ export class ErrorBoundary extends React.Component<Props, State> {
   }
 
   private handleRetry = () => {
+    // Flush the in-memory download queue before remounting. A poisoned queue
+    // item (one whose pipeline crashed the render tree) would otherwise be
+    // re-picked the instant the subtree comes back, re-triggering the crash.
+    try {
+      useDownloadStore.setState({ queue: [] });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[Chakaas] clearing download queue on recover failed:', err);
+    }
     this.setState((prev) => ({
       error: null,
       errorInfo: null,

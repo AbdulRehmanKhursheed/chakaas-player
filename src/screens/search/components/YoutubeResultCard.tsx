@@ -12,7 +12,9 @@ import Animated, {
   useSharedValue,
   withTiming,
 } from 'react-native-reanimated';
+import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
+import { useTheme } from '@/theme';
 import type { YouTubeSearchResult } from '@/types/track';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -59,9 +61,12 @@ interface ProgressBarProps {
 }
 
 function ProgressBar({ progress }: ProgressBarProps) {
+  const { colors } = useTheme();
   return (
-    <View style={progressStyles.track}>
-      <View style={[progressStyles.fill, { width: `${progress}%` }]} />
+    <View style={[progressStyles.track, { backgroundColor: colors.bgRaised }]}>
+      <View
+        style={[progressStyles.fill, { width: `${progress}%`, backgroundColor: colors.accent }]}
+      />
     </View>
   );
 }
@@ -69,14 +74,12 @@ function ProgressBar({ progress }: ProgressBarProps) {
 const progressStyles = StyleSheet.create({
   track: {
     height: 2,
-    backgroundColor: '#D2D2D7',
     borderRadius: 1,
     marginTop: 6,
     overflow: 'hidden',
   },
   fill: {
     height: 2,
-    backgroundColor: '#FA233B',
     borderRadius: 1,
   },
 });
@@ -90,9 +93,18 @@ export function YoutubeResultCard({
   isStreamLoading = false,
   downloadProgress,
 }: YoutubeResultCardProps) {
+  const { colors } = useTheme();
   const isDownloading =
     downloadProgress !== undefined && downloadProgress < 100;
   const isDone = downloadProgress === 100;
+
+  // Show views for YouTube rows and the album for Saavn rows. The Saavn
+  // provider stopped overloading `view_count` to mean album, so we read the
+  // dedicated `saavnAlbum` field here instead.
+  const subtitle =
+    (result.provider ?? 'youtube') === 'saavn'
+      ? result.saavnAlbum ?? ''
+      : result.view_count;
 
   const scaleAnim = useSharedValue(1);
   const playScaleAnim = useSharedValue(1);
@@ -133,9 +145,9 @@ export function YoutubeResultCard({
   }, [playScaleAnim]);
 
   return (
-    <View style={styles.container}>
-      {/* Thumbnail */}
-      <View style={styles.thumbnailContainer}>
+    <View style={[styles.container, { backgroundColor: colors.bg }]}>
+      {/* Thumbnail — large edge-to-edge artwork */}
+      <View style={[styles.thumbnailContainer, { backgroundColor: colors.bgRaised, borderColor: colors.border }]}>
         <FastImage
           source={{
             uri: result.thumbnail,
@@ -157,15 +169,15 @@ export function YoutubeResultCard({
 
       {/* Metadata */}
       <View style={styles.meta}>
-        <Text style={styles.title} numberOfLines={2}>
+        <Text style={[styles.title, { color: colors.textPrimary }]} numberOfLines={2}>
           {result.title}
         </Text>
-        <Text style={styles.channel} numberOfLines={1}>
+        <Text style={[styles.channel, { color: colors.textSecondary }]} numberOfLines={1}>
           {result.author}
         </Text>
-        {result.view_count ? (
-          <Text style={styles.views} numberOfLines={1}>
-            {result.view_count}
+        {subtitle ? (
+          <Text style={[styles.views, { color: colors.textTertiary }]} numberOfLines={1}>
+            {subtitle}
           </Text>
         ) : null}
 
@@ -174,13 +186,14 @@ export function YoutubeResultCard({
           <ProgressBar progress={downloadProgress!} />
         )}
         {isDone && (
-          <Text style={styles.doneLabel}>In library</Text>
+          <Text style={[styles.doneLabel, { color: colors.accent }]}>In library</Text>
         )}
       </View>
 
       {/* Action buttons */}
       <View style={styles.actions}>
-        {/* Stream/play button — transient playback, no download */}
+        {/* Stream/play button — transient playback, no download. Glowing cyan
+            arc-reactor control. */}
         {onStream && !isDone && (
           <Pressable
             onPress={handleStreamPress}
@@ -189,11 +202,26 @@ export function YoutubeResultCard({
             disabled={isStreamLoading}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           >
-            <Animated.View style={[styles.playButton, animatedPlayStyle]}>
+            <Animated.View
+              style={[
+                styles.playButton,
+                {
+                  borderColor: colors.borderAccent,
+                  shadowColor: colors.accent,
+                },
+                animatedPlayStyle,
+              ]}
+            >
+              <LinearGradient
+                colors={colors.brandGradient}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={StyleSheet.absoluteFill}
+              />
               {isStreamLoading ? (
-                <ActivityIndicator size="small" color="#FFFFFF" />
+                <ActivityIndicator size="small" color="#07090D" />
               ) : (
-                <Ionicons name="play" size={16} color="#FFFFFF" style={styles.playIcon} />
+                <Ionicons name="play" size={16} color="#07090D" style={styles.playIcon} />
               )}
             </Animated.View>
           </Pressable>
@@ -207,15 +235,24 @@ export function YoutubeResultCard({
           disabled={isDownloading || isDone}
           hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
         >
-          <Animated.View style={[styles.downloadButton, animatedButtonStyle]}>
+          <Animated.View
+            style={[
+              styles.downloadButton,
+              {
+                backgroundColor: isDone ? colors.accentMuted : colors.bgRaised,
+                borderColor: isDone ? colors.borderAccent : colors.border,
+              },
+              animatedButtonStyle,
+            ]}
+          >
             {isDone ? (
-              <Ionicons name="checkmark" size={18} color="#FFFFFF" />
+              <Ionicons name="checkmark" size={18} color={colors.accent} />
             ) : isDownloading ? (
-              <Text style={[styles.downloadIcon, styles.downloadingIcon]}>
+              <Text style={[styles.downloadIcon, styles.downloadingIcon, { color: colors.accent }]}>
                 {Math.round(downloadProgress!)}%
               </Text>
             ) : (
-              <Ionicons name="arrow-down" size={18} color="#FFFFFF" />
+              <Ionicons name="arrow-down" size={18} color={colors.textPrimary} />
             )}
           </Animated.View>
         </Pressable>
@@ -236,29 +273,29 @@ const styles = StyleSheet.create({
   },
   thumbnailContainer: {
     position: 'relative',
-    borderRadius: 8,
+    borderRadius: 12,
     overflow: 'hidden',
-    backgroundColor: '#F2F2F7',
     flexShrink: 0,
+    borderWidth: StyleSheet.hairlineWidth,
   },
   thumbnail: {
     width: 100,
     height: 70,
-    borderRadius: 8,
+    borderRadius: 12,
   },
   durationBadge: {
     position: 'absolute',
     bottom: 4,
     right: 4,
-    backgroundColor: 'rgba(0,0,0,0.82)',
-    borderRadius: 4,
-    paddingHorizontal: 4,
+    backgroundColor: 'rgba(3,5,8,0.78)',
+    borderRadius: 6,
+    paddingHorizontal: 5,
     paddingVertical: 1,
   },
   durationBadgeText: {
     fontSize: 10,
     fontWeight: '600',
-    color: '#FFFFFF',
+    color: '#EAF6FF',
   },
   meta: {
     flex: 1,
@@ -268,23 +305,19 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 13,
     fontWeight: '600',
-    color: '#1D1D1F',
     lineHeight: 18,
   },
   channel: {
     fontSize: 12,
     fontWeight: '400',
-    color: '#6E6E73',
     marginTop: 2,
   },
   views: {
     fontSize: 11,
-    color: '#8E8E93',
   },
   doneLabel: {
     fontSize: 11,
-    color: '#FA233B',
-    fontWeight: '500',
+    fontWeight: '600',
     marginTop: 4,
   },
   actions: {
@@ -297,10 +330,16 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: '#1D1D1F',
     justifyContent: 'center',
     alignItems: 'center',
     flexShrink: 0,
+    overflow: 'hidden',
+    borderWidth: StyleSheet.hairlineWidth,
+    // Soft cyan glow on the primary play control.
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.55,
+    shadowRadius: 8,
+    elevation: 4,
   },
   playIcon: {
     // Optical centering — the Ionicons play glyph has empty space on its left.
@@ -310,15 +349,14 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: '#FA233B',
     justifyContent: 'center',
     alignItems: 'center',
     flexShrink: 0,
+    borderWidth: StyleSheet.hairlineWidth,
   },
   downloadIcon: {
     fontSize: 18,
     fontWeight: '700',
-    color: '#FFFFFF',
     lineHeight: 22,
   },
   downloadingIcon: {

@@ -29,11 +29,13 @@ import {
 } from 'react-native-gesture-handler';
 import * as Haptics from 'expo-haptics';
 import { formatDuration } from '@/utils/audio';
+import { useTheme } from '@/theme';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
+// Arc Reactor: thicker HUD-style progress bar with a glowing cyan thumb.
 
-const TRACK_HEIGHT = 5;
-const THUMB_SIZE = 16;
+const TRACK_HEIGHT = 6;
+const THUMB_SIZE = 18;
 const HIT_SLOP = { top: 20, bottom: 20, left: 0, right: 0 };
 
 const SPRING_FAST = { damping: 18, stiffness: 260, mass: 0.6 };
@@ -57,8 +59,10 @@ export function ProgressSlider({
   duration,
   position,
   onSeek,
-  accentColor = '#FA233B',
+  accentColor,
 }: ProgressSliderProps) {
+  const { colors } = useTheme();
+  const accent = accentColor ?? colors.accent;
   // Width of the rendered track — set via onLayout
   const trackWidth = useSharedValue(0);
 
@@ -214,16 +218,24 @@ export function ProgressSlider({
           }}
         >
           {/* Background track */}
-          <View style={styles.trackBg} />
+          <View style={[styles.trackBg, { backgroundColor: colors.bgRaised }]} />
 
           {/* Played portion */}
           <Animated.View
-            style={[styles.trackPlayed, { backgroundColor: accentColor }, playedBarStyle]}
+            style={[styles.trackPlayed, { backgroundColor: accent }, playedBarStyle]}
           />
 
-          {/* Thumb */}
+          {/* Thumb — glowing cyan arc-reactor dot */}
           <Animated.View
-            style={[styles.thumb, thumbStyle]}
+            style={[
+              styles.thumb,
+              {
+                backgroundColor: accent,
+                borderColor: accent,
+                shadowColor: accent,
+              },
+              thumbStyle,
+            ]}
             pointerEvents="none"
           />
         </Animated.View>
@@ -231,7 +243,7 @@ export function ProgressSlider({
 
       {/* Time labels */}
       <View style={styles.timeRow}>
-        <Text style={styles.timeLabel}>{elapsedLabel}</Text>
+        <Text style={[styles.timeLabel, { color: colors.textSecondary }]}>{elapsedLabel}</Text>
         <Pressable
           onPress={handleToggleRightLabel}
           hitSlop={{ top: 10, bottom: 10, left: 14, right: 4 }}
@@ -240,7 +252,7 @@ export function ProgressSlider({
             showRemaining ? 'Show total duration' : 'Show time remaining'
           }
         >
-          <Text style={styles.timeLabel}>{rightLabel}</Text>
+          <Text style={[styles.timeLabel, { color: colors.textSecondary }]}>{rightLabel}</Text>
         </Pressable>
       </View>
     </View>
@@ -265,7 +277,6 @@ const styles = StyleSheet.create({
     right: 0,
     height: TRACK_HEIGHT,
     borderRadius: TRACK_HEIGHT / 2,
-    backgroundColor: '#E5E5EA',
   },
   trackPlayed: {
     position: 'absolute',
@@ -278,29 +289,25 @@ const styles = StyleSheet.create({
     width: THUMB_SIZE,
     height: THUMB_SIZE,
     borderRadius: THUMB_SIZE / 2,
-    backgroundColor: '#FFFFFF',
     borderWidth: 2,
-    borderColor: '#FFFFFF',
     top: (THUMB_SIZE + 16 - THUMB_SIZE) / 2,
     ...Platform.select({
       ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.18,
-        shadowRadius: 5,
+        shadowOffset: { width: 0, height: 0 },
+        shadowOpacity: 0.9,
+        shadowRadius: 8,
       },
-      android: { elevation: 4 },
+      android: { elevation: 6 },
     }),
   },
   timeRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginTop: 2,
+    marginTop: 4,
   },
   timeLabel: {
     fontSize: 11,
-    fontWeight: '500',
-    color: '#8E8E93',
+    fontWeight: '600',
     letterSpacing: 0.3,
   },
 });

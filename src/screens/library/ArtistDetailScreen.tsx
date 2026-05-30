@@ -20,6 +20,8 @@ import type { LibraryStackParamList } from '@/app/navigation/LibraryStack';
 import type { RootStackNavigationProp } from '@/types/navigation';
 import type { Track } from '@/db/models/Track';
 import { modelToTrack, modelsToTracks } from '@/utils/trackMapper';
+import { useTheme } from '@/theme';
+import { LinearGradient } from 'expo-linear-gradient';
 
 // ─── Route ────────────────────────────────────────────────────────────────────
 
@@ -52,6 +54,7 @@ interface TrackRowProps {
 }
 
 function ArtistTrackRow({ track, index, onPress, onLongPress }: TrackRowProps) {
+  const { colors } = useTheme();
   const handlePress = useCallback(() => onPress(track), [track, onPress]);
   const handleLongPress = useCallback(() => onLongPress(track), [track, onLongPress]);
 
@@ -62,17 +65,19 @@ function ArtistTrackRow({ track, index, onPress, onLongPress }: TrackRowProps) {
       onLongPress={handleLongPress}
       style={trackRowStyles.container}
     >
-      <Text style={trackRowStyles.index}>{index + 1}</Text>
+      <Text style={[trackRowStyles.index, { color: colors.textTertiary }]}>{index + 1}</Text>
       <TrackArtwork uri={track.artworkPath} blurhash={null} size={50} borderRadius={8} />
       <View style={trackRowStyles.meta}>
-        <Text style={trackRowStyles.title} numberOfLines={1}>
+        <Text style={[trackRowStyles.title, { color: colors.textPrimary }]} numberOfLines={1}>
           {track.title}
         </Text>
-        <Text style={trackRowStyles.album} numberOfLines={1}>
+        <Text style={[trackRowStyles.album, { color: colors.textSecondary }]} numberOfLines={1}>
           {track.album || 'Unknown Album'}
         </Text>
       </View>
-      <Text style={trackRowStyles.duration}>{formatDuration(track.durationMs)}</Text>
+      <Text style={[trackRowStyles.duration, { color: colors.textTertiary }]}>
+        {formatDuration(track.durationMs)}
+      </Text>
     </TouchableOpacity>
   );
 }
@@ -89,25 +94,21 @@ const trackRowStyles = StyleSheet.create({
     width: 22,
     fontSize: 13,
     fontWeight: '500',
-    color: '#8E8E93',
     textAlign: 'center',
   },
   meta: { flex: 1 },
   title: {
     fontSize: 15,
     fontWeight: '600',
-    color: '#1D1D1F',
     letterSpacing: -0.1,
   },
   album: {
     fontSize: 12,
     fontWeight: '400',
-    color: '#6E6E73',
     marginTop: 2,
   },
   duration: {
     fontSize: 12,
-    color: '#8E8E93',
   },
 });
 
@@ -132,10 +133,11 @@ function HeroHeader({
   onPlayAll,
   onShuffle,
 }: HeroHeaderProps) {
+  const { colors } = useTheme();
   return (
     <View style={heroStyles.container}>
-      {/* Large circular avatar */}
-      <View style={heroStyles.avatarContainer}>
+      {/* Large circular avatar — soft cyan glow */}
+      <View style={[heroStyles.avatarContainer, { shadowColor: colors.accent }]}>
         {artworkPath ? (
           <FastImage
             source={{
@@ -147,22 +149,28 @@ function HeroHeader({
             resizeMode={FastImage.resizeMode.cover}
           />
         ) : (
-          <View style={[heroStyles.avatar, heroStyles.avatarPlaceholder]}>
-            <Text style={heroStyles.avatarInitial}>
+          <View
+            style={[
+              heroStyles.avatar,
+              heroStyles.avatarPlaceholder,
+              { backgroundColor: colors.accentMuted },
+            ]}
+          >
+            <Text style={[heroStyles.avatarInitial, { color: colors.accent }]}>
               {artist.trim().charAt(0).toUpperCase() || '?'}
             </Text>
           </View>
         )}
-        <View style={heroStyles.avatarRing} />
+        <View style={[heroStyles.avatarRing, { borderColor: colors.borderAccent }]} />
       </View>
 
       {/* Artist name */}
-      <Text style={heroStyles.artistName} numberOfLines={2}>
+      <Text style={[heroStyles.artistName, { color: colors.textPrimary }]} numberOfLines={2}>
         {artist}
       </Text>
 
       {/* Stats */}
-      <Text style={heroStyles.stats}>
+      <Text style={[heroStyles.stats, { color: colors.textSecondary }]}>
         {trackCount} {trackCount === 1 ? 'song' : 'songs'}
         {albumCount > 0 ? `  ·  ${albumCount} ${albumCount === 1 ? 'album' : 'albums'}` : ''}
         {totalDurationMs > 0 ? `  ·  ${formatTotalDuration(totalDurationMs)}` : ''}
@@ -176,21 +184,31 @@ function HeroHeader({
           activeOpacity={0.85}
           disabled={trackCount === 0}
         >
-          <Ionicons name="play" size={16} color="#FFFFFF" />
+          <LinearGradient
+            colors={colors.brandGradient}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={StyleSheet.absoluteFill}
+          />
+          <Ionicons name="play" size={16} color="#07090D" />
           <Text style={heroStyles.playButtonText}>Play All</Text>
         </TouchableOpacity>
         <TouchableOpacity
-          style={[heroStyles.button, heroStyles.shuffleButton]}
+          style={[
+            heroStyles.button,
+            heroStyles.shuffleButton,
+            { backgroundColor: colors.accentMuted, borderColor: colors.borderAccent },
+          ]}
           onPress={onShuffle}
           activeOpacity={0.85}
           disabled={trackCount === 0}
         >
-          <Ionicons name="shuffle" size={16} color="#FA233B" />
-          <Text style={heroStyles.shuffleButtonText}>Shuffle</Text>
+          <Ionicons name="shuffle" size={16} color={colors.accent} />
+          <Text style={[heroStyles.shuffleButtonText, { color: colors.accent }]}>Shuffle</Text>
         </TouchableOpacity>
       </View>
 
-      <View style={heroStyles.separator} />
+      <View style={[heroStyles.separator, { backgroundColor: colors.border }]} />
     </View>
   );
 }
@@ -204,6 +222,7 @@ const heroStyles = StyleSheet.create({
     paddingTop: 16,
     paddingBottom: 8,
   },
+  // Soft cyan glow instead of a heavy black drop shadow.
   avatarContainer: {
     width: AVATAR_SIZE,
     height: AVATAR_SIZE,
@@ -211,10 +230,9 @@ const heroStyles = StyleSheet.create({
     position: 'relative',
     ...Platform.select({
       ios: {
-        shadowColor: '#FA233B',
         shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.25,
-        shadowRadius: 20,
+        shadowOpacity: 0.3,
+        shadowRadius: 22,
       },
       android: { elevation: 12 },
     }),
@@ -225,7 +243,6 @@ const heroStyles = StyleSheet.create({
     borderRadius: AVATAR_SIZE / 2,
   },
   avatarPlaceholder: {
-    backgroundColor: '#FFF1F3',
     justifyContent: 'center',
     alignItems: 'center',
     flexDirection: 'row',
@@ -234,18 +251,16 @@ const heroStyles = StyleSheet.create({
   avatarInitial: {
     fontSize: 52,
     fontWeight: '800',
-    color: '#FA233B',
   },
+  // Cyan HUD hairline ring.
   avatarRing: {
     ...StyleSheet.absoluteFillObject,
     borderRadius: AVATAR_SIZE / 2,
     borderWidth: 2,
-    borderColor: 'rgba(255, 215, 0, 0.25)',
   },
   artistName: {
     fontSize: 26,
     fontWeight: '800',
-    color: '#1D1D1F',
     letterSpacing: -0.5,
     textAlign: 'center',
     lineHeight: 32,
@@ -253,7 +268,6 @@ const heroStyles = StyleSheet.create({
   stats: {
     fontSize: 13,
     fontWeight: '400',
-    color: '#6E6E73',
     marginTop: 8,
     textAlign: 'center',
   },
@@ -266,32 +280,27 @@ const heroStyles = StyleSheet.create({
   button: {
     flex: 1,
     height: 46,
-    borderRadius: 12,
+    borderRadius: 16,
     justifyContent: 'center',
     alignItems: 'center',
+    overflow: 'hidden',
   },
-  playButton: {
-    backgroundColor: '#FA233B',
-  },
+  playButton: {},
   playButtonText: {
     fontSize: 14,
-    fontWeight: '700',
-    color: '#FFFFFF',
+    fontWeight: '800',
+    color: '#07090D',
   },
   shuffleButton: {
-    backgroundColor: '#F2F2F7',
-    borderWidth: 1,
-    borderColor: '#D2D2D7',
+    borderWidth: StyleSheet.hairlineWidth,
   },
   shuffleButtonText: {
     fontSize: 14,
-    fontWeight: '600',
-    color: '#1D1D1F',
+    fontWeight: '700',
   },
   separator: {
     width: '100%',
-    height: 1,
-    backgroundColor: '#F2F2F7',
+    height: StyleSheet.hairlineWidth,
     marginTop: 20,
   },
 });
@@ -299,9 +308,15 @@ const heroStyles = StyleSheet.create({
 // ─── Section header (album group) ─────────────────────────────────────────────
 
 function AlbumSectionHeader({ album }: { album: string }) {
+  const { colors } = useTheme();
   return (
-    <View style={albumSectionStyles.container}>
-      <Text style={albumSectionStyles.text} numberOfLines={1}>
+    <View
+      style={[
+        albumSectionStyles.container,
+        { backgroundColor: colors.bg, borderBottomColor: colors.border },
+      ]}
+    >
+      <Text style={[albumSectionStyles.text, { color: colors.accent }]} numberOfLines={1}>
         {album}
       </Text>
     </View>
@@ -310,17 +325,14 @@ function AlbumSectionHeader({ album }: { album: string }) {
 
 const albumSectionStyles = StyleSheet.create({
   container: {
-    backgroundColor: '#F5F5F7',
     paddingHorizontal: 20,
     paddingTop: 16,
     paddingBottom: 6,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(60,60,67,0.14)',
   },
   text: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#FA233B',
     letterSpacing: 0.5,
     textTransform: 'uppercase',
   },

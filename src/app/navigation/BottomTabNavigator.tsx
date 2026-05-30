@@ -10,6 +10,7 @@ import {
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { BlurView } from 'expo-blur';
 
 import { HomeStack } from './HomeStack';
 import { LibraryStack } from './LibraryStack';
@@ -18,6 +19,7 @@ import { DownloadsStack } from './DownloadsStack';
 import { SettingsStack } from './SettingsStack';
 import { useDownloadStore } from '@/stores/downloadStore';
 import { MiniPlayer } from '@/screens/nowPlaying/MiniPlayer';
+import { useTheme } from '@/theme';
 import type { BottomTabParamList } from '@/types/navigation';
 
 // ---------------------------------------------------------------------------
@@ -41,17 +43,8 @@ const TAB_ICONS: Record<keyof BottomTabParamList, { active: TabIconName; inactiv
 };
 
 // ---------------------------------------------------------------------------
-// Design tokens (inlined to avoid circular imports from theme)
+// Layout constants
 // ---------------------------------------------------------------------------
-
-const COLORS = {
-  active: '#FA233B',
-  inactive: '#8E8E93',
-  tabBar: '#FFFFFF',
-  border: 'rgba(60,60,67,0.12)',
-  badge: '#FA233B',
-  badgeText: '#FFFFFF',
-} as const;
 
 const TAB_HEIGHT = 58;
 const TAB_BAR_EXTRA_HEIGHT = 10;
@@ -77,24 +70,48 @@ function useActiveDownloadCount(): number {
 // Custom tab bar icon component
 // ---------------------------------------------------------------------------
 
+interface TabIconColors {
+  active: string;
+  inactive: string;
+  glyphActiveBg: string;
+  glowColor: string;
+  badge: string;
+  badgeBorder: string;
+  badgeText: string;
+}
+
 interface TabIconProps {
   label: string;
   icon: TabIconName;
   focused: boolean;
   badgeCount?: number;
+  palette: TabIconColors;
 }
 
-function TabIcon({ label, icon, focused, badgeCount }: TabIconProps) {
-  const color = focused ? COLORS.active : COLORS.inactive;
+function TabIcon({ label, icon, focused, badgeCount, palette }: TabIconProps) {
+  const color = focused ? palette.active : palette.inactive;
   const showBadge = typeof badgeCount === 'number' && badgeCount > 0;
 
   return (
     <View style={styles.iconWrapper}>
-      <View style={[styles.glyphContainer, focused && styles.glyphContainerActive]}>
+      <View
+        style={[
+          styles.glyphContainer,
+          focused && {
+            backgroundColor: palette.glyphActiveBg,
+            // Soft cyan HUD glow behind the active glyph.
+            shadowColor: palette.glowColor,
+            shadowOffset: { width: 0, height: 0 },
+            shadowOpacity: 0.9,
+            shadowRadius: 10,
+            elevation: 6,
+          },
+        ]}
+      >
         <Ionicons name={icon} size={focused ? 24 : 23} color={color} />
         {showBadge && (
-          <View style={styles.badge}>
-            <Text style={styles.badgeText}>
+          <View style={[styles.badge, { backgroundColor: palette.badge, borderColor: palette.badgeBorder }]}>
+            <Text style={[styles.badgeText, { color: palette.badgeText }]}>
               {badgeCount > 99 ? '99+' : badgeCount}
             </Text>
           </View>
@@ -127,6 +144,19 @@ function TabIcon({ label, icon, focused, badgeCount }: TabIconProps) {
 export function BottomTabNavigator() {
   const insets = useSafeAreaInsets();
   const activeDownloadCount = useActiveDownloadCount();
+  const { colors, isDark } = useTheme();
+
+  // Tab-bar colour palette derived from the Arc Reactor tokens. Active glyphs
+  // glow cyan; inactive sit in steel grey on a translucent dark glass dock.
+  const tabPalette: TabIconColors = {
+    active: colors.accent,
+    inactive: colors.textSecondary,
+    glyphActiveBg: colors.accentMuted,
+    glowColor: colors.accentGlow,
+    badge: colors.accent,
+    badgeBorder: colors.bgElevated,
+    badgeText: colors.bg,
+  };
 
   const tabBarBottom = Math.max(TAB_BAR_BOTTOM_MARGIN, insets.bottom ? 8 : TAB_BAR_BOTTOM_MARGIN);
   const tabBarHeight = TAB_HEIGHT + insets.bottom + TAB_BAR_EXTRA_HEIGHT;
@@ -143,28 +173,45 @@ export function BottomTabNavigator() {
         return {
           headerShown: false,
           tabBarShowLabel: false, // Label rendered inside TabIcon instead
-          tabBarActiveTintColor: COLORS.active,
-          tabBarInactiveTintColor: COLORS.inactive,
+          tabBarActiveTintColor: colors.accent,
+          tabBarInactiveTintColor: colors.textSecondary,
+          // Translucent dark-glass dock — the BlurView background fills it in.
+          tabBarBackground: () => (
+            <BlurView
+              intensity={isDark ? 40 : 60}
+              tint={isDark ? 'dark' : 'light'}
+              style={[
+                StyleSheet.absoluteFill,
+                {
+                  borderRadius: 32,
+                  overflow: 'hidden',
+                  backgroundColor: colors.overlay,
+                  borderWidth: StyleSheet.hairlineWidth,
+                  borderColor: colors.borderAccent,
+                },
+              ]}
+            />
+          ),
           tabBarStyle: {
             position: 'absolute',
             left: 16,
             right: 16,
             bottom: tabBarBottom,
-            backgroundColor: COLORS.tabBar,
-            borderTopColor: COLORS.border,
+            backgroundColor: 'transparent',
             borderTopWidth: 0,
-            borderWidth: StyleSheet.hairlineWidth,
-            borderColor: COLORS.border,
+            borderWidth: 0,
+            elevation: 0,
             height: tabBarHeight,
             paddingBottom: insets.bottom + 5,
             paddingTop: 6,
             borderRadius: 32,
+            // Soft cyan-tinted elevation — no heavy black drop shadow.
             ...Platform.select({
-              android: { elevation: 18 },
+              android: { elevation: 12 },
               ios: {
-                shadowColor: '#000',
-                shadowOffset: { width: 0, height: 8 },
-                shadowOpacity: 0.12,
+                shadowColor: colors.accent,
+                shadowOffset: { width: 0, height: 6 },
+                shadowOpacity: isDark ? 0.18 : 0.12,
                 shadowRadius: 18,
               },
             }),
@@ -175,6 +222,7 @@ export function BottomTabNavigator() {
               icon={focused ? icons.active : icons.inactive}
               focused={focused}
               badgeCount={badgeCount}
+              palette={tabPalette}
             />
           ),
         };
@@ -232,10 +280,6 @@ const styles = StyleSheet.create({
     borderRadius: 17,
   } as ViewStyle,
 
-  glyphContainerActive: {
-    backgroundColor: 'rgba(250,35,59,0.10)',
-  } as ViewStyle,
-
   badge: {
     position: 'absolute',
     top: -5,
@@ -243,9 +287,7 @@ const styles = StyleSheet.create({
     minWidth: 16,
     height: 16,
     borderRadius: 8,
-    backgroundColor: COLORS.badge,
     borderWidth: 2,
-    borderColor: '#FFFFFF',
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 3,
@@ -254,7 +296,6 @@ const styles = StyleSheet.create({
   badgeText: {
     fontSize: 9,
     fontWeight: '800',
-    color: COLORS.badgeText,
     letterSpacing: 0,
     lineHeight: 12,
   } as TextStyle,

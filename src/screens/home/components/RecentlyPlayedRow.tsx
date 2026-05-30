@@ -8,6 +8,7 @@ import {
 } from 'react-native';
 import FastImage from 'react-native-fast-image';
 import { Ionicons } from '@expo/vector-icons';
+import { useTheme } from '@/theme';
 import type { Track } from '@/db/models/Track';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -25,6 +26,7 @@ interface ItemProps {
 // ─── Single item ──────────────────────────────────────────────────────────────
 
 function RecentItem({ track, onPress }: ItemProps) {
+  const { colors } = useTheme();
   const handlePress = useCallback(() => onPress(track), [track, onPress]);
   const artworkUri = track.artworkPath ?? undefined;
 
@@ -34,8 +36,13 @@ function RecentItem({ track, onPress }: ItemProps) {
       onPress={handlePress}
       style={styles.item}
     >
-      {/* Circle artwork */}
-      <View style={styles.artworkWrapper}>
+      {/* Circle artwork with cyan HUD hairline */}
+      <View
+        style={[
+          styles.artworkWrapper,
+          { backgroundColor: colors.bgRaised, borderColor: colors.borderAccent },
+        ]}
+      >
         {artworkUri ? (
           <FastImage
             source={{
@@ -47,14 +54,14 @@ function RecentItem({ track, onPress }: ItemProps) {
             resizeMode={FastImage.resizeMode.cover}
           />
         ) : (
-          <View style={[styles.artwork, styles.artworkPlaceholder]}>
-            <Ionicons name="musical-notes" size={28} color="#FA233B" />
+          <View style={[styles.artwork, styles.artworkPlaceholder, { backgroundColor: colors.bgRaised }]}>
+            <Ionicons name="musical-notes" size={28} color={colors.accent} />
           </View>
         )}
       </View>
 
       {/* Track name */}
-      <Text style={styles.name} numberOfLines={2}>
+      <Text style={[styles.name, { color: colors.textSecondary }]} numberOfLines={2}>
         {track.title}
       </Text>
     </TouchableOpacity>
@@ -103,9 +110,7 @@ const styles = StyleSheet.create({
     height: 80,
     borderRadius: 40,
     overflow: 'hidden',
-    backgroundColor: '#F2F2F7',
     borderWidth: 1.5,
-    borderColor: '#D2D2D7',
   },
   artwork: {
     width: 80,
@@ -113,7 +118,6 @@ const styles = StyleSheet.create({
     borderRadius: 40,
   },
   artworkPlaceholder: {
-    backgroundColor: '#FFF1F3',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -121,7 +125,6 @@ const styles = StyleSheet.create({
     marginTop: 8,
     fontSize: 11,
     fontWeight: '500',
-    color: '#3A3A3C',
     textAlign: 'center',
     lineHeight: 15,
   },

@@ -9,7 +9,7 @@
  *   - `getDiscoverFeed()` from discoverEngine (currently-thinking picks)
  *   - `playsCollection` for the play-count + recent-events list
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -25,6 +25,7 @@ import { useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { Q } from '@nozbe/watermelondb';
 import { LinearGradient } from 'expo-linear-gradient';
+import { MotiView } from 'moti';
 
 import {
   getEngineStats,
@@ -37,6 +38,7 @@ import {
 } from '@/features/recommendations/discoverEngine';
 import { playsCollection, tracksCollection } from '@/db';
 import { logger } from '@/utils/logger';
+import { useTheme, type Theme } from '@/theme';
 import type { RootStackNavigationProp } from '@/types/navigation';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -45,7 +47,8 @@ interface EngineHealth {
   label: string;
   description: string;
   progress: number; // 0..1
-  gradient: [string, string];
+  /** Tier index 0..3, used to pick HUD accent treatment. */
+  tier: number;
 }
 
 function deriveHealth(playCount: number, artistCount: number): EngineHealth {
@@ -57,7 +60,7 @@ function deriveHealth(playCount: number, artistCount: number): EngineHealth {
       label: 'Warming up',
       description: 'Play a few songs and the engine will start learning your taste.',
       progress: Math.min(1, score / 10) * 0.25,
-      gradient: ['#8E8E93', '#C7C7CC'],
+      tier: 0,
     };
   }
   if (score < 40) {
@@ -65,7 +68,7 @@ function deriveHealth(playCount: number, artistCount: number): EngineHealth {
       label: 'Tuning in',
       description: 'Picking up patterns. Suggestions are getting more personal.',
       progress: 0.25 + Math.min(1, (score - 10) / 30) * 0.3,
-      gradient: ['#5856D6', '#FA233B'],
+      tier: 1,
     };
   }
   if (score < 120) {
@@ -73,14 +76,14 @@ function deriveHealth(playCount: number, artistCount: number): EngineHealth {
       label: 'Locked in',
       description: 'Confident in your taste. Discover is on point.',
       progress: 0.55 + Math.min(1, (score - 40) / 80) * 0.3,
-      gradient: ['#FA233B', '#FF9500'],
+      tier: 2,
     };
   }
   return {
     label: 'Mastered',
     description: 'The engine knows you. Recommendations are sharply tuned.',
     progress: Math.min(1, 0.85 + (score - 120) / 400 * 0.15),
-    gradient: ['#FA233B', '#FFCC00'],
+    tier: 3,
   };
 }
 
@@ -94,7 +97,7 @@ function formatRelativeTime(epochSeconds: number | null): string {
   return days === 1 ? 'yesterday' : `${days} days ago`;
 }
 
-// ─── Hero card ──────────────────────────────────────────────────────────────
+// ─── Hero card — J.A.R.V.I.S. HUD reactor ────────────────────────────────────
 
 interface HeroCardProps {
   health: EngineHealth;
@@ -103,74 +106,210 @@ interface HeroCardProps {
 }
 
 function HeroCard({ health, playCount, artistCount }: HeroCardProps) {
+  const { colors } = useTheme();
+  const pct = Math.round(health.progress * 100);
+  // Mastered taps the Iron Man gold; every other tier stays arc-reactor cyan.
+  const ringAccent = health.tier >= 3 ? colors.gold : colors.accent;
+  const heroGradient =
+    health.tier >= 3
+      ? (['#12161E', '#0E1218'] as const)
+      : (['#0B141C', '#0E1218'] as const);
+
   return (
-    <LinearGradient
-      colors={health.gradient}
-      start={{ x: 0, y: 0 }}
-      end={{ x: 1, y: 1 }}
-      style={heroStyles.card}
-    >
-      <Text style={heroStyles.eyebrow}>CHAKAAS ENGINE</Text>
-      <Text style={heroStyles.title}>{health.label}</Text>
-      <Text style={heroStyles.description}>{health.description}</Text>
+    <View style={heroStyles.wrap}>
+      <LinearGradient
+        colors={heroGradient}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={[heroStyles.card, { borderColor: colors.borderAccent }]}
+      >
+        {/* Faint HUD grid scan-line sweeping vertically */}
+        <MotiView
+          pointerEvents="none"
+          from={{ translateY: -40, opacity: 0 }}
+          animate={{ translateY: 220, opacity: 0.5 }}
+          transition={{
+            type: 'timing',
+            duration: 2600,
+            loop: true,
+            repeatReverse: false,
+          }}
+          style={heroStyles.scanLineWrap}
+        >
+          <LinearGradient
+            colors={['transparent', ringAccent, 'transparent']}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 0 }}
+            style={heroStyles.scanLine}
+          />
+        </MotiView>
 
-      <View style={heroStyles.progressTrack}>
-        <View
-          style={[heroStyles.progressFill, { width: `${health.progress * 100}%` }]}
-        />
-      </View>
+        <View style={heroStyles.topRow}>
+          {/* Reactor ring readout */}
+          <View style={heroStyles.ringCol}>
+            <View style={[heroStyles.ringOuter, { borderColor: colors.borderAccent }]}>
+              <MotiView
+                from={{ opacity: 0.35, scale: 0.96 }}
+                animate={{ opacity: 0.9, scale: 1.04 }}
+                transition={{
+                  type: 'timing',
+                  duration: 1800,
+                  loop: true,
+                  repeatReverse: true,
+                }}
+                style={[
+                  heroStyles.ringPulse,
+                  { borderColor: ringAccent },
+                ]}
+              />
+              <View style={[heroStyles.ringInner, { backgroundColor: ringAccent }]}>
+                <Text style={[heroStyles.ringPct, { color: colors.bg }]}>{pct}</Text>
+                <Text style={[heroStyles.ringUnit, { color: colors.bg }]}>%</Text>
+              </View>
+            </View>
+            <Text style={[heroStyles.ringCaption, { color: colors.textTertiary }]}>
+              CALIBRATION
+            </Text>
+          </View>
 
-      <View style={heroStyles.statsRow}>
-        <View style={heroStyles.statBox}>
-          <Text style={heroStyles.statValue}>{playCount.toLocaleString()}</Text>
-          <Text style={heroStyles.statLabel}>plays logged</Text>
+          <View style={heroStyles.titleCol}>
+            <Text style={[heroStyles.eyebrow, { color: ringAccent }]}>CHAKAAS ENGINE</Text>
+            <Text style={[heroStyles.title, { color: colors.textPrimary }]}>{health.label}</Text>
+            <Text style={[heroStyles.description, { color: colors.textSecondary }]}>
+              {health.description}
+            </Text>
+          </View>
         </View>
-        <View style={heroStyles.statBox}>
-          <Text style={heroStyles.statValue}>{artistCount.toLocaleString()}</Text>
-          <Text style={heroStyles.statLabel}>artists tracked</Text>
+
+        {/* HUD progress bar */}
+        <View style={[heroStyles.progressTrack, { backgroundColor: colors.bgRaised }]}>
+          <LinearGradient
+            colors={
+              health.tier >= 3 ? colors.goldGradient : colors.brandGradient
+            }
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 0 }}
+            style={[heroStyles.progressFill, { width: `${pct}%` }]}
+          />
         </View>
-      </View>
-    </LinearGradient>
+
+        <View style={heroStyles.statsRow}>
+          <View style={[heroStyles.statBox, { backgroundColor: colors.bgRaised, borderColor: colors.border }]}>
+            <Text style={[heroStyles.statValue, { color: ringAccent }]}>
+              {playCount.toLocaleString()}
+            </Text>
+            <Text style={[heroStyles.statLabel, { color: colors.textSecondary }]}>plays logged</Text>
+          </View>
+          <View style={[heroStyles.statBox, { backgroundColor: colors.bgRaised, borderColor: colors.border }]}>
+            <Text style={[heroStyles.statValue, { color: ringAccent }]}>
+              {artistCount.toLocaleString()}
+            </Text>
+            <Text style={[heroStyles.statLabel, { color: colors.textSecondary }]}>artists tracked</Text>
+          </View>
+        </View>
+      </LinearGradient>
+    </View>
   );
 }
 
 const heroStyles = StyleSheet.create({
-  card: {
+  wrap: {
     marginHorizontal: 16,
     marginBottom: 24,
-    borderRadius: 24,
+  },
+  card: {
+    borderRadius: 20,
     padding: 22,
+    borderWidth: StyleSheet.hairlineWidth,
+    overflow: 'hidden',
+  },
+  scanLineWrap: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 0,
+    height: 2,
+  },
+  scanLine: {
+    flex: 1,
+    height: 2,
+  },
+  topRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 18,
+  },
+  ringCol: {
+    alignItems: 'center',
+    gap: 6,
+  },
+  ringOuter: {
+    width: 78,
+    height: 78,
+    borderRadius: 39,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  ringPulse: {
+    position: 'absolute',
+    width: 78,
+    height: 78,
+    borderRadius: 39,
+    borderWidth: 1.5,
+  },
+  ringInner: {
+    width: 54,
+    height: 54,
+    borderRadius: 27,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+  },
+  ringPct: {
+    fontSize: 22,
+    fontWeight: '800',
+    letterSpacing: -0.5,
+  },
+  ringUnit: {
+    fontSize: 11,
+    fontWeight: '800',
+    marginTop: 4,
+    marginLeft: 1,
+  },
+  ringCaption: {
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 1.2,
+  },
+  titleCol: {
+    flex: 1,
   },
   eyebrow: {
     fontSize: 11,
     fontWeight: '800',
-    color: 'rgba(255,255,255,0.85)',
-    letterSpacing: 1.6,
+    letterSpacing: 1.8,
   },
   title: {
-    fontSize: 32,
+    fontSize: 28,
     fontWeight: '800',
-    color: '#FFFFFF',
     marginTop: 4,
-    letterSpacing: -1.0,
+    letterSpacing: -0.8,
   },
   description: {
     fontSize: 13,
     fontWeight: '500',
-    color: 'rgba(255,255,255,0.92)',
     marginTop: 6,
     lineHeight: 18,
   },
   progressTrack: {
-    marginTop: 16,
+    marginTop: 18,
     height: 6,
-    backgroundColor: 'rgba(255,255,255,0.25)',
     borderRadius: 3,
     overflow: 'hidden',
   },
   progressFill: {
     height: 6,
-    backgroundColor: '#FFFFFF',
     borderRadius: 3,
   },
   statsRow: {
@@ -180,38 +319,37 @@ const heroStyles = StyleSheet.create({
   },
   statBox: {
     flex: 1,
-    backgroundColor: 'rgba(255,255,255,0.18)',
     borderRadius: 14,
     paddingHorizontal: 14,
     paddingVertical: 12,
+    borderWidth: StyleSheet.hairlineWidth,
   },
   statValue: {
     fontSize: 22,
     fontWeight: '800',
-    color: '#FFFFFF',
     letterSpacing: -0.5,
   },
   statLabel: {
     fontSize: 11,
-    fontWeight: '600',
-    color: 'rgba(255,255,255,0.85)',
+    fontWeight: '700',
     marginTop: 2,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
   },
 });
 
-// ─── Top artists chart ──────────────────────────────────────────────────────
+// ─── Top artists chart — affinity viz ────────────────────────────────────────
 
 interface TopArtistsProps {
   topArtists: EngineStats['topArtists'];
 }
 
 function TopArtistsChart({ topArtists }: TopArtistsProps) {
+  const { colors } = useTheme();
   if (topArtists.length === 0) {
     return (
       <View style={artistStyles.empty}>
-        <Text style={artistStyles.emptyText}>
+        <Text style={[artistStyles.emptyText, { color: colors.textSecondary }]}>
           No artist signal yet. Play some songs and they'll show up here.
         </Text>
       </View>
@@ -227,13 +365,23 @@ function TopArtistsChart({ topArtists }: TopArtistsProps) {
         return (
           <View key={row.artist} style={artistStyles.row}>
             <View style={artistStyles.rowHeader}>
-              <Text style={artistStyles.artistName} numberOfLines={1}>
+              <Text style={[artistStyles.artistName, { color: colors.textPrimary }]} numberOfLines={1}>
                 {row.artist}
               </Text>
-              <Text style={artistStyles.score}>{row.score.toFixed(1)}</Text>
+              {row.isSeed && (
+                <View style={[artistStyles.seedBadge, { backgroundColor: colors.accentMuted }]}>
+                  <Text style={[artistStyles.seedBadgeText, { color: colors.accent }]}>SEED</Text>
+                </View>
+              )}
+              <Text style={[artistStyles.score, { color: colors.accent }]}>{row.score.toFixed(1)}</Text>
             </View>
-            <View style={artistStyles.barTrack}>
-              <View style={[artistStyles.barFill, { width: `${widthPct}%` }]} />
+            <View style={[artistStyles.barTrack, { backgroundColor: colors.bgRaised }]}>
+              <LinearGradient
+                colors={colors.brandGradient}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={[artistStyles.barFill, { width: `${widthPct}%` }]}
+              />
             </View>
           </View>
         );
@@ -258,36 +406,30 @@ const artistStyles = StyleSheet.create({
     flex: 1,
     fontSize: 14,
     fontWeight: '600',
-    color: '#1D1D1F',
   },
   seedBadge: {
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 4,
-    backgroundColor: 'rgba(88,86,214,0.12)',
   },
   seedBadgeText: {
     fontSize: 9,
     fontWeight: '800',
-    color: '#5856D6',
     letterSpacing: 0.5,
   },
   score: {
     fontSize: 13,
     fontWeight: '700',
-    color: '#FA233B',
     minWidth: 36,
     textAlign: 'right',
   },
   barTrack: {
     height: 6,
-    backgroundColor: '#F2F2F7',
     borderRadius: 3,
     overflow: 'hidden',
   },
   barFill: {
     height: 6,
-    backgroundColor: '#FA233B',
     borderRadius: 3,
   },
   empty: {
@@ -296,7 +438,6 @@ const artistStyles = StyleSheet.create({
   },
   emptyText: {
     fontSize: 13,
-    color: '#8E8E93',
     textAlign: 'center',
     paddingHorizontal: 20,
   },
@@ -310,17 +451,26 @@ interface ThinkingProps {
 }
 
 function ThinkingList({ picks, loading }: ThinkingProps) {
+  const { colors } = useTheme();
   if (loading && picks.length === 0) {
     return (
       <View style={thinkingStyles.empty}>
-        <Text style={thinkingStyles.emptyText}>Composing suggestions…</Text>
+        <MotiView
+          from={{ opacity: 0.4 }}
+          animate={{ opacity: 1 }}
+          transition={{ type: 'timing', duration: 800, loop: true, repeatReverse: true }}
+        >
+          <Text style={[thinkingStyles.emptyText, { color: colors.accent }]}>
+            Composing suggestions…
+          </Text>
+        </MotiView>
       </View>
     );
   }
   if (picks.length === 0) {
     return (
       <View style={thinkingStyles.empty}>
-        <Text style={thinkingStyles.emptyText}>
+        <Text style={[thinkingStyles.emptyText, { color: colors.textSecondary }]}>
           Nothing new to suggest right now.
         </Text>
       </View>
@@ -330,12 +480,12 @@ function ThinkingList({ picks, loading }: ThinkingProps) {
     <View style={thinkingStyles.list}>
       {picks.slice(0, 5).map((p) => (
         <View key={p.id} style={thinkingStyles.row}>
-          <View style={thinkingStyles.bullet} />
+          <View style={[thinkingStyles.bullet, { backgroundColor: colors.accent }]} />
           <View style={thinkingStyles.body}>
-            <Text style={thinkingStyles.title} numberOfLines={1}>
-              {p.title} <Text style={thinkingStyles.dim}>· {p.author}</Text>
+            <Text style={[thinkingStyles.title, { color: colors.textPrimary }]} numberOfLines={1}>
+              {p.title} <Text style={[thinkingStyles.dim, { color: colors.textSecondary }]}>· {p.author}</Text>
             </Text>
-            <Text style={thinkingStyles.reason} numberOfLines={1}>
+            <Text style={[thinkingStyles.reason, { color: colors.textSecondary }]} numberOfLines={1}>
               {p.reason}
             </Text>
           </View>
@@ -357,7 +507,6 @@ const thinkingStyles = StyleSheet.create({
     width: 6,
     height: 6,
     borderRadius: 3,
-    backgroundColor: '#FA233B',
     marginTop: 6,
   },
   body: {
@@ -367,15 +516,12 @@ const thinkingStyles = StyleSheet.create({
   title: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#1D1D1F',
   },
   dim: {
     fontWeight: '400',
-    color: '#8E8E93',
   },
   reason: {
     fontSize: 12,
-    color: '#8E8E93',
   },
   empty: {
     paddingVertical: 12,
@@ -383,7 +529,7 @@ const thinkingStyles = StyleSheet.create({
   },
   emptyText: {
     fontSize: 13,
-    color: '#8E8E93',
+    fontWeight: '600',
   },
 });
 
@@ -399,10 +545,11 @@ interface PlayEventRow {
 }
 
 function RecentEvents({ events }: { events: PlayEventRow[] }) {
+  const { colors } = useTheme();
   if (events.length === 0) {
     return (
       <View style={eventStyles.empty}>
-        <Text style={eventStyles.emptyText}>No plays logged yet.</Text>
+        <Text style={[eventStyles.emptyText, { color: colors.textSecondary }]}>No plays logged yet.</Text>
       </View>
     );
   }
@@ -411,38 +558,33 @@ function RecentEvents({ events }: { events: PlayEventRow[] }) {
       {events.map((e) => {
         const pct = Math.round(e.completionRatio * 100);
         const isLearn = !e.wasSkipped && e.completionRatio >= 0.3;
+        const signalColor = isLearn ? colors.accent : colors.textTertiary;
         return (
           <View key={e.id} style={eventStyles.row}>
             <View
               style={[
                 eventStyles.signal,
                 {
-                  backgroundColor: isLearn
-                    ? 'rgba(29,185,84,0.12)'
-                    : 'rgba(142,142,147,0.12)',
+                  backgroundColor: isLearn ? colors.accentMuted : colors.bgRaised,
+                  borderColor: isLearn ? colors.borderAccent : colors.border,
                 },
               ]}
             >
               <Ionicons
                 name={isLearn ? 'arrow-up' : 'arrow-down'}
                 size={14}
-                color={isLearn ? '#1DB954' : '#8E8E93'}
+                color={signalColor}
               />
             </View>
             <View style={eventStyles.body}>
-              <Text style={eventStyles.title} numberOfLines={1}>
+              <Text style={[eventStyles.title, { color: colors.textPrimary }]} numberOfLines={1}>
                 {e.title}
               </Text>
-              <Text style={eventStyles.sub} numberOfLines={1}>
+              <Text style={[eventStyles.sub, { color: colors.textSecondary }]} numberOfLines={1}>
                 {e.artist} · {formatRelativeTime(e.playedAt)}
               </Text>
             </View>
-            <Text
-              style={[
-                eventStyles.pct,
-                { color: isLearn ? '#1DB954' : '#8E8E93' },
-              ]}
-            >
+            <Text style={[eventStyles.pct, { color: signalColor }]}>
               {pct}%
             </Text>
           </View>
@@ -467,6 +609,7 @@ const eventStyles = StyleSheet.create({
     borderRadius: 14,
     justifyContent: 'center',
     alignItems: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
   },
   body: {
     flex: 1,
@@ -474,11 +617,9 @@ const eventStyles = StyleSheet.create({
   title: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#1D1D1F',
   },
   sub: {
     fontSize: 12,
-    color: '#8E8E93',
     marginTop: 1,
   },
   pct: {
@@ -491,7 +632,6 @@ const eventStyles = StyleSheet.create({
   },
   emptyText: {
     fontSize: 13,
-    color: '#8E8E93',
   },
 });
 
@@ -504,18 +644,50 @@ function Section({
   title: string;
   children: React.ReactNode;
 }) {
+  const { colors } = useTheme();
   return (
-    <View style={mainStyles.section}>
-      <Text style={mainStyles.sectionTitle}>{title}</Text>
-      <View style={mainStyles.sectionCard}>{children}</View>
+    <View style={sectionStyles.section}>
+      <Text style={[sectionStyles.sectionTitle, { color: colors.textTertiary }]}>{title}</Text>
+      <View
+        style={[
+          sectionStyles.sectionCard,
+          { backgroundColor: colors.bgElevated, borderColor: colors.borderAccent },
+        ]}
+      >
+        {children}
+      </View>
     </View>
   );
 }
+
+const sectionStyles = StyleSheet.create({
+  section: {
+    marginBottom: 24,
+  },
+  sectionTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 1.2,
+    textTransform: 'uppercase',
+    paddingHorizontal: 24,
+    marginBottom: 10,
+  },
+  sectionCard: {
+    marginHorizontal: 16,
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+});
 
 // ─── Main screen ────────────────────────────────────────────────────────────
 
 export function ChakaasEngineScreen() {
   const navigation = useNavigation<RootStackNavigationProp<'ChakaasEngine'>>();
+  const theme = useTheme();
+  const { colors, isDark } = theme;
+  const mainStyles = useMemo(() => createMainStyles(theme), [theme]);
 
   const [stats, setStats] = useState<EngineStats | null>(null);
   const [playCount, setPlayCount] = useState(0);
@@ -584,7 +756,7 @@ export function ChakaasEngineScreen() {
   const handleReset = useCallback(() => {
     Alert.alert(
       'Reset learning?',
-      'Wipes everything the engine has learned about your taste. The engine will start fresh and learn from your real plays — no defaults, no seeded artists. Plays already in your library are kept.',
+      'Wipes everything the engine has learned from your plays and restores the starter taste seed (Nusrat, Arijit, Atif, Badshah and friends). Real plays will build on top of the seed again. Plays already in your library are kept.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -603,7 +775,10 @@ export function ChakaasEngineScreen() {
 
   return (
     <View style={mainStyles.root}>
-      <StatusBar barStyle="dark-content" backgroundColor="#F5F5F7" />
+      <StatusBar
+        barStyle={isDark ? 'light-content' : 'dark-content'}
+        backgroundColor={colors.bg}
+      />
 
       {/* Header */}
       <View style={mainStyles.header}>
@@ -612,7 +787,7 @@ export function ChakaasEngineScreen() {
           style={mainStyles.headerBtn}
           hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
         >
-          <Ionicons name="chevron-back" size={26} color="#1D1D1F" />
+          <Ionicons name="chevron-back" size={26} color={colors.textPrimary} />
         </TouchableOpacity>
         <Text style={mainStyles.headerTitle}>Engine</Text>
         <View style={mainStyles.headerBtn} />
@@ -625,8 +800,8 @@ export function ChakaasEngineScreen() {
           <RefreshControl
             refreshing={refreshing}
             onRefresh={handleRefresh}
-            tintColor="#FA233B"
-            colors={['#FA233B']}
+            tintColor={colors.accent}
+            colors={[colors.accent]}
           />
         }
       >
@@ -668,14 +843,14 @@ export function ChakaasEngineScreen() {
           )}
           <View style={mainStyles.maintSeparator} />
           <TouchableOpacity onPress={handleReset} style={mainStyles.resetRow}>
-            <Ionicons name="refresh-circle" size={22} color="#FF3B30" />
+            <Ionicons name="refresh-circle" size={22} color={colors.danger} />
             <View style={{ flex: 1 }}>
               <Text style={mainStyles.resetLabel}>Reset learning</Text>
               <Text style={mainStyles.resetSub}>
                 Wipe affinity scores. Restores your original seed.
               </Text>
             </View>
-            <Ionicons name="chevron-forward" size={20} color="#C7C7CC" />
+            <Ionicons name="chevron-forward" size={20} color={colors.textTertiary} />
           </TouchableOpacity>
         </Section>
       </ScrollView>
@@ -683,85 +858,66 @@ export function ChakaasEngineScreen() {
   );
 }
 
-const mainStyles = StyleSheet.create({
-  root: {
-    flex: 1,
-    backgroundColor: '#F5F5F7',
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingTop: Platform.OS === 'ios' ? 56 : 36,
-    paddingBottom: 12,
-    paddingHorizontal: 12,
-    backgroundColor: '#F5F5F7',
-  },
-  headerBtn: {
-    width: 40,
-    height: 40,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  headerTitle: {
-    flex: 1,
-    fontSize: 17,
-    fontWeight: '700',
-    color: '#1D1D1F',
-    textAlign: 'center',
-  },
-  section: {
-    marginBottom: 24,
-  },
-  sectionTitle: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#6E6E73',
-    letterSpacing: 0.8,
-    textTransform: 'uppercase',
-    paddingHorizontal: 24,
-    marginBottom: 10,
-  },
-  sectionCard: {
-    marginHorizontal: 16,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    paddingHorizontal: 16,
-    paddingVertical: 16,
-    borderWidth: 1,
-    borderColor: '#F2F2F7',
-  },
-  maintRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  maintSeparator: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: '#F2F2F7',
-    marginVertical: 12,
-  },
-  maintLabel: {
-    fontSize: 14,
-    color: '#3A3A3C',
-  },
-  maintValue: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#1D1D1F',
-  },
-  resetRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  resetLabel: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#FF3B30',
-  },
-  resetSub: {
-    fontSize: 12,
-    color: '#8E8E93',
-    marginTop: 2,
-  },
-});
+function createMainStyles({ colors }: Theme) {
+  return StyleSheet.create({
+    root: {
+      flex: 1,
+      backgroundColor: colors.bg,
+    },
+    header: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingTop: Platform.OS === 'ios' ? 56 : 36,
+      paddingBottom: 12,
+      paddingHorizontal: 12,
+      backgroundColor: colors.bg,
+    },
+    headerBtn: {
+      width: 40,
+      height: 40,
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    headerTitle: {
+      flex: 1,
+      fontSize: 17,
+      fontWeight: '700',
+      color: colors.textPrimary,
+      textAlign: 'center',
+    },
+    maintRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+    },
+    maintSeparator: {
+      height: StyleSheet.hairlineWidth,
+      backgroundColor: colors.border,
+      marginVertical: 12,
+    },
+    maintLabel: {
+      fontSize: 14,
+      color: colors.textSecondary,
+    },
+    maintValue: {
+      fontSize: 14,
+      fontWeight: '600',
+      color: colors.textPrimary,
+    },
+    resetRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 12,
+    },
+    resetLabel: {
+      fontSize: 15,
+      fontWeight: '600',
+      color: colors.danger,
+    },
+    resetSub: {
+      fontSize: 12,
+      color: colors.textSecondary,
+      marginTop: 2,
+    },
+  });
+}

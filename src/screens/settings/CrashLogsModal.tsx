@@ -23,6 +23,7 @@ import {
   Share,
 } from 'react-native';
 import { crashSink } from '@/utils/crashSink';
+import { useTheme, type Theme } from '@/theme';
 
 interface Props {
   visible: boolean;
@@ -30,6 +31,9 @@ interface Props {
 }
 
 export function CrashLogsModal({ visible, onClose }: Props): React.ReactElement {
+  const theme = useTheme();
+  const styles = useMemo(() => createStyles(theme), [theme]);
+
   // Recompute on each open so the dump is fresh. Using useMemo + visible as a
   // dep means we don't recompute on every render of the parent.
   const [bumpKey, setBumpKey] = useState(0);
@@ -77,6 +81,7 @@ export function CrashLogsModal({ visible, onClose }: Props): React.ReactElement 
     <Modal visible={visible} animationType="slide" onRequestClose={onClose} transparent={false}>
       <View style={styles.root}>
         <View style={styles.header}>
+          <Text style={styles.eyebrow}>DIAGNOSTICS</Text>
           <Text style={styles.title}>Crash Logs</Text>
           <Text style={styles.subtitle}>{entryCount} entries • newest first</Text>
         </View>
@@ -86,9 +91,11 @@ export function CrashLogsModal({ visible, onClose }: Props): React.ReactElement 
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator
         >
-          <Text selectable style={styles.dumpText}>
-            {dump || '(no entries)'}
-          </Text>
+          <View style={styles.dumpCard}>
+            <Text selectable style={styles.dumpText}>
+              {dump || '(no entries)'}
+            </Text>
+          </View>
         </ScrollView>
 
         <View style={styles.actions}>
@@ -107,81 +114,100 @@ export function CrashLogsModal({ visible, onClose }: Props): React.ReactElement 
   );
 }
 
-const styles = StyleSheet.create({
-  root: {
-    flex: 1,
-    backgroundColor: '#F5F5F7',
-    paddingTop: Platform.OS === 'ios' ? 56 : 24,
-  },
-  header: {
-    paddingHorizontal: 20,
-    paddingBottom: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#D1D1D6',
-  },
-  title: {
-    color: '#1C1C1E',
-    fontSize: 22,
-    fontWeight: '700',
-  },
-  subtitle: {
-    color: '#6E6E73',
-    fontSize: 13,
-    marginTop: 2,
-  },
-  scroll: {
-    flex: 1,
-  },
-  scrollContent: {
-    padding: 16,
-    paddingBottom: 32,
-  },
-  dumpText: {
-    color: '#1C1C1E',
-    fontSize: 11,
-    lineHeight: 16,
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-  },
-  actions: {
-    flexDirection: 'row',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#D1D1D6',
-    backgroundColor: '#FFFFFF',
-    gap: 8,
-  },
-  btn: {
-    flex: 1,
-    paddingVertical: 12,
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  btnPrimary: {
-    backgroundColor: '#FA233B',
-  },
-  btnPrimaryText: {
-    color: '#FFFFFF',
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  btnSecondary: {
-    backgroundColor: '#E5E5EA',
-  },
-  btnSecondaryText: {
-    color: '#1C1C1E',
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  btnGhost: {
-    backgroundColor: 'transparent',
-  },
-  btnGhostText: {
-    color: '#6E6E73',
-    fontSize: 15,
-    fontWeight: '500',
-  },
-});
+function createStyles({ colors }: Theme) {
+  return StyleSheet.create({
+    root: {
+      flex: 1,
+      backgroundColor: colors.bg,
+      paddingTop: Platform.OS === 'ios' ? 56 : 24,
+    },
+    header: {
+      paddingHorizontal: 20,
+      paddingBottom: 14,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: colors.borderAccent,
+    },
+    eyebrow: {
+      color: colors.accent,
+      fontSize: 11,
+      fontWeight: '800',
+      letterSpacing: 2,
+      marginBottom: 3,
+    },
+    title: {
+      color: colors.textPrimary,
+      fontSize: 26,
+      fontWeight: '800',
+      letterSpacing: -0.6,
+    },
+    subtitle: {
+      color: colors.textSecondary,
+      fontSize: 13,
+      marginTop: 3,
+    },
+    scroll: {
+      flex: 1,
+    },
+    scrollContent: {
+      padding: 16,
+      paddingBottom: 32,
+    },
+    dumpCard: {
+      backgroundColor: colors.bgElevated,
+      borderRadius: 16,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+      padding: 14,
+    },
+    dumpText: {
+      color: colors.textSecondary,
+      fontSize: 11,
+      lineHeight: 16,
+      fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    },
+    actions: {
+      flexDirection: 'row',
+      paddingHorizontal: 16,
+      paddingVertical: 12,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: colors.borderAccent,
+      backgroundColor: colors.bgElevated,
+      gap: 8,
+    },
+    btn: {
+      flex: 1,
+      paddingVertical: 13,
+      borderRadius: 12,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    btnPrimary: {
+      backgroundColor: colors.accent,
+    },
+    btnPrimaryText: {
+      color: colors.bg,
+      fontSize: 15,
+      fontWeight: '800',
+    },
+    btnSecondary: {
+      backgroundColor: colors.bgRaised,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+    },
+    btnSecondaryText: {
+      color: colors.textPrimary,
+      fontSize: 15,
+      fontWeight: '700',
+    },
+    btnGhost: {
+      backgroundColor: 'transparent',
+    },
+    btnGhostText: {
+      color: colors.textSecondary,
+      fontSize: 15,
+      fontWeight: '600',
+    },
+  });
+}
 
 export default CrashLogsModal;

@@ -5,7 +5,7 @@
  * The new, user-controlled intelligent-download flow.
  *
  * Top-down structure:
- *   1. <StorageStatsCard />    — accent card showing library cap +
+ *   1. <StorageStatsCard />    — gold-accented card showing library cap +
  *                                device free space (animated bars).
  *   2. <DownloadDecisionCard /> — the stepper / number-input flow.
  *                                Pick how many songs you want; tap
@@ -27,27 +27,23 @@ import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
   Text,
-  ScrollView,
   TouchableOpacity,
   StyleSheet,
-  Platform,
   ActivityIndicator,
   StatusBar,
   TextInput,
   Alert,
 } from 'react-native';
-import Animated, {
-  FadeInDown,
-  FadeOutUp,
-  Layout,
-} from 'react-native-reanimated';
+import { FlashList } from '@shopify/flash-list';
 import { AnimatePresence, MotiView } from 'moti';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
 
-import { useDownloadStore } from '@/stores/downloadStore';
+import { useDownloadStore, type DownloadItem } from '@/stores/downloadStore';
 import { useShallow } from 'zustand/react/shallow';
+import { useTheme } from '@/theme';
 import { DownloadManager, MAX_LIBRARY_SIZE } from '@/features/download/DownloadManager';
 import {
   buildDownloadCandidates,
@@ -88,6 +84,8 @@ interface StorageSnapshot {
 }
 
 // ─── StorageStatsCard ─────────────────────────────────────────────────────────
+// Premium gold-accented panel — the bulk-download differentiator. Library
+// fill is gold (Iron Man), storage fill is cyan (HUD telemetry).
 
 interface StorageStatsCardProps {
   snapshot: StorageSnapshot | null;
@@ -95,6 +93,7 @@ interface StorageStatsCardProps {
 }
 
 function StorageStatsCard({ snapshot, fitsByStorage }: StorageStatsCardProps) {
+  const { colors } = useTheme();
   const libraryPct =
     snapshot ? Math.min(1, snapshot.libraryCount / MAX_LIBRARY_SIZE) : 0;
   const usedBytes =
@@ -103,30 +102,34 @@ function StorageStatsCard({ snapshot, fitsByStorage }: StorageStatsCardProps) {
     snapshot && snapshot.totalBytes > 0 ? Math.min(1, usedBytes / snapshot.totalBytes) : 0;
 
   const libraryBarColor =
-    libraryPct >= 0.9 ? '#E74C3C' : libraryPct >= 0.7 ? '#F39C12' : '#FA233B';
+    libraryPct >= 0.9 ? colors.danger : libraryPct >= 0.7 ? colors.gold : colors.gold;
 
   return (
-    <View style={statsStyles.card}>
+    <View style={[statsStyles.card, { backgroundColor: colors.bgElevated, borderColor: colors.goldMuted }]}>
       {/* Library row */}
       <View style={statsStyles.row}>
         <View style={statsStyles.labelRow}>
-          <Text style={statsStyles.rowLabel}>Library</Text>
-          <Text style={statsStyles.rowValue}>
-            <Text style={statsStyles.rowValueBold}>
+          <Text style={[statsStyles.rowLabel, { color: colors.gold }]}>Library</Text>
+          <Text style={[statsStyles.rowValue, { color: colors.textSecondary }]}>
+            <Text style={[statsStyles.rowValueBold, { color: colors.textPrimary }]}>
               {snapshot ? snapshot.libraryCount.toLocaleString() : '—'}
             </Text>
             {' / '}
             {MAX_LIBRARY_SIZE.toLocaleString()}{' '}
-            <Text style={statsStyles.rowSub}>
+            <Text style={[statsStyles.rowSub, { color: colors.textTertiary }]}>
               ({Math.round(libraryPct * 100)}%)
             </Text>
           </Text>
         </View>
-        <View style={statsStyles.track}>
-          <MotiView
-            animate={{ width: `${(libraryPct * 100).toFixed(1)}%` as any }}
-            transition={{ type: 'timing', duration: 600 }}
-            style={[statsStyles.fill, { backgroundColor: libraryBarColor }]}
+        <View style={[statsStyles.track, { backgroundColor: colors.bgRaised }]}>
+          <View
+            style={[
+              statsStyles.fill,
+              {
+                width: `${(libraryPct * 100).toFixed(1)}%` as `${number}%`,
+                backgroundColor: libraryBarColor,
+              },
+            ]}
           />
         </View>
       </View>
@@ -134,25 +137,29 @@ function StorageStatsCard({ snapshot, fitsByStorage }: StorageStatsCardProps) {
       {/* Storage row */}
       <View style={statsStyles.row}>
         <View style={statsStyles.labelRow}>
-          <Text style={statsStyles.rowLabel}>Storage</Text>
-          <Text style={statsStyles.rowValue}>
-            <Text style={statsStyles.rowValueBold}>
+          <Text style={[statsStyles.rowLabel, { color: colors.accent }]}>Storage</Text>
+          <Text style={[statsStyles.rowValue, { color: colors.textSecondary }]}>
+            <Text style={[statsStyles.rowValueBold, { color: colors.textPrimary }]}>
               {snapshot ? formatBytes(snapshot.freeBytes) : '—'}
             </Text>{' '}
             free of {snapshot ? formatBytes(snapshot.totalBytes) : '—'}
           </Text>
         </View>
-        <View style={statsStyles.track}>
-          <MotiView
-            animate={{ width: `${(storagePct * 100).toFixed(1)}%` as any }}
-            transition={{ type: 'timing', duration: 600 }}
-            style={[statsStyles.fill, { backgroundColor: '#3498DB' }]}
+        <View style={[statsStyles.track, { backgroundColor: colors.bgRaised }]}>
+          <View
+            style={[
+              statsStyles.fill,
+              {
+                width: `${(storagePct * 100).toFixed(1)}%` as `${number}%`,
+                backgroundColor: colors.accent,
+              },
+            ]}
           />
         </View>
       </View>
 
       {/* Footer */}
-      <Text style={statsStyles.footer}>
+      <Text style={[statsStyles.footer, { color: colors.textSecondary }]}>
         ≈ {fitsByStorage.toLocaleString()} more song{fitsByStorage === 1 ? '' : 's'} fit
       </Text>
     </View>
@@ -163,21 +170,10 @@ const statsStyles = StyleSheet.create({
   card: {
     marginHorizontal: 16,
     marginBottom: 18,
-    padding: 14,
-    borderRadius: 14,
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: 'rgba(255,215,0,0.35)',
+    padding: 16,
+    borderRadius: 20,
+    borderWidth: StyleSheet.hairlineWidth,
     gap: 14,
-    ...Platform.select({
-      ios: {
-        shadowColor: '#FA233B',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.15,
-        shadowRadius: 8,
-      },
-      android: { elevation: 2 },
-    }),
   },
   row: {
     gap: 6,
@@ -189,38 +185,32 @@ const statsStyles = StyleSheet.create({
   },
   rowLabel: {
     fontSize: 11,
-    fontWeight: '700',
-    color: '#FA233B',
+    fontWeight: '800',
     letterSpacing: 1,
     textTransform: 'uppercase',
   },
   rowValue: {
     fontSize: 12,
-    color: '#6E6E73',
     fontWeight: '400',
   },
   rowValueBold: {
     fontWeight: '700',
-    color: '#1D1D1F',
   },
   rowSub: {
-    color: '#8E8E93',
     fontWeight: '500',
   },
   track: {
-    height: 5,
-    backgroundColor: '#F2F2F7',
+    height: 6,
     borderRadius: 3,
     overflow: 'hidden',
   },
   fill: {
-    height: 5,
+    height: 6,
     borderRadius: 3,
   },
   footer: {
     fontSize: 12,
     fontWeight: '500',
-    color: '#6E6E73',
     marginTop: 2,
   },
 });
@@ -235,6 +225,7 @@ interface StepperProps {
 }
 
 function Stepper({ value, min, max, onChange }: StepperProps) {
+  const { colors } = useTheme();
   const [text, setText] = useState(String(value));
 
   // Keep the input in sync with the controlled value when callers change it.
@@ -274,18 +265,25 @@ function Stepper({ value, min, max, onChange }: StepperProps) {
       <TouchableOpacity
         onPress={decrement}
         disabled={!canDec}
-        style={[stepperStyles.btn, !canDec && stepperStyles.btnDisabled]}
+        style={[
+          stepperStyles.btn,
+          { backgroundColor: colors.bgRaised, borderColor: colors.border },
+          !canDec && { opacity: 0.4 },
+        ]}
         hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
         accessibilityLabel="Decrease"
         accessibilityRole="button"
       >
-        <Text style={[stepperStyles.btnText, !canDec && stepperStyles.btnTextDisabled]}>
+        <Text style={[stepperStyles.btnText, { color: canDec ? colors.accent : colors.textTertiary }]}>
           −
         </Text>
       </TouchableOpacity>
 
       <TextInput
-        style={stepperStyles.input}
+        style={[
+          stepperStyles.input,
+          { borderColor: colors.borderAccent, backgroundColor: colors.bgRaised, color: colors.textPrimary },
+        ]}
         value={text}
         keyboardType="number-pad"
         onChangeText={setText}
@@ -299,12 +297,16 @@ function Stepper({ value, min, max, onChange }: StepperProps) {
       <TouchableOpacity
         onPress={increment}
         disabled={!canInc}
-        style={[stepperStyles.btn, !canInc && stepperStyles.btnDisabled]}
+        style={[
+          stepperStyles.btn,
+          { backgroundColor: colors.bgRaised, borderColor: colors.border },
+          !canInc && { opacity: 0.4 },
+        ]}
         hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
         accessibilityLabel="Increase"
         accessibilityRole="button"
       >
-        <Text style={[stepperStyles.btnText, !canInc && stepperStyles.btnTextDisabled]}>
+        <Text style={[stepperStyles.btnText, { color: canInc ? colors.accent : colors.textTertiary }]}>
           +
         </Text>
       </TouchableOpacity>
@@ -323,33 +325,20 @@ const stepperStyles = StyleSheet.create({
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: '#F2F2F7',
-    borderWidth: 1,
-    borderColor: '#D2D2D7',
+    borderWidth: StyleSheet.hairlineWidth,
     justifyContent: 'center',
     alignItems: 'center',
-  },
-  btnDisabled: {
-    backgroundColor: '#FAFAFA',
-    borderColor: '#E5E5EA',
   },
   btnText: {
     fontSize: 22,
     fontWeight: '700',
-    color: '#FA233B',
     lineHeight: 24,
-  },
-  btnTextDisabled: {
-    color: '#C7C7CC',
   },
   input: {
     width: 80,
     height: 48,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#D2D2D7',
-    backgroundColor: '#FFFFFF',
-    color: '#1D1D1F',
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
     fontSize: 22,
     fontWeight: '800',
     textAlign: 'center',
@@ -374,11 +363,15 @@ function DownloadDecisionCard({
   onFind,
   isFinding,
 }: DownloadDecisionCardProps) {
+  const { colors } = useTheme();
+
   if (!rec) {
     return (
-      <View style={decisionStyles.card}>
-        <ActivityIndicator size="small" color="#FA233B" />
-        <Text style={decisionStyles.loading}>Checking storage and library size...</Text>
+      <View style={[decisionStyles.card, { backgroundColor: colors.bgElevated, borderColor: colors.border }]}>
+        <ActivityIndicator size="small" color={colors.accent} />
+        <Text style={[decisionStyles.loading, { color: colors.textSecondary }]}>
+          Checking storage and library size...
+        </Text>
       </View>
     );
   }
@@ -387,18 +380,21 @@ function DownloadDecisionCard({
   const freeAfter = Math.max(0, rec.freeBytes - totalBytes);
   const exceedsRecommendation = count > rec.recommended;
   const cantDownload = rec.maxAllowed === 0;
+  const findDisabled = isFinding || count === 0 || cantDownload;
 
   return (
-    <View style={decisionStyles.card}>
+    <View style={[decisionStyles.card, { backgroundColor: colors.bgElevated, borderColor: colors.border }]}>
       {/* Headline */}
-      <Text style={decisionStyles.headline}>
-        Recommended: <Text style={decisionStyles.headlineAccent}>{rec.recommended} songs</Text>
+      <Text style={[decisionStyles.headline, { color: colors.textPrimary }]}>
+        Recommended: <Text style={{ color: colors.accent }}>{rec.recommended} songs</Text>
       </Text>
-      <Text style={decisionStyles.reason}>{rec.reason}</Text>
+      <Text style={[decisionStyles.reason, { color: colors.textSecondary }]}>{rec.reason}</Text>
 
       {/* Stepper */}
       <View style={decisionStyles.stepperBlock}>
-        <Text style={decisionStyles.stepperLabel}>How many songs to download?</Text>
+        <Text style={[decisionStyles.stepperLabel, { color: colors.textSecondary }]}>
+          How many songs to download?
+        </Text>
         <Stepper
           value={count}
           min={0}
@@ -408,10 +404,10 @@ function DownloadDecisionCard({
       </View>
 
       {/* Live size estimate */}
-      <Text style={decisionStyles.sizeEstimate}>
+      <Text style={[decisionStyles.sizeEstimate, { color: colors.accent }]}>
         ≈ {formatBytes(totalBytes)} total · 320k AAC
       </Text>
-      <Text style={decisionStyles.helperText}>
+      <Text style={[decisionStyles.helperText, { color: colors.textTertiary }]}>
         You can review every recommendation before anything downloads.
       </Text>
 
@@ -421,30 +417,43 @@ function DownloadDecisionCard({
           from={{ opacity: 0, translateY: -4 }}
           animate={{ opacity: 1, translateY: 0 }}
           transition={{ type: 'timing', duration: 220 }}
-          style={decisionStyles.warning}
+          style={[decisionStyles.warning, { backgroundColor: 'rgba(255,59,71,0.12)', borderColor: 'rgba(255,59,71,0.35)' }]}
         >
-          <Text style={decisionStyles.warningText}>
+          <Text style={[decisionStyles.warningText, { color: colors.danger }]}>
             Picking {count} will leave only {formatBytes(freeAfter)} free. Phone may slow down.
           </Text>
         </MotiView>
       ) : null}
 
-      {/* Find Songs button */}
+      {/* Find Songs button — cyan brand gradient (interactive HUD accent) */}
       <TouchableOpacity
         onPress={onFind}
-        disabled={isFinding || count === 0 || cantDownload}
+        disabled={findDisabled}
         style={[
           decisionStyles.findButton,
-          (isFinding || count === 0 || cantDownload) && decisionStyles.findButtonDisabled,
+          findDisabled && { backgroundColor: colors.bgRaised },
         ]}
         activeOpacity={0.85}
         accessibilityLabel="Find songs"
         accessibilityRole="button"
       >
+        {!findDisabled ? (
+          <LinearGradient
+            colors={colors.brandGradient}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={StyleSheet.absoluteFill}
+          />
+        ) : null}
         {isFinding ? (
-          <ActivityIndicator size="small" color="#FFFFFF" />
+          <ActivityIndicator size="small" color={colors.accent} />
         ) : (
-          <Text style={decisionStyles.findButtonText}>
+          <Text
+            style={[
+              decisionStyles.findButtonText,
+              { color: findDisabled ? colors.textTertiary : colors.bg },
+            ]}
+          >
             {cantDownload ? 'No room to download' : count === 0 ? 'Pick a number first' : 'Find Songs'}
           </Text>
         )}
@@ -458,33 +467,25 @@ const decisionStyles = StyleSheet.create({
     marginHorizontal: 16,
     marginBottom: 22,
     padding: 18,
-    borderRadius: 14,
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: 'rgba(60,60,67,0.10)',
+    borderRadius: 20,
+    borderWidth: StyleSheet.hairlineWidth,
     gap: 14,
     alignItems: 'stretch',
   },
   loading: {
     fontSize: 12,
-    color: '#8E8E93',
     textAlign: 'center',
     marginTop: 8,
   },
   headline: {
     fontSize: 16,
-    fontWeight: '700',
-    color: '#1D1D1F',
+    fontWeight: '800',
     textAlign: 'center',
     letterSpacing: -0.2,
-  },
-  headlineAccent: {
-    color: '#FA233B',
   },
   reason: {
     fontSize: 12,
     fontWeight: '400',
-    color: '#6E6E73',
     textAlign: 'center',
     lineHeight: 17,
   },
@@ -496,13 +497,11 @@ const decisionStyles = StyleSheet.create({
   stepperLabel: {
     fontSize: 12,
     fontWeight: '600',
-    color: '#6E6E73',
     letterSpacing: 0.2,
   },
   sizeEstimate: {
     fontSize: 13,
-    fontWeight: '600',
-    color: '#FA233B',
+    fontWeight: '700',
     textAlign: 'center',
     letterSpacing: 0.2,
   },
@@ -510,49 +509,32 @@ const decisionStyles = StyleSheet.create({
     marginTop: -6,
     fontSize: 12,
     fontWeight: '500',
-    color: '#8E8E93',
     textAlign: 'center',
     lineHeight: 17,
   },
   warning: {
-    backgroundColor: 'rgba(231,76,60,0.12)',
-    borderRadius: 10,
+    borderRadius: 12,
     paddingHorizontal: 12,
     paddingVertical: 10,
-    borderWidth: 1,
-    borderColor: 'rgba(231,76,60,0.35)',
+    borderWidth: StyleSheet.hairlineWidth,
   },
   warningText: {
     fontSize: 11,
     fontWeight: '600',
-    color: '#E74C3C',
     textAlign: 'center',
     lineHeight: 15,
   },
   findButton: {
-    backgroundColor: '#FA233B',
-    borderRadius: 12,
+    borderRadius: 16,
     paddingVertical: 14,
     alignItems: 'center',
     justifyContent: 'center',
     minHeight: 50,
-    ...Platform.select({
-      ios: {
-        shadowColor: '#FA233B',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.3,
-        shadowRadius: 12,
-      },
-      android: { elevation: 5 },
-    }),
-  },
-  findButtonDisabled: {
-    backgroundColor: '#F2F2F7',
+    overflow: 'hidden',
   },
   findButtonText: {
     fontSize: 15,
     fontWeight: '800',
-    color: '#FFFFFF',
     letterSpacing: -0.2,
   },
 });
@@ -566,12 +548,13 @@ interface PlanHeaderProps {
 }
 
 function PlanHeader({ count, totalBytes, reason }: PlanHeaderProps) {
+  const { colors } = useTheme();
   return (
     <View style={planHeaderStyles.card}>
-      <Text style={planHeaderStyles.title}>
-        We picked these <Text style={planHeaderStyles.titleAccent}>{count}</Text> songs for you
+      <Text style={[planHeaderStyles.title, { color: colors.textPrimary }]}>
+        We picked these <Text style={{ color: colors.accent }}>{count}</Text> songs for you
       </Text>
-      <Text style={planHeaderStyles.subtitle}>
+      <Text style={[planHeaderStyles.subtitle, { color: colors.textSecondary }]}>
         ≈ {formatBytes(totalBytes)} total · {reason}
       </Text>
     </View>
@@ -588,20 +571,16 @@ const planHeaderStyles = StyleSheet.create({
   title: {
     fontSize: 17,
     fontWeight: '800',
-    color: '#1D1D1F',
     letterSpacing: -0.3,
-  },
-  titleAccent: {
-    color: '#FA233B',
   },
   subtitle: {
     fontSize: 12,
     fontWeight: '500',
-    color: '#6E6E73',
   },
 });
 
 // ─── Plan footer (Approve / Cancel) ───────────────────────────────────────────
+// Sticky-feeling gold CTA — the premium "spend your storage" moment.
 
 interface PlanFooterProps {
   remaining: number;
@@ -611,18 +590,34 @@ interface PlanFooterProps {
 }
 
 function PlanFooter({ remaining, totalBytes, onApprove, onCancel }: PlanFooterProps) {
+  const { colors } = useTheme();
+  const disabled = remaining === 0;
   return (
     <View style={footerStyles.wrap}>
       <TouchableOpacity
         onPress={onApprove}
-        disabled={remaining === 0}
-        style={[footerStyles.approve, remaining === 0 && footerStyles.approveDisabled]}
+        disabled={disabled}
+        style={[footerStyles.approve, disabled && { backgroundColor: colors.bgRaised }]}
         activeOpacity={0.85}
         accessibilityLabel="Approve and download all"
         accessibilityRole="button"
       >
-        <Text style={footerStyles.approveText}>
-          Approve & Download {remaining > 0 ? `${remaining} ` : ''}({formatBytes(totalBytes)})
+        {!disabled ? (
+          <LinearGradient
+            colors={colors.goldGradient}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={StyleSheet.absoluteFill}
+          />
+        ) : null}
+        <Ionicons
+          name="arrow-down-circle"
+          size={18}
+          color={disabled ? colors.textTertiary : '#1A1205'}
+          style={footerStyles.approveIcon}
+        />
+        <Text style={[footerStyles.approveText, { color: disabled ? colors.textTertiary : '#1A1205' }]}>
+          Approve & Download {remaining > 0 ? `${remaining} ` : ''}(≈ {formatBytes(totalBytes)})
         </Text>
       </TouchableOpacity>
 
@@ -633,7 +628,7 @@ function PlanFooter({ remaining, totalBytes, onApprove, onCancel }: PlanFooterPr
         accessibilityLabel="Cancel plan"
         accessibilityRole="button"
       >
-        <Text style={footerStyles.cancelText}>Cancel</Text>
+        <Text style={[footerStyles.cancelText, { color: colors.textSecondary }]}>Cancel</Text>
       </TouchableOpacity>
     </View>
   );
@@ -647,27 +642,20 @@ const footerStyles = StyleSheet.create({
     gap: 10,
   },
   approve: {
-    backgroundColor: '#FA233B',
-    borderRadius: 12,
+    borderRadius: 16,
     paddingVertical: 15,
+    paddingHorizontal: 16,
+    flexDirection: 'row',
     alignItems: 'center',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#FA233B',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.3,
-        shadowRadius: 12,
-      },
-      android: { elevation: 5 },
-    }),
+    justifyContent: 'center',
+    overflow: 'hidden',
   },
-  approveDisabled: {
-    backgroundColor: '#F2F2F7',
+  approveIcon: {
+    marginRight: 8,
   },
   approveText: {
     fontSize: 15,
     fontWeight: '800',
-    color: '#FFFFFF',
     letterSpacing: -0.2,
   },
   cancel: {
@@ -677,23 +665,25 @@ const footerStyles = StyleSheet.create({
   cancelText: {
     fontSize: 13,
     fontWeight: '600',
-    color: '#6E6E73',
   },
 });
 
 // ─── Queue empty state ────────────────────────────────────────────────────────
 
 function QueueEmptyState() {
+  const { colors } = useTheme();
   return (
     <MotiView
       from={{ opacity: 0, scale: 0.94 }}
       animate={{ opacity: 1, scale: 1 }}
       transition={{ type: 'timing', duration: 300 }}
-      style={emptyStyles.container}
+      style={[emptyStyles.container, { backgroundColor: colors.bgElevated, borderColor: colors.borderAccent }]}
     >
-      <Ionicons name="arrow-down-circle" size={32} color="#FA233B" />
-      <Text style={emptyStyles.title}>Queue empty</Text>
-      <Text style={emptyStyles.subtitle}>
+      <View style={[emptyStyles.iconWrap, { backgroundColor: colors.accentMuted, borderColor: colors.borderAccent }]}>
+        <Ionicons name="arrow-down-circle" size={28} color={colors.accent} />
+      </View>
+      <Text style={[emptyStyles.title, { color: colors.textPrimary }]}>Queue empty</Text>
+      <Text style={[emptyStyles.subtitle, { color: colors.textSecondary }]}>
         Approved songs will appear here while downloading
       </Text>
     </MotiView>
@@ -706,23 +696,27 @@ const emptyStyles = StyleSheet.create({
     marginVertical: 8,
     paddingVertical: 28,
     paddingHorizontal: 20,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: '#F2F2F7',
-    borderStyle: 'dashed',
+    borderRadius: 20,
+    borderWidth: StyleSheet.hairlineWidth,
     alignItems: 'center',
-    gap: 6,
+    gap: 8,
+  },
+  iconWrap: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+    marginBottom: 2,
   },
   title: {
     fontSize: 15,
-    fontWeight: '600',
-    color: '#8E8E93',
+    fontWeight: '700',
   },
   subtitle: {
     fontSize: 12,
     fontWeight: '400',
-    color: '#8E8E93',
     textAlign: 'center',
     lineHeight: 17,
   },
@@ -731,28 +725,28 @@ const emptyStyles = StyleSheet.create({
 // ─── Active downloads badge ───────────────────────────────────────────────────
 
 function ActiveBadge({ count }: { count: number }) {
+  const { colors } = useTheme();
   if (count === 0) return null;
   return (
-    <View style={badgeStyles.pill}>
-      <Text style={badgeStyles.text}>{count}</Text>
+    <View style={[badgeStyles.pill, { backgroundColor: colors.accentMuted, borderColor: colors.borderAccent }]}>
+      <Text style={[badgeStyles.text, { color: colors.accent }]}>{count}</Text>
     </View>
   );
 }
 
 const badgeStyles = StyleSheet.create({
   pill: {
-    backgroundColor: '#FA233B',
-    borderRadius: 10,
-    minWidth: 20,
-    height: 20,
-    paddingHorizontal: 6,
+    borderRadius: 999,
+    minWidth: 22,
+    height: 22,
+    paddingHorizontal: 7,
     justifyContent: 'center',
     alignItems: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
   },
   text: {
     fontSize: 11,
     fontWeight: '800',
-    color: '#FFFFFF',
     lineHeight: 13,
   },
 });
@@ -765,9 +759,10 @@ interface SectionHeaderProps {
 }
 
 function SectionHeader({ title, right }: SectionHeaderProps) {
+  const { colors } = useTheme();
   return (
     <View style={styles.sectionHeader}>
-      <Text style={styles.sectionTitle}>{title}</Text>
+      <Text style={[styles.sectionTitle, { color: colors.textPrimary }]}>{title}</Text>
       {right}
     </View>
   );
@@ -776,7 +771,19 @@ function SectionHeader({ title, right }: SectionHeaderProps) {
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
 export function DownloadsScreen() {
-  const queue          = useDownloadStore((s) => s.queue);
+  const { colors, isDark } = useTheme();
+
+  // Shallow projection of the queue: only id + status. This is the render
+  // driver for the active-queue FlashList. Because the selector maps to a
+  // {id,status}[] compared with `useShallow`, it stays referentially stable
+  // across progress ticks — the parent re-renders ONLY when queue membership
+  // or a row's status changes, never on the ~4Hz progress mutations. Each
+  // DownloadQueueItem self-subscribes to its own progress slice. This is the
+  // fix for "scroll while bulk downloading → crash": the parent no longer
+  // re-maps/relayouts every row on every tick.
+  const queueRows = useDownloadStore(
+    useShallow((s) => s.queue.map((i) => ({ id: i.id, status: i.status }))),
+  );
   const clearCompleted = useDownloadStore((s) => s.clearCompleted);
   const removeItem     = useDownloadStore((s) => s.removeItem);
 
@@ -837,10 +844,18 @@ export function DownloadsScreen() {
 
   // ── Derived data ───────────────────────────────────────────────────────────
 
-  const activeCount    = queue.filter(
-    (i) => i.status !== 'done' && i.status !== 'error',
-  ).length;
-  const completedCount = queue.filter((i) => i.status === 'done').length;
+  // Counts derived from the shallow status projection so they only recompute
+  // when membership/status changes, not on every progress mutation.
+  const activeCount = useMemo(
+    () =>
+      queueRows.filter((i) => i.status !== 'done' && i.status !== 'error')
+        .length,
+    [queueRows],
+  );
+  const completedCount = useMemo(
+    () => queueRows.filter((i) => i.status === 'done').length,
+    [queueRows],
+  );
 
   // Plan cards used to mirror real queue progress via a queueByYtId Map
   // rebuilt every progress tick. That Map drove a `downloadStatus` /
@@ -874,6 +889,15 @@ export function DownloadsScreen() {
       removeItem(id);
     },
     [removeItem],
+  );
+
+  // FlashList row renderer. DownloadQueueItem self-subscribes to its own
+  // progress slice, so we only thread the stable id + stable onCancel.
+  const renderQueueItem = useCallback(
+    ({ item }: { item: { id: string; status: DownloadItem['status'] } }) => (
+      <DownloadQueueItem id={item.id} onCancel={handleCancel} />
+    ),
+    [handleCancel],
   );
 
   // ── Find Songs ─────────────────────────────────────────────────────────────
@@ -1046,157 +1070,152 @@ export function DownloadsScreen() {
   // (getCardStatus is gone — each SongDiscoveryCard self-subscribes to its
   // own row in the download queue, so the parent doesn't need to compute
   // per-card status on every render.)
+  //
+  // The screen is a single FlashList that VIRTUALISES the active queue. The
+  // stats / decision / plan-review chrome lives in ListHeaderComponent (it is
+  // not a list, so plain mapped cards are fine there). The active queue itself
+  // can hold up to 1500 rows during a bulk download, so it MUST be virtualised
+  // — the old "ScrollView + queue.map wrapped in Reanimated layout worklets"
+  // mounted every row at once and was the source of the scroll-while-
+  // downloading crash. FlashList owns row lifecycle now (no per-row
+  // entering/exiting/Layout worklets, which conflict with recycling anyway).
+
+  const listHeader = (
+    <>
+      {/* Screen title */}
+      <View style={styles.screenHeader}>
+        <Text style={[styles.screenTitle, { color: colors.textPrimary }]}>Downloads</Text>
+      </View>
+
+      {/* ════════════════════════════════════════════════
+          1. Storage Stats Card
+      ════════════════════════════════════════════════ */}
+      <StorageStatsCard
+        snapshot={snapshot}
+        fitsByStorage={rec?.fitsByStorage ?? 0}
+      />
+
+      {/* ════════════════════════════════════════════════
+          2. Decision Card  (or  3. Plan Review)
+      ════════════════════════════════════════════════ */}
+      {flow === 'plan' ? (
+        <>
+          <PlanHeader
+            count={suggestions.length}
+            totalBytes={planTotalBytes}
+            reason={planReason}
+          />
+
+          <AnimatePresence>
+            {suggestions.map((s) => (
+              <SongDiscoveryCard
+                key={s.videoId}
+                result={{
+                  id: s.videoId,
+                  title: s.title,
+                  author: s.artist,
+                  duration_ms: s.duration_ms,
+                  thumbnail: s.thumbnail,
+                  view_count: '',
+                }}
+                onDownload={handlePlanDownloadOne}
+                onSkip={handlePlanSkip}
+                rationale={s.rationale}
+                estimatedSizeReadable={s.estimatedSizeReadable}
+              />
+            ))}
+          </AnimatePresence>
+
+          <PlanFooter
+            remaining={suggestions.filter(
+              (s) => !queuedYtIds.has(s.videoId),
+            ).length}
+            totalBytes={suggestions
+              .filter((s) => !queuedYtIds.has(s.videoId))
+              .reduce((sum, s) => sum + s.estimatedBytes, 0)}
+            onApprove={handlePlanApprove}
+            onCancel={handlePlanCancel}
+          />
+        </>
+      ) : (
+        <>
+          <DownloadDecisionCard
+            rec={rec}
+            count={count}
+            onCountChange={setCount}
+            onFind={handleFindSongs}
+            isFinding={flow === 'finding'}
+          />
+
+          {flow === 'error' && flowError ? (
+            <View style={[styles.errorBox, { backgroundColor: colors.bgElevated, borderColor: 'rgba(255,59,71,0.25)' }]}>
+              <View style={[styles.errorIconWrap, { backgroundColor: 'rgba(255,59,71,0.12)' }]}>
+                <Ionicons name="cloud-offline" size={23} color={colors.danger} />
+              </View>
+              <Text style={[styles.errorText, { color: colors.textSecondary }]}>{flowError}</Text>
+              <TouchableOpacity
+                onPress={handleFindSongs}
+                style={[styles.retryBtn, { backgroundColor: colors.bgRaised, borderColor: colors.borderAccent }]}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.retryText, { color: colors.accent }]}>Try again</Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
+        </>
+      )}
+
+      {/* ════════════════════════════════════════════════
+          4. Active queue
+      ════════════════════════════════════════════════ */}
+      <SectionHeader
+        title="Download Queue"
+        right={
+          <View style={styles.queueHeaderRight}>
+            <ActiveBadge count={activeCount} />
+            {completedCount > 0 && (
+              <TouchableOpacity
+                onPress={handleClearCompleted}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                accessibilityLabel="Clear completed downloads"
+                accessibilityRole="button"
+              >
+                <Text style={[styles.clearBtn, { color: colors.accent }]}>Clear Completed</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        }
+      />
+    </>
+  );
 
   return (
-    <SafeAreaView style={styles.root} edges={['top']}>
-      <StatusBar barStyle="dark-content" backgroundColor="#F5F5F7" />
+    <SafeAreaView style={[styles.root, { backgroundColor: colors.bg }]} edges={['top']}>
+      <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor={colors.bg} />
 
-      <ScrollView
-        style={styles.scroll}
+      <FlashList
+        data={queueRows}
+        renderItem={renderQueueItem}
+        keyExtractor={(i) => i.id}
+        extraData={queueRows}
+        estimatedItemSize={96}
+        ListHeaderComponent={listHeader}
+        ListEmptyComponent={<QueueEmptyState />}
+        ListFooterComponent={<View style={styles.bottomSpacer} />}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
-      >
-        {/* Screen title */}
-        <View style={styles.screenHeader}>
-          <Text style={styles.screenTitle}>Downloads</Text>
-        </View>
-
-        {/* ════════════════════════════════════════════════
-            1. Storage Stats Card
-        ════════════════════════════════════════════════ */}
-        <StorageStatsCard
-          snapshot={snapshot}
-          fitsByStorage={rec?.fitsByStorage ?? 0}
-        />
-
-        {/* ════════════════════════════════════════════════
-            2. Decision Card  (or  3. Plan Review)
-        ════════════════════════════════════════════════ */}
-        {flow === 'plan' ? (
-          <>
-            <PlanHeader
-              count={suggestions.length}
-              totalBytes={planTotalBytes}
-              reason={planReason}
-            />
-
-            <AnimatePresence>
-              {suggestions.map((s) => (
-                <SongDiscoveryCard
-                  key={s.videoId}
-                  result={{
-                    id: s.videoId,
-                    title: s.title,
-                    author: s.artist,
-                    duration_ms: s.duration_ms,
-                    thumbnail: s.thumbnail,
-                    view_count: '',
-                  }}
-                  onDownload={handlePlanDownloadOne}
-                  onSkip={handlePlanSkip}
-                  rationale={s.rationale}
-                  estimatedSizeReadable={s.estimatedSizeReadable}
-                />
-              ))}
-            </AnimatePresence>
-
-            <PlanFooter
-              remaining={suggestions.filter(
-                (s) => !queuedYtIds.has(s.videoId),
-              ).length}
-              totalBytes={suggestions
-                .filter((s) => !queuedYtIds.has(s.videoId))
-                .reduce((sum, s) => sum + s.estimatedBytes, 0)}
-              onApprove={handlePlanApprove}
-              onCancel={handlePlanCancel}
-            />
-          </>
-        ) : (
-          <>
-            <DownloadDecisionCard
-              rec={rec}
-              count={count}
-              onCountChange={setCount}
-              onFind={handleFindSongs}
-              isFinding={flow === 'finding'}
-            />
-
-            {flow === 'error' && flowError ? (
-              <View style={styles.errorBox}>
-                <View style={styles.errorIconWrap}>
-                  <Ionicons name="cloud-offline" size={23} color="#FA233B" />
-                </View>
-                <Text style={styles.errorText}>{flowError}</Text>
-                <TouchableOpacity
-                  onPress={handleFindSongs}
-                  style={styles.retryBtn}
-                  activeOpacity={0.8}
-                >
-                  <Text style={styles.retryText}>Try again</Text>
-                </TouchableOpacity>
-              </View>
-            ) : null}
-          </>
-        )}
-
-        {/* ════════════════════════════════════════════════
-            4. Active queue
-        ════════════════════════════════════════════════ */}
-        <SectionHeader
-          title="Download Queue"
-          right={
-            <View style={styles.queueHeaderRight}>
-              <ActiveBadge count={activeCount} />
-              {completedCount > 0 && (
-                <TouchableOpacity
-                  onPress={handleClearCompleted}
-                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                  accessibilityLabel="Clear completed downloads"
-                  accessibilityRole="button"
-                >
-                  <Text style={styles.clearBtn}>Clear Completed</Text>
-                </TouchableOpacity>
-              )}
-            </View>
-          }
-        />
-
-        {queue.length === 0 ? (
-          <QueueEmptyState />
-        ) : (
-          <AnimatePresence>
-            {queue.map((item) => (
-              <Animated.View
-                key={item.id}
-                entering={FadeInDown.duration(250).springify()}
-                exiting={FadeOutUp.duration(200)}
-                layout={Layout.springify().damping(18)}
-              >
-                {/* Pass only the stable id + stable onCancel. The child
-                    subscribes to its own slice of the store, so progress
-                    ticks on ONE row don't re-render OTHER rows — that was
-                    the root of the "scroll while downloading → crash" on
-                    the native bridge. */}
-                <DownloadQueueItem id={item.id} onCancel={handleCancel} />
-              </Animated.View>
-            ))}
-          </AnimatePresence>
-        )}
-
-        {/* Bottom padding — leaves room for the mini player */}
-        <View style={styles.bottomSpacer} />
-      </ScrollView>
+      />
     </SafeAreaView>
   );
 }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
+// Layout/geometry only — colours themed inline via useTheme().
 
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: '#F5F5F7',
   },
   scroll: {
     flex: 1,
@@ -1214,7 +1233,6 @@ const styles = StyleSheet.create({
   screenTitle: {
     fontSize: 32,
     fontWeight: '800',
-    color: '#1D1D1F',
     letterSpacing: -0.8,
     lineHeight: 36,
   },
@@ -1230,8 +1248,7 @@ const styles = StyleSheet.create({
   },
   sectionTitle: {
     fontSize: 18,
-    fontWeight: '700',
-    color: '#1D1D1F',
+    fontWeight: '800',
     letterSpacing: -0.3,
   },
 
@@ -1243,8 +1260,7 @@ const styles = StyleSheet.create({
   },
   clearBtn: {
     fontSize: 12,
-    fontWeight: '600',
-    color: '#6E6E73',
+    fontWeight: '700',
   },
 
   // Error box
@@ -1252,10 +1268,8 @@ const styles = StyleSheet.create({
     marginHorizontal: 16,
     marginBottom: 16,
     padding: 16,
-    borderRadius: 18,
-    backgroundColor: '#FFF1F2',
-    borderWidth: 1,
-    borderColor: 'rgba(250,35,59,0.18)',
+    borderRadius: 20,
+    borderWidth: StyleSheet.hairlineWidth,
     alignItems: 'center',
     gap: 8,
   },
@@ -1265,12 +1279,10 @@ const styles = StyleSheet.create({
     borderRadius: 23,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(250,35,59,0.10)',
   },
   errorText: {
     fontSize: 13,
     fontWeight: '500',
-    color: '#3A3A3C',
     textAlign: 'center',
     lineHeight: 18,
   },
@@ -1278,15 +1290,12 @@ const styles = StyleSheet.create({
     marginTop: 4,
     paddingHorizontal: 18,
     paddingVertical: 8,
-    backgroundColor: '#FFFFFF',
     borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(250,35,59,0.18)',
+    borderWidth: StyleSheet.hairlineWidth,
   },
   retryText: {
     fontSize: 13,
-    fontWeight: '600',
-    color: '#FA233B',
+    fontWeight: '700',
   },
 
   bottomSpacer: {

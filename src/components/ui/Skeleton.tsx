@@ -2,18 +2,31 @@ import React from 'react';
 import { View, StyleSheet } from 'react-native';
 import { MotiView } from 'moti';
 import { Skeleton } from 'moti/skeleton';
+import { useTheme } from '@/theme';
 
 // ─── Theme ───────────────────────────────────────────────────────────────────
+// Scheme-aware shimmer stops. Dark uses the raised/canvas graphite tones so
+// placeholders read correctly on the near-black Arc Reactor surfaces.
 
-const SKELETON_COLORS: [string, ...string[]] = ['#F2F2F7', '#D2D2D7', '#F2F2F7'];
+const DARK_SKELETON_COLORS: [string, ...string[]] = ['#161C26', '#1E2632', '#161C26'];
+const LIGHT_SKELETON_COLORS: [string, ...string[]] = ['#EBEFF3', '#D6DDE5', '#EBEFF3'];
+
+function useSkeletonTheme() {
+  const { isDark } = useTheme();
+  return {
+    colorMode: (isDark ? 'dark' : 'light') as 'dark' | 'light',
+    colors: isDark ? DARK_SKELETON_COLORS : LIGHT_SKELETON_COLORS,
+  };
+}
 
 // ─── SkeletonText ─────────────────────────────────────────────────────────────
 
 export function SkeletonText({ width }: { width: number | string }) {
+  const sk = useSkeletonTheme();
   return (
     <Skeleton
-      colorMode="light"
-      colors={SKELETON_COLORS}
+      colorMode={sk.colorMode}
+      colors={sk.colors}
       width={width as number}
       height={12}
       radius={4}
@@ -24,10 +37,11 @@ export function SkeletonText({ width }: { width: number | string }) {
 // ─── SkeletonCard ─────────────────────────────────────────────────────────────
 
 export function SkeletonCard({ width, height }: { width: number; height: number }) {
+  const sk = useSkeletonTheme();
   return (
     <Skeleton
-      colorMode="light"
-      colors={SKELETON_COLORS}
+      colorMode={sk.colorMode}
+      colors={sk.colors}
       width={width}
       height={height}
       radius={12}
@@ -38,6 +52,7 @@ export function SkeletonCard({ width, height }: { width: number; height: number 
 // ─── SkeletonTrackRow ─────────────────────────────────────────────────────────
 
 export function SkeletonTrackRow() {
+  const sk = useSkeletonTheme();
   return (
     <MotiView
       style={styles.row}
@@ -48,19 +63,19 @@ export function SkeletonTrackRow() {
     >
       {/* Artwork placeholder */}
       <Skeleton
-        colorMode="light"
-        colors={SKELETON_COLORS}
+        colorMode={sk.colorMode}
+        colors={sk.colors}
         width={56}
         height={56}
-        radius={8}
+        radius={12}
       />
 
       {/* Text block */}
       <View style={styles.textBlock}>
         {/* Title line */}
         <Skeleton
-          colorMode="light"
-          colors={SKELETON_COLORS}
+          colorMode={sk.colorMode}
+          colors={sk.colors}
           width="85%"
           height={13}
           radius={4}
@@ -68,8 +83,8 @@ export function SkeletonTrackRow() {
         <View style={styles.spacer4} />
         {/* Meta line */}
         <Skeleton
-          colorMode="light"
-          colors={SKELETON_COLORS}
+          colorMode={sk.colorMode}
+          colors={sk.colors}
           width="55%"
           height={11}
           radius={4}
@@ -79,8 +94,8 @@ export function SkeletonTrackRow() {
       {/* Right block */}
       <View style={styles.rightBlock}>
         <Skeleton
-          colorMode="light"
-          colors={SKELETON_COLORS}
+          colorMode={sk.colorMode}
+          colors={sk.colors}
           width={28}
           height={11}
           radius={4}

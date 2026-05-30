@@ -1,6 +1,7 @@
 import React, {
   useCallback,
   useEffect,
+  useMemo,
   useState,
 } from 'react';
 import {
@@ -24,6 +25,8 @@ import RNBlobUtil from 'react-native-blob-util';
 import { Ionicons } from '@expo/vector-icons';
 import type { RootStackNavigationProp } from '@/types/navigation';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useUIStore } from '@/stores/uiStore';
+import { useTheme, type Theme } from '@/theme';
 import { cleanupVoiceNotesAndClips } from '@/db/cleanup';
 import { CrashLogsModal } from './CrashLogsModal';
 import { crashSink } from '@/utils/crashSink';
@@ -36,10 +39,18 @@ interface SectionProps {
 }
 
 function Section({ title, children }: SectionProps) {
+  const { colors } = useTheme();
   return (
     <View style={sectionStyles.container}>
-      <Text style={sectionStyles.title}>{title}</Text>
-      <View style={sectionStyles.card}>{children}</View>
+      <Text style={[sectionStyles.title, { color: colors.textTertiary }]}>{title}</Text>
+      <View
+        style={[
+          sectionStyles.card,
+          { backgroundColor: colors.bgElevated, borderColor: colors.borderAccent },
+        ]}
+      >
+        {children}
+      </View>
     </View>
   );
 }
@@ -51,26 +62,24 @@ const sectionStyles = StyleSheet.create({
   title: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#6E6E73',
-    letterSpacing: 0.8,
+    letterSpacing: 1.2,
     textTransform: 'uppercase',
     paddingHorizontal: 20,
     marginBottom: 8,
   },
   card: {
     marginHorizontal: 16,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 14,
+    borderRadius: 16,
     overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: '#F2F2F7',
+    borderWidth: StyleSheet.hairlineWidth,
   },
 });
 
 // ─── Row components ───────────────────────────────────────────────────────────
 
 function Separator() {
-  return <View style={rowStyles.separator} />;
+  const { colors } = useTheme();
+  return <View style={[rowStyles.separator, { backgroundColor: colors.border }]} />;
 }
 
 interface TapRowProps {
@@ -83,6 +92,7 @@ interface TapRowProps {
 }
 
 function TapRow({ icon, label, sublabel, onPress, destructive = false, detail }: TapRowProps) {
+  const { colors } = useTheme();
   return (
     <TouchableOpacity
       style={rowStyles.container}
@@ -91,16 +101,21 @@ function TapRow({ icon, label, sublabel, onPress, destructive = false, detail }:
       accessibilityRole="button"
       accessibilityLabel={label}
     >
-      <Ionicons name={icon} size={20} color={destructive ? '#FF3B30' : '#6E6E73'} style={rowStyles.icon} />
+      <Ionicons
+        name={icon}
+        size={20}
+        color={destructive ? colors.danger : colors.accent}
+        style={rowStyles.icon}
+      />
       <View style={rowStyles.tapBody}>
         <View style={{ flex: 1 }}>
-          <Text style={[rowStyles.label, destructive && rowStyles.destructiveLabel]}>
+          <Text style={[rowStyles.label, { color: destructive ? colors.danger : colors.textPrimary }]}>
             {label}
           </Text>
-          {sublabel && <Text style={rowStyles.sublabel}>{sublabel}</Text>}
+          {sublabel && <Text style={[rowStyles.sublabel, { color: colors.textSecondary }]}>{sublabel}</Text>}
         </View>
-        {detail && <Text style={rowStyles.detail}>{detail}</Text>}
-        <Text style={rowStyles.chevron}>›</Text>
+        {detail && <Text style={[rowStyles.detail, { color: colors.textSecondary }]}>{detail}</Text>}
+        <Text style={[rowStyles.chevron, { color: colors.textTertiary }]}>›</Text>
       </View>
     </TouchableOpacity>
   );
@@ -108,8 +123,7 @@ function TapRow({ icon, label, sublabel, onPress, destructive = false, detail }:
 
 const rowStyles = StyleSheet.create({
   separator: {
-    height: 1,
-    backgroundColor: '#F2F2F7',
+    height: StyleSheet.hairlineWidth,
     marginLeft: 52,
   },
   container: {
@@ -133,24 +147,18 @@ const rowStyles = StyleSheet.create({
   label: {
     fontSize: 15,
     fontWeight: '500',
-    color: '#1D1D1F',
   },
   sublabel: {
     fontSize: 12,
-    color: '#8E8E93',
     marginTop: 2,
-  },
-  destructiveLabel: {
-    color: '#E74C3C',
+    lineHeight: 17,
   },
   detail: {
     fontSize: 14,
-    color: '#8E8E93',
     marginRight: 4,
   },
   chevron: {
     fontSize: 22,
-    color: '#8E8E93',
   },
 });
 
@@ -165,18 +173,20 @@ interface ToggleRowProps {
 }
 
 function ToggleRow({ icon, label, sublabel, value, onChange }: ToggleRowProps) {
+  const { colors } = useTheme();
   return (
     <View style={rowStyles.container}>
-      <Ionicons name={icon} size={20} color="#6E6E73" style={rowStyles.icon} />
+      <Ionicons name={icon} size={20} color={colors.accent} style={rowStyles.icon} />
       <View style={{ flex: 1 }}>
-        <Text style={rowStyles.label}>{label}</Text>
-        {sublabel && <Text style={rowStyles.sublabel}>{sublabel}</Text>}
+        <Text style={[rowStyles.label, { color: colors.textPrimary }]}>{label}</Text>
+        {sublabel && <Text style={[rowStyles.sublabel, { color: colors.textSecondary }]}>{sublabel}</Text>}
       </View>
       <Switch
         value={value}
         onValueChange={onChange}
-        trackColor={{ false: '#E5E5EA', true: '#FA233B' }}
-        thumbColor={Platform.OS === 'android' ? '#FFFFFF' : undefined}
+        trackColor={{ false: colors.bgRaised, true: colors.accent }}
+        thumbColor={Platform.OS === 'android' ? colors.textPrimary : undefined}
+        ios_backgroundColor={colors.bgRaised}
       />
     </View>
   );
@@ -203,15 +213,16 @@ function SnapPickerRow({
   onChange,
   disabled = false,
 }: SnapPickerRowProps) {
+  const { colors } = useTheme();
   return (
     <View style={[rowStyles.container, { flexDirection: 'column', alignItems: 'stretch' }]}>
       <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
-        <Ionicons name={icon} size={20} color="#6E6E73" style={rowStyles.icon} />
+        <Ionicons name={icon} size={20} color={colors.accent} style={rowStyles.icon} />
         <View style={{ flex: 1 }}>
-          <Text style={[rowStyles.label, disabled && { color: '#C7C7CC' }]}>
+          <Text style={[rowStyles.label, { color: disabled ? colors.textTertiary : colors.textPrimary }]}>
             {label}
           </Text>
-          {sublabel && <Text style={rowStyles.sublabel}>{sublabel}</Text>}
+          {sublabel && <Text style={[rowStyles.sublabel, { color: colors.textSecondary }]}>{sublabel}</Text>}
         </View>
       </View>
       <View style={pickerStyles.pillRow}>
@@ -224,12 +235,20 @@ function SnapPickerRow({
               onPress={() => onChange(opt)}
               style={({ pressed }) => [
                 pickerStyles.pill,
-                active && pickerStyles.pillActive,
+                {
+                  backgroundColor: active ? colors.accentMuted : colors.bgRaised,
+                  borderColor: active ? colors.borderAccent : colors.border,
+                },
                 pressed && { opacity: 0.7 },
                 disabled && { opacity: 0.4 },
               ]}
             >
-              <Text style={[pickerStyles.pillText, active && pickerStyles.pillTextActive]}>
+              <Text
+                style={[
+                  pickerStyles.pillText,
+                  { color: active ? colors.accent : colors.textSecondary },
+                ]}
+              >
                 {formatOption(opt)}
               </Text>
             </Pressable>
@@ -249,28 +268,109 @@ const pickerStyles = StyleSheet.create({
     marginLeft: 40,
   },
   pill: {
-    paddingHorizontal: 12,
+    paddingHorizontal: 13,
     paddingVertical: 6,
-    borderRadius: 16,
-    backgroundColor: '#F2F2F7',
-    borderWidth: 1,
-    borderColor: '#E5E5EA',
-  },
-  pillActive: {
-    backgroundColor: '#FA233B',
-    borderColor: '#FA233B',
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
   },
   pillText: {
     fontSize: 13,
-    fontWeight: '600',
-    color: '#1D1D1F',
-  },
-  pillTextActive: {
-    color: '#FFFFFF',
+    fontWeight: '700',
   },
 });
 
 const CROSSFADE_OPTIONS = [1000, 2000, 4000, 6000, 8000, 12000];
+
+// ─── Appearance scheme picker ─────────────────────────────────────────────────
+
+type SchemePref = 'light' | 'dark' | 'system';
+
+const SCHEME_OPTIONS: { value: SchemePref; label: string; icon: React.ComponentProps<typeof Ionicons>['name'] }[] = [
+  { value: 'light', label: 'Light', icon: 'sunny' },
+  { value: 'dark', label: 'Dark', icon: 'moon' },
+  { value: 'system', label: 'System', icon: 'phone-portrait' },
+];
+
+interface SchemePickerRowProps {
+  value: SchemePref;
+  onChange: (next: SchemePref) => void;
+}
+
+function SchemePickerRow({ value, onChange }: SchemePickerRowProps) {
+  const { colors } = useTheme();
+  return (
+    <View style={[rowStyles.container, { flexDirection: 'column', alignItems: 'stretch' }]}>
+      <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
+        <Ionicons name="contrast" size={20} color={colors.accent} style={rowStyles.icon} />
+        <View style={{ flex: 1 }}>
+          <Text style={[rowStyles.label, { color: colors.textPrimary }]}>Appearance</Text>
+          <Text style={[rowStyles.sublabel, { color: colors.textSecondary }]}>
+            Choose the Arc Reactor dark theme, a light scheme, or follow your device.
+          </Text>
+        </View>
+      </View>
+      <View style={schemeStyles.segment}>
+        {SCHEME_OPTIONS.map((opt) => {
+          const active = opt.value === value;
+          return (
+            <Pressable
+              key={opt.value}
+              onPress={() => onChange(opt.value)}
+              accessibilityRole="button"
+              accessibilityLabel={opt.label}
+              accessibilityState={{ selected: active }}
+              style={({ pressed }) => [
+                schemeStyles.segmentItem,
+                {
+                  backgroundColor: active ? colors.accentMuted : colors.bgRaised,
+                  borderColor: active ? colors.borderAccent : colors.border,
+                },
+                pressed && { opacity: 0.7 },
+              ]}
+            >
+              <Ionicons
+                name={opt.icon}
+                size={16}
+                color={active ? colors.accent : colors.textSecondary}
+              />
+              <Text
+                style={[
+                  schemeStyles.segmentText,
+                  { color: active ? colors.accent : colors.textSecondary },
+                ]}
+              >
+                {opt.label}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+const schemeStyles = StyleSheet.create({
+  segment: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 10,
+    marginLeft: 40,
+  },
+  segmentItem: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 9,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  segmentText: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+});
 
 // ─── Storage stats ────────────────────────────────────────────────────────────
 
@@ -285,6 +385,12 @@ function formatBytes(bytes: number): string {
 
 export function SettingsScreen() {
   const navigation = useNavigation<RootStackNavigationProp>();
+  const theme = useTheme();
+  const { colors, isDark } = theme;
+  const styles = useMemo(() => createStyles(theme), [theme]);
+
+  const colorSchemePreference = useUIStore((s) => s.colorSchemePreference);
+  const setColorScheme = useUIStore((s) => s.setColorScheme);
 
   const [storageStats, setStorageStats] = useState<{
     totalFiles: number;
@@ -440,7 +546,10 @@ export function SettingsScreen() {
 
   return (
     <View style={styles.root}>
-      <StatusBar barStyle="dark-content" backgroundColor="#F5F5F7" />
+      <StatusBar
+        barStyle={isDark ? 'light-content' : 'dark-content'}
+        backgroundColor={colors.bg}
+      />
 
       <ScrollView
         showsVerticalScrollIndicator={false}
@@ -449,6 +558,7 @@ export function SettingsScreen() {
       >
         {/* ── Header ── */}
         <View style={styles.header}>
+          <Text style={styles.headerEyebrow}>CONTROL CENTER</Text>
           <Text style={styles.headerTitle}>Settings</Text>
         </View>
 
@@ -459,6 +569,22 @@ export function SettingsScreen() {
             label="Chakaas Engine"
             sublabel="See what the engine has learned and what it's thinking"
             onPress={() => navigation.navigate('ChakaasEngine')}
+          />
+        </Section>
+
+        {/* ── Appearance ── */}
+        <Section title="Appearance">
+          <SchemePickerRow
+            value={colorSchemePreference}
+            onChange={setColorScheme}
+          />
+          <Separator />
+          <ToggleRow
+            icon="color-palette"
+            label="Album color theming"
+            sublabel="Tint the Now Playing screen and Mini Player using the current artwork. When off, the UI uses the static cyan accent."
+            value={albumColorThemingEnabled}
+            onChange={setAlbumColorThemingEnabled}
           />
         </Section>
 
@@ -495,29 +621,18 @@ export function SettingsScreen() {
             <Ionicons
               name="information-circle-outline"
               size={20}
-              color="#6E6E73"
+              color={colors.textTertiary}
               style={rowStyles.icon}
             />
             <View style={{ flex: 1 }}>
-              <Text style={rowStyles.label}>Audio focus &amp; ducking</Text>
-              <Text style={rowStyles.sublabel}>
+              <Text style={[rowStyles.label, { color: colors.textPrimary }]}>Audio focus &amp; ducking</Text>
+              <Text style={[rowStyles.sublabel, { color: colors.textSecondary }]}>
                 Chakaas automatically pauses for calls and lowers volume for
                 navigation prompts. Other apps requesting focus will pause us
                 until they release it.
               </Text>
             </View>
           </View>
-        </Section>
-
-        {/* ── Appearance ── */}
-        <Section title="Appearance">
-          <ToggleRow
-            icon="color-palette"
-            label="Album color theming"
-            sublabel="Tint the Now Playing screen and Mini Player using the current artwork. When off, the UI uses the static gold accent."
-            value={albumColorThemingEnabled}
-            onChange={setAlbumColorThemingEnabled}
-          />
         </Section>
 
         {/* ── Storage ── */}
@@ -570,10 +685,10 @@ export function SettingsScreen() {
         {/* ── Quality notice ── */}
         <Section title="Audio">
           <View style={styles.infoBlock}>
-            <Ionicons name="headset" size={20} color="#6E6E73" style={rowStyles.icon} />
+            <Ionicons name="headset" size={20} color={colors.accent} style={rowStyles.icon} />
             <View style={{ flex: 1 }}>
-              <Text style={rowStyles.label}>Best available quality</Text>
-              <Text style={rowStyles.sublabel}>
+              <Text style={[rowStyles.label, { color: colors.textPrimary }]}>Best available quality</Text>
+              <Text style={[rowStyles.sublabel, { color: colors.textSecondary }]}>
                 Every download uses the highest-quality source the provider
                 offers — 320 kbps AAC when available, otherwise 160 kbps. No
                 transcoding, no quality loss.
@@ -587,20 +702,20 @@ export function SettingsScreen() {
           <TouchableOpacity
             onPress={() => setCrashLogsOpen(true)}
             activeOpacity={0.7}
-            style={diagStyles.row}
+            style={styles.diagRow}
           >
-            <View style={diagStyles.iconWrap}>
-              <Ionicons name="bug" size={20} color="#FA233B" />
+            <View style={styles.diagIconWrap}>
+              <Ionicons name="bug" size={20} color={colors.danger} />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={diagStyles.label}>View Crash Logs</Text>
-              <Text style={diagStyles.sublabel}>
+              <Text style={styles.diagLabel}>View Crash Logs</Text>
+              <Text style={styles.diagSublabel}>
                 {crashCount === 0
                   ? 'No errors captured yet'
                   : `${crashCount} entr${crashCount === 1 ? 'y' : 'ies'} captured — tap to view & copy`}
               </Text>
             </View>
-            <Ionicons name="chevron-forward" size={18} color="#C7C7CC" />
+            <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
           </TouchableOpacity>
         </Section>
 
@@ -631,109 +746,116 @@ export function SettingsScreen() {
   );
 }
 
-const diagStyles = StyleSheet.create({
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 14,
-    paddingHorizontal: 16,
-    gap: 14,
-  },
-  iconWrap: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: 'rgba(250,35,59,0.08)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  label: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#1D1D1F',
-  },
-  sublabel: {
-    fontSize: 12,
-    color: '#6E6E73',
-    marginTop: 2,
-  },
-});
-
-
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
-const styles = StyleSheet.create({
-  root: {
-    flex: 1,
-    backgroundColor: '#F5F5F7',
-  },
-  scrollContent: {
-    paddingBottom: 40,
-  },
-  header: {
-    paddingTop: Platform.OS === 'ios' ? 56 : 36,
-    paddingBottom: 20,
-    paddingHorizontal: 20,
-  },
-  headerTitle: {
-    fontSize: 28,
-    fontWeight: '800',
-    color: '#1D1D1F',
-    letterSpacing: -0.5,
-  },
-  statsRow: {
-    flexDirection: 'row',
-    paddingHorizontal: 16,
-    paddingVertical: 16,
-    alignItems: 'center',
-  },
-  statBox: {
-    flex: 1,
-    alignItems: 'center',
-    gap: 4,
-  },
-  statValue: {
-    fontSize: 22,
-    fontWeight: '800',
-    color: '#1D1D1F',
-    letterSpacing: -0.5,
-  },
-  statLabel: {
-    fontSize: 12,
-    color: '#8E8E93',
-    fontWeight: '500',
-  },
-  statDivider: {
-    width: 1,
-    height: 36,
-    backgroundColor: '#D2D2D7',
-  },
-  infoBlock: {
-    flexDirection: 'row',
-    padding: 16,
-    gap: 12,
-  },
-  aboutRow: {
-    alignItems: 'center',
-    paddingVertical: 24,
-    paddingHorizontal: 16,
-    gap: 6,
-  },
-  aboutAppName: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: '#FA233B',
-    letterSpacing: -0.3,
-  },
-  aboutVersion: {
-    fontSize: 13,
-    color: '#8E8E93',
-    fontWeight: '500',
-  },
-  aboutTagline: {
-    fontSize: 14,
-    color: '#6E6E73',
-    marginTop: 4,
-    textAlign: 'center',
-  },
-});
+function createStyles({ colors }: Theme) {
+  return StyleSheet.create({
+    root: {
+      flex: 1,
+      backgroundColor: colors.bg,
+    },
+    scrollContent: {
+      paddingBottom: 40,
+    },
+    header: {
+      paddingTop: Platform.OS === 'ios' ? 56 : 36,
+      paddingBottom: 20,
+      paddingHorizontal: 20,
+    },
+    headerEyebrow: {
+      fontSize: 11,
+      fontWeight: '800',
+      letterSpacing: 2,
+      color: colors.accent,
+      marginBottom: 4,
+    },
+    headerTitle: {
+      fontSize: 32,
+      fontWeight: '800',
+      color: colors.textPrimary,
+      letterSpacing: -0.8,
+    },
+    statsRow: {
+      flexDirection: 'row',
+      paddingHorizontal: 16,
+      paddingVertical: 18,
+      alignItems: 'center',
+    },
+    statBox: {
+      flex: 1,
+      alignItems: 'center',
+      gap: 4,
+    },
+    statValue: {
+      fontSize: 24,
+      fontWeight: '800',
+      color: colors.accent,
+      letterSpacing: -0.5,
+    },
+    statLabel: {
+      fontSize: 12,
+      color: colors.textSecondary,
+      fontWeight: '600',
+      textTransform: 'uppercase',
+      letterSpacing: 0.5,
+    },
+    statDivider: {
+      width: StyleSheet.hairlineWidth,
+      height: 36,
+      backgroundColor: colors.border,
+    },
+    infoBlock: {
+      flexDirection: 'row',
+      padding: 16,
+      gap: 12,
+    },
+    diagRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingVertical: 14,
+      paddingHorizontal: 16,
+      gap: 14,
+    },
+    diagIconWrap: {
+      width: 36,
+      height: 36,
+      borderRadius: 18,
+      backgroundColor: 'rgba(255,59,71,0.12)',
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    diagLabel: {
+      fontSize: 15,
+      fontWeight: '600',
+      color: colors.textPrimary,
+    },
+    diagSublabel: {
+      fontSize: 12,
+      color: colors.textSecondary,
+      marginTop: 2,
+    },
+    aboutRow: {
+      alignItems: 'center',
+      paddingVertical: 24,
+      paddingHorizontal: 16,
+      gap: 6,
+    },
+    aboutAppName: {
+      fontSize: 18,
+      fontWeight: '800',
+      color: colors.accent,
+      letterSpacing: -0.3,
+    },
+    aboutVersion: {
+      fontSize: 13,
+      color: colors.textSecondary,
+      fontWeight: '500',
+    },
+    aboutTagline: {
+      fontSize: 14,
+      color: colors.textTertiary,
+      marginTop: 4,
+      textAlign: 'center',
+    },
+  });
+}
